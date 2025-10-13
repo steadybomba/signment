@@ -12,6 +12,7 @@
         .container { padding: 20px; text-align: center; }
         .track-section { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
         .track-section input { width: 80%; padding: 10px; margin-bottom: 10px; }
+        .track-section .g-recaptcha { margin: 10px auto; display: inline-block; }
         .track-section button { background: #d32f2f; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
         .track-section button:hover { background: #b71c1c; }
         .option { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); text-align: center; }
@@ -19,6 +20,8 @@
         .business-option { position: relative; overflow: hidden; }
         .business-option::after { content: ''; position: absolute; top: 0; right: 0; width: 0; height: 0; border-top: 50px solid #f4a900; border-left: 50px solid transparent; }
     </style>
+    <!-- reCAPTCHA script -->
+    <script src="https://www.google.com/recaptcha/api.js"></script>
     <!-- Tawk.to chat -->
     <script type="text/javascript">
         var Tawk_API = Tawk_API || {}, Tawk_LoadStart = new Date();
@@ -41,7 +44,8 @@
         <h1>Track Your Shipment</h1>
         <div class="track-section">
             <form method="POST" action="/track">
-                <input type="text" name="tracking_number" placeholder="Enter your tracking number(s)">
+                <input type="text" name="tracking_number" placeholder="Enter your tracking number(s)" required>
+                <div class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}"></div>
                 <button type="submit">Track</button>
             </form>
         </div>
