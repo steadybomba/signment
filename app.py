@@ -1,7 +1,6 @@
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, disconnect
-import mysql.connector
-from mysql.connector import pooling
+from flask_sqlalchemy import SQLAlchemy
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 import eventlet
@@ -26,6 +25,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 import threading
 import string
+from sqlalchemy.exc import SQLAlchemyError
 
 # Load environment variables
 load_dotenv()
@@ -45,7 +45,11 @@ bot_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname
 bot_logger.addHandler(bot_handler)
 
 # Validate environment variables
-required_env_vars = ['SECRET_KEY', 'DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_DATABASE', 'SMTP_SERVER', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_FROM', 'RECAPTCHA_SITE_KEY', 'RECAPTCHA_SECRET_KEY', 'TELEGRAM_BOT_TOKEN']
+required_env_vars = [
+    'SECRET_KEY', 'SQLALCHEMY_DATABASE_URI', 'SMTP_HOST', 'SMTP_USER',
+    'SMTP_PASS', 'SMTP_FROM', 'RECAPTCHA_SITE_KEY', 'RECAPTCHA_SECRET_KEY',
+    'TELEGRAM_BOT_TOKEN'
+]
 for var in required_env_vars:
     if not os.getenv(var):
         flask_logger.critical(f"Missing required environment variable: {var}")
@@ -55,6 +59,9 @@ for var in required_env_vars:
 # Flask and SocketIO setup
 app = Flask(__name__, static_url_path='/static', static_folder='static')
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 socketio = SocketIO(app, async_mode='eventlet', ping_timeout=20, ping_interval=10)
 
 # Rate limiting
@@ -71,16 +78,10 @@ ALLOWED_ADMINS = [int(id) for id in os.getenv('ADMIN_USER_IDS', '').split(',') i
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # Shared configurations
-DB_CONFIG = {
-    'host': os.getenv('DB_HOST'),
-    'user': os.getenv('DB_USER'),
-    'password': os.getenv('DB_PASSWORD'),
-    'database': os.getenv('DB_DATABASE')
-}
-SMTP_SERVER = os.getenv('SMTP_SERVER')
+SMTP_HOST = os.getenv('SMTP_HOST')
 SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
-SMTP_USERNAME = os.getenv('SMTP_USERNAME')
-SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
+SMTP_USER = os.getenv('SMTP_USER')
+SMTP_PASS = os.getenv('SMTP_PASS')
 SMTP_FROM = os.getenv('SMTP_FROM')
 RECAPTCHA_SITE_KEY = os.getenv('RECAPTCHA_SITE_KEY')
 RECAPTCHA_SECRET_KEY = os.getenv('RECAPTCHA_SECRET_KEY')
@@ -91,21 +92,6 @@ WEBSOCKET_SERVER = os.getenv('WEBSOCKET_SERVER', 'http://localhost:5000')
 TAWK_PROPERTY_ID = os.getenv('TAWK_PROPERTY_ID')
 TAWK_WIDGET_ID = os.getenv('TAWK_WIDGET_ID')
 GLOBAL_WEBHOOK_URL = os.getenv('GLOBAL_WEBHOOK_URL')
-
-# MySQL connection pool
-try:
-    db_pool = pooling.MySQLConnectionPool(
-        pool_name="tracking_pool",
-        pool_size=10,
-        pool_reset_session=True,
-        **DB_CONFIG
-    )
-    flask_logger.info("MySQL connection pool initialized successfully")
-    bot_logger.info("MySQL connection pool initialized successfully")
-except mysql.connector.Error as e:
-    flask_logger.error(f"Failed to initialize MySQL connection pool: {e}")
-    bot_logger.error(f"Failed to initialize MySQL connection pool: {e}")
-    raise
 
 # Redis client
 redis_client = redis.Redis(
@@ -140,6 +126,34 @@ ROUTE_TEMPLATES = {
 # Cache geocoded locations
 geocode_cache = {}
 
+# Database model
+class Shipment(db.Model):
+    __tablename__ = 'shipments'
+    tracking_number = db.Column(db.String(50), primary_key=True)
+    status = db.Column(db.String(50))
+    checkpoints = db.Column(db.Text)
+    delivery_location = db.Column(db.Text)
+    last_updated = db.Column(db.DateTime)
+    recipient_email = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime)
+    origin_location = db.Column(db.Text)
+    webhook_url = db.Column(db.Text)
+    email_notifications = db.Column(db.Boolean, default=True)
+
+    def to_dict(self):
+        return {
+            'tracking_number': self.tracking_number,
+            'status': self.status,
+            'checkpoints': self.checkpoints,
+            'delivery_location': self.delivery_location,
+            'last_updated': self.last_updated,
+            'recipient_email': self.recipient_email,
+            'created_at': self.created_at,
+            'origin_location': self.origin_location,
+            'webhook_url': self.webhook_url,
+            'email_notifications': self.email_notifications
+        }
+
 # Shared utility functions
 def sanitize_tracking_number(tracking_number):
     if not tracking_number or not isinstance(tracking_number, str):
@@ -149,21 +163,15 @@ def sanitize_tracking_number(tracking_number):
 
 def send_email_notification(tracking_number, status, checkpoints, delivery_location, recipient_email):
     try:
-        conn = db_pool.get_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT email_notifications FROM shipments WHERE tracking_number = %s", (tracking_number,))
-        result = cursor.fetchone()
-        if not result or not result['email_notifications']:
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment or not shipment.email_notifications:
             flask_logger.debug(f"Email notifications disabled for {tracking_number}")
             bot_logger.debug(f"Email notifications disabled for {tracking_number}")
             return
-    except mysql.connector.Error as e:
+    except SQLAlchemyError as e:
         flask_logger.error(f"Database error checking email notifications for {tracking_number}: {e}")
         bot_logger.error(f"Database error checking email notifications for {tracking_number}: {e}")
         return
-    finally:
-        cursor.close()
-        conn.close()
 
     if not recipient_email:
         flask_logger.warning(f"No recipient email for tracking {tracking_number}")
@@ -190,9 +198,9 @@ def send_email_notification(tracking_number, status, checkpoints, delivery_locat
     msg['Subject'] = subject
     msg.attach(MIMEText(body, 'plain'))
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
             flask_logger.info(f"Email sent to {recipient_email} for tracking {tracking_number}, status: {status}")
             bot_logger.info(f"Email sent to {recipient_email} for tracking {tracking_number}, status: {status}")
@@ -202,35 +210,13 @@ def send_email_notification(tracking_number, status, checkpoints, delivery_locat
 
 def init_db():
     try:
-        conn = db_pool.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS shipments (
-                tracking_number VARCHAR(50) PRIMARY KEY,
-                status VARCHAR(50),
-                checkpoints TEXT,
-                delivery_location TEXT,
-                last_updated DATETIME,
-                recipient_email VARCHAR(255),
-                created_at DATETIME,
-                origin_location TEXT,
-                webhook_url TEXT,
-                email_notifications BOOLEAN DEFAULT TRUE
-            )
-        ''')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_tracking_number ON shipments (tracking_number)')
-        conn.commit()
+        db.create_all()
         flask_logger.info("Database initialized successfully")
         bot_logger.info("Database initialized successfully")
-    except mysql.connector.Error as e:
+    except SQLAlchemyError as e:
         flask_logger.error(f"Database initialization failed: {e}")
         bot_logger.error(f"Database initialization failed: {e}")
         raise
-    finally:
-        cursor.close()
-        conn.close()
-
-init_db()
 
 # Flask-specific functions
 def verify_recaptcha(response_token):
@@ -301,26 +287,17 @@ def simulate_tracking(tracking_number):
 
     while True:
         try:
-            conn = db_pool.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT status, checkpoints, delivery_location, origin_location, webhook_url, recipient_email FROM shipments WHERE tracking_number = %s", (sanitized_tn,))
-            result = cursor.fetchone()
-        except mysql.connector.Error as e:
-            flask_logger.error(f"Database error for {sanitized_tn}: {e}")
-            eventlet.sleep(60)
-            continue
-        finally:
-            cursor.close()
-            conn.close()
-
-        if result:
-            status = result['status']
-            checkpoints_str = result['checkpoints'] or ''
+            shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+            if not shipment:
+                flask_logger.warning(f"Shipment not found: {sanitized_tn}")
+                break
+            status = shipment.status
+            checkpoints_str = shipment.checkpoints or ''
             checkpoints = checkpoints_str.split(';') if checkpoints_str else []
-            delivery_location = result['delivery_location']
-            origin_location = result['origin_location'] or delivery_location
-            webhook_url = result['webhook_url'] or GLOBAL_WEBHOOK_URL
-            recipient_email = result['recipient_email']
+            delivery_location = shipment.delivery_location
+            origin_location = shipment.origin_location or delivery_location
+            webhook_url = shipment.webhook_url or GLOBAL_WEBHOOK_URL
+            recipient_email = shipment.recipient_email
 
             if status != 'Delivered':
                 current_time = datetime.now()
@@ -338,17 +315,11 @@ def simulate_tracking(tracking_number):
                             if status == 'Delivered':
                                 checkpoints.append(f"{current_time.strftime('%Y-%m-%d %H:%M')} - {delivery_location} - Delivered")
 
-                        try:
-                            conn = db_pool.get_connection()
-                            cursor = conn.cursor()
-                            cursor.execute('UPDATE shipments SET status = %s, checkpoints = %s, last_updated = %s WHERE tracking_number = %s', (status, ';'.join(checkpoints), current_time, sanitized_tn))
-                            conn.commit()
-                            flask_logger.info(f"Updated shipment {sanitized_tn}: status={status}, checkpoints={checkpoints}")
-                        except mysql.connector.Error as e:
-                            flask_logger.error(f"Database update error for {sanitized_tn}: {e}")
-                        finally:
-                            cursor.close()
-                            conn.close()
+                        shipment.status = status
+                        shipment.checkpoints = ';'.join(checkpoints)
+                        shipment.last_updated = current_time
+                        db.session.commit()
+                        flask_logger.info(f"Updated shipment {sanitized_tn}: status={status}, checkpoints={checkpoints}")
 
                         if send_notification and recipient_email:
                             eventlet.spawn(send_email_notification, sanitized_tn, status, checkpoints, delivery_location, recipient_email)
@@ -377,9 +348,10 @@ def simulate_tracking(tracking_number):
                 eventlet.sleep(delay)
             else:
                 break
-        else:
-            flask_logger.warning(f"Shipment not found: {sanitized_tn}")
-            break
+        except SQLAlchemyError as e:
+            flask_logger.error(f"Database error for {sanitized_tn}: {e}")
+            eventlet.sleep(60)
+            continue
 
 def broadcast_update(tracking_number):
     sanitized_tn = sanitize_tracking_number(tracking_number)
@@ -388,41 +360,35 @@ def broadcast_update(tracking_number):
         return
 
     try:
-        conn = db_pool.get_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT status, checkpoints, delivery_location FROM shipments WHERE tracking_number = %s", (sanitized_tn,))
-        result = cursor.fetchone()
-    except mysql.connector.Error as e:
-        flask_logger.error(f"Database error during broadcast for {sanitized_tn}: {e}")
-        return
-    finally:
-        cursor.close()
-        conn.close()
-
-    if result:
-        status, checkpoints_str, delivery_location = result['status'], result['checkpoints'], result['delivery_location']
-        checkpoints = checkpoints_str.split(';') if checkpoints_str else []
-        coords = geocode_locations(checkpoints)
-        coords_list = [{'lat': lat, 'lon': lon, 'desc': desc} for lat, lon, desc in coords]
-        update_data = json.dumps({
-            'tracking_number': sanitized_tn,
-            'status': status,
-            'checkpoints': checkpoints,
-            'delivery_location': delivery_location,
-            'coords': coords_list,
-            'found': True
-        }).encode('utf-8')
-        for sid in get_clients(sanitized_tn):
-            socketio.emit('tracking_update', update_data, room=sid, namespace='/', binary=True)
-            flask_logger.debug(f"Broadcast update for {sanitized_tn} to {sid}")
-    else:
-        for sid in get_clients(sanitized_tn):
-            socketio.emit('tracking_update', {
+        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+        if shipment:
+            status = shipment.status
+            checkpoints_str = shipment.checkpoints
+            delivery_location = shipment.delivery_location
+            checkpoints = checkpoints_str.split(';') if checkpoints_str else []
+            coords = geocode_locations(checkpoints)
+            coords_list = [{'lat': lat, 'lon': lon, 'desc': desc} for lat, lon, desc in coords]
+            update_data = json.dumps({
                 'tracking_number': sanitized_tn,
-                'found': False,
-                'error': 'Tracking number not found.'
-            }, room=sid)
-            flask_logger.warning(f"Tracking number not found for broadcast: {sanitized_tn}")
+                'status': status,
+                'checkpoints': checkpoints,
+                'delivery_location': delivery_location,
+                'coords': coords_list,
+                'found': True
+            }).encode('utf-8')
+            for sid in get_clients(sanitized_tn):
+                socketio.emit('tracking_update', update_data, room=sid, namespace='/', binary=True)
+                flask_logger.debug(f"Broadcast update for {sanitized_tn} to {sid}")
+        else:
+            for sid in get_clients(sanitized_tn):
+                socketio.emit('tracking_update', {
+                    'tracking_number': sanitized_tn,
+                    'found': False,
+                    'error': 'Tracking number not found.'
+                }, room=sid)
+                flask_logger.warning(f"Tracking number not found for broadcast: {sanitized_tn}")
+    except SQLAlchemyError as e:
+        flask_logger.error(f"Database error during broadcast for {sanitized_tn}: {e}")
 
 # Flask routes
 @app.route('/')
@@ -465,16 +431,14 @@ def trigger_broadcast(tracking_number):
 @limiter.limit("100 per hour")
 def health_check():
     try:
-        conn = db_pool.get_connection()
-        conn.ping(reconnect=True)
-        conn.close()
+        db.session.execute('SELECT 1')
         redis_client.ping()
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.login(SMTP_USER, SMTP_PASS)
         flask_logger.debug("Health check passed")
         return jsonify({'status': 'healthy', 'database': 'ok', 'redis': 'ok', 'smtp': 'ok'}), 200
-    except (mysql.connector.Error, redis.RedisError, smtplib.SMTPException) as e:
+    except (SQLAlchemyError, redis.RedisError, smtplib.SMTPException) as e:
         flask_logger.error(f"Health check failed: {e}")
         return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
 
@@ -495,41 +459,35 @@ def handle_request_tracking(data):
         return
 
     try:
-        conn = db_pool.get_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT status, checkpoints, delivery_location FROM shipments WHERE tracking_number = %s", (sanitized_tn,))
-        result = cursor.fetchone()
-    except mysql.connector.Error as e:
+        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+        if shipment:
+            status = shipment.status
+            checkpoints_str = shipment.checkpoints
+            delivery_location = shipment.delivery_location
+            checkpoints = checkpoints_str.split(';') if checkpoints_str else []
+            coords = geocode_locations(checkpoints)
+            coords_list = [{'lat': lat, 'lon': lon, 'desc': desc} for lat, lon, desc in coords]
+            add_client(sanitized_tn, request.sid)
+            emit('tracking_update', {
+                'tracking_number': sanitized_tn,
+                'status': status,
+                'checkpoints': checkpoints,
+                'delivery_location': delivery_location,
+                'coords': coords_list,
+                'found': True
+            }, room=request.sid)
+            flask_logger.info(f"Sent tracking update for {sanitized_tn} to {request.sid}")
+        else:
+            emit('tracking_update', {
+                'tracking_number': sanitized_tn,
+                'found': False,
+                'error': 'Tracking number not found.'
+            }, room=request.sid)
+            flask_logger.warning(f"Tracking number not found: {sanitized_tn}")
+            disconnect(request.sid)
+    except SQLAlchemyError as e:
         flask_logger.error(f"Database error for {sanitized_tn}: {e}")
         emit('tracking_update', {'error': 'Database error'}, room=request.sid)
-        disconnect(request.sid)
-        return
-    finally:
-        cursor.close()
-        conn.close()
-
-    if result:
-        status, checkpoints_str, delivery_location = result['status'], result['checkpoints'], result['delivery_location']
-        checkpoints = checkpoints_str.split(';') if checkpoints_str else []
-        coords = geocode_locations(checkpoints)
-        coords_list = [{'lat': lat, 'lon': lon, 'desc': desc} for lat, lon, desc in coords]
-        add_client(sanitized_tn, request.sid)
-        emit('tracking_update', {
-            'tracking_number': sanitized_tn,
-            'status': status,
-            'checkpoints': checkpoints,
-            'delivery_location': delivery_location,
-            'coords': coords_list,
-            'found': True
-        }, room=request.sid)
-        flask_logger.info(f"Sent tracking update for {sanitized_tn} to {request.sid}")
-    else:
-        emit('tracking_update', {
-            'tracking_number': sanitized_tn,
-            'found': False,
-            'error': 'Tracking number not found.'
-        }, room=request.sid)
-        flask_logger.warning(f"Tracking number not found: {sanitized_tn}")
         disconnect(request.sid)
 
 @socketio.on('disconnect')
@@ -549,26 +507,17 @@ def generate_unique_id():
 
 def get_shipment_list():
     try:
-        conn = db_pool.get_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT tracking_number FROM shipments")
-        results = [row['tracking_number'] for row in cursor.fetchall()]
-        conn.close()
-        bot_logger.debug("Fetched shipment list")
-        return results
-    except mysql.connector.Error as e:
+        shipments = Shipment.query.with_entities(Shipment.tracking_number).all()
+        return [s.tracking_number for s in shipments]
+    except SQLAlchemyError as e:
         bot_logger.error(f"Database error fetching shipment list: {e}")
         return []
 
 def get_shipment_details(tracking_number):
     try:
-        conn = db_pool.get_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT tracking_number, status, checkpoints, delivery_location, recipient_email, origin_location, webhook_url, email_notifications, last_updated FROM shipments WHERE tracking_number = %s", (tracking_number,))
-        result = cursor.fetchone()
-        conn.close()
-        return result
-    except mysql.connector.Error as e:
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        return shipment.to_dict() if shipment else None
+    except SQLAlchemyError as e:
         bot_logger.error(f"Database error fetching details for {tracking_number}: {e}")
         return None
 
@@ -581,19 +530,34 @@ def save_shipment(tracking_number, status, checkpoints, delivery_location, recip
         bot_logger.error(f"Invalid status for {sanitized_tn}: {status}")
         raise ValueError("Invalid status")
     try:
-        conn = db_pool.get_connection()
-        cursor = conn.cursor()
+        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
         last_updated = datetime.now()
-        created_at = last_updated if not checkpoints else None
         origin_location = origin_location or delivery_location
         webhook_url = webhook_url or None
-        cursor.execute('''
-            INSERT INTO shipments (tracking_number, status, checkpoints, delivery_location, last_updated, recipient_email, created_at, origin_location, webhook_url, email_notifications)
-            VALUES (%s, %s, %s, %s, %s, %s, COALESCE((SELECT created_at FROM shipments WHERE tracking_number = %s), %s), %s, %s, %s)
-            ON DUPLICATE KEY UPDATE status=%s, checkpoints=%s, delivery_location=%s, last_updated=%s, recipient_email=%s, origin_location=%s, webhook_url=%s, email_notifications=%s
-        ''', (sanitized_tn, status, checkpoints, delivery_location, last_updated, recipient_email, sanitized_tn, last_updated, origin_location, webhook_url, email_notifications,
-              status, checkpoints, delivery_location, last_updated, recipient_email, origin_location, webhook_url, email_notifications))
-        conn.commit()
+        if shipment:
+            shipment.status = status
+            shipment.checkpoints = checkpoints
+            shipment.delivery_location = delivery_location
+            shipment.last_updated = last_updated
+            shipment.recipient_email = recipient_email
+            shipment.origin_location = origin_location
+            shipment.webhook_url = webhook_url
+            shipment.email_notifications = email_notifications
+        else:
+            shipment = Shipment(
+                tracking_number=sanitized_tn,
+                status=status,
+                checkpoints=checkpoints,
+                delivery_location=delivery_location,
+                last_updated=last_updated,
+                recipient_email=recipient_email,
+                created_at=last_updated,
+                origin_location=origin_location,
+                webhook_url=webhook_url,
+                email_notifications=email_notifications
+            )
+            db.session.add(shipment)
+        db.session.commit()
         bot_logger.info(f"Saved shipment {sanitized_tn}: status={status}, delivery_location={delivery_location}")
         eventlet.spawn(send_email_notification, sanitized_tn, status, checkpoints, delivery_location, recipient_email)
         try:
@@ -602,12 +566,10 @@ def save_shipment(tracking_number, status, checkpoints, delivery_location, recip
                 bot_logger.warning(f"Broadcast failed for {sanitized_tn}: {response.status_code}")
         except requests.RequestException as e:
             bot_logger.error(f"Broadcast error for {sanitized_tn}: {e}")
-    except mysql.connector.Error as e:
+    except SQLAlchemyError as e:
+        db.session.rollback()
         bot_logger.error(f"Database error saving shipment {sanitized_tn}: {e}")
         raise
-    finally:
-        cursor.close()
-        conn.close()
 
 def send_dynamic_menu(chat_id, message_id=None):
     markup = InlineKeyboardMarkup()
@@ -760,25 +722,26 @@ def callback_query(call):
                 bot_logger.error(f"Invalid tracking number for delete: {call.data}")
                 return
             try:
-                conn = db_pool.get_connection()
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM shipments WHERE tracking_number = %s", (tracking_number,))
-                conn.commit()
-                bot_logger.info(f"Deleted shipment {tracking_number} by admin {call.from_user.id}")
-                try:
-                    response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
-                    if response.status_code != 204:
-                        bot_logger.warning(f"Broadcast failed for {tracking_number}: {response.status_code}")
-                except requests.RequestException as e:
-                    bot_logger.error(f"Broadcast error for {tracking_number}: {e}")
-                bot.answer_callback_query(call.id, f"Deleted {tracking_number}")
-                send_dynamic_menu(call.message.chat.id, call.message.message_id)
-            except mysql.connector.Error as e:
+                shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+                if shipment:
+                    db.session.delete(shipment)
+                    db.session.commit()
+                    bot_logger.info(f"Deleted shipment {tracking_number} by admin {call.from_user.id}")
+                    try:
+                        response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+                        if response.status_code != 204:
+                            bot_logger.warning(f"Broadcast failed for {tracking_number}: {response.status_code}")
+                    except requests.RequestException as e:
+                        bot_logger.error(f"Broadcast error for {tracking_number}: {e}")
+                    bot.answer_callback_query(call.id, f"Deleted {tracking_number}")
+                    send_dynamic_menu(call.message.chat.id, call.message.message_id)
+                else:
+                    bot.answer_callback_query(call.id, f"Shipment {tracking_number} not found.")
+                    bot_logger.warning(f"Shipment {tracking_number} not found for admin {call.from_user.id}")
+            except SQLAlchemyError as e:
+                db.session.rollback()
                 bot.answer_callback_query(call.id, f"Error deleting {tracking_number}: {e}")
                 bot_logger.error(f"Database error deleting {tracking_number}: {e}")
-            finally:
-                cursor.close()
-                conn.close()
         elif call.data == "batch_delete_menu":
             shipments = get_shipment_list()
             if shipments:
@@ -817,27 +780,25 @@ def callback_query(call):
                 bot_logger.debug(f"No shipments selected for batch delete by admin {call.from_user.id}")
                 return
             try:
-                conn = db_pool.get_connection()
-                cursor = conn.cursor()
                 for tn in batch_list:
-                    cursor.execute("DELETE FROM shipments WHERE tracking_number = %s", (tn,))
-                    try:
-                        response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tn}', timeout=5)
-                        if response.status_code != 204:
-                            bot_logger.warning(f"Broadcast failed for {tn}: {response.status_code}")
-                    except requests.RequestException as e:
-                        bot_logger.error(f"Broadcast error for {tn}: {e}")
-                conn.commit()
+                    shipment = Shipment.query.filter_by(tracking_number=tn).first()
+                    if shipment:
+                        db.session.delete(shipment)
+                        try:
+                            response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tn}', timeout=5)
+                            if response.status_code != 204:
+                                bot_logger.warning(f"Broadcast failed for {tn}: {response.status_code}")
+                        except requests.RequestException as e:
+                            bot_logger.error(f"Broadcast error for {tn}: {e}")
+                db.session.commit()
                 bot.answer_callback_query(call.id, f"Deleted {len(batch_list)} shipments")
                 bot_logger.info(f"Batch deleted {len(batch_list)} shipments by admin {call.from_user.id}: {batch_list}")
                 bot.set_chat_data(call.message.chat.id, 'batch_delete', [])
                 send_dynamic_menu(call.message.chat.id, call.message.message_id)
-            except mysql.connector.Error as e:
+            except SQLAlchemyError as e:
+                db.session.rollback()
                 bot.answer_callback_query(call.id, f"Error deleting shipments: {e}")
                 bot_logger.error(f"Database error in batch delete: {e}")
-            finally:
-                cursor.close()
-                conn.close()
         elif call.data == "broadcast_menu":
             shipments = get_shipment_list()
             if shipments:
@@ -886,21 +847,20 @@ def callback_query(call):
                 bot_logger.error(f"Invalid tracking number for toggle email: {call.data}")
                 return
             try:
-                conn = db_pool.get_connection()
-                cursor = conn.cursor()
-                cursor.execute("UPDATE shipments SET email_notifications = NOT email_notifications WHERE tracking_number = %s", (tracking_number,))
-                conn.commit()
-                cursor.execute("SELECT email_notifications FROM shipments WHERE tracking_number = %s", (tracking_number,))
-                result = cursor.fetchone()
-                status = "enabled" if result[0] else "disabled"
-                bot.answer_callback_query(call.id, f"Email notifications {status} for {tracking_number}")
-                bot_logger.info(f"Toggled email notifications to {status} for {tracking_number} by admin {call.from_user.id}")
-            except mysql.connector.Error as e:
+                shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+                if shipment:
+                    shipment.email_notifications = not shipment.email_notifications
+                    db.session.commit()
+                    status = "enabled" if shipment.email_notifications else "disabled"
+                    bot.answer_callback_query(call.id, f"Email notifications {status} for {tracking_number}")
+                    bot_logger.info(f"Toggled email notifications to {status} for {tracking_number} by admin {call.from_user.id}")
+                else:
+                    bot.answer_callback_query(call.id, f"Shipment {tracking_number} not found.")
+                    bot_logger.warning(f"Shipment {tracking_number} not found for admin {call.from_user.id}")
+            except SQLAlchemyError as e:
+                db.session.rollback()
                 bot.answer_callback_query(call.id, f"Error toggling email notifications: {e}")
                 bot_logger.error(f"Database error toggling email for {tracking_number}: {e}")
-            finally:
-                cursor.close()
-                conn.close()
         elif call.data == "settings":
             markup = InlineKeyboardMarkup(row_width=1)
             markup.add(
@@ -964,36 +924,20 @@ def handle_update_input(message, tracking_number):
             bot.reply_to(message, "Invalid tracking number.")
             bot_logger.error(f"Invalid tracking number in update input by admin {message.from_user.id}")
             return
-        try:
-            conn = db_pool.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT status, checkpoints, delivery_location, recipient_email, origin_location, webhook_url, email_notifications FROM shipments WHERE tracking_number = %s", (tracking_number,))
-            result = cursor.fetchone()
-            if not result:
-                bot.reply_to(message, f"Tracking {tracking_number} not found.")
-                bot_logger.warning(f"Tracking {tracking_number} not found for update input by admin {message.from_user.id}")
-                conn.close()
-                return
-            current_status, current_checkpoints, current_location, current_email, current_origin, current_webhook, current_email_notifications = (
-                result['status'], result['checkpoints'], result['delivery_location'], result['recipient_email'],
-                result['origin_location'], result['webhook_url'], result['email_notifications']
-            )
-        except mysql.connector.Error as e:
-            bot.reply_to(message, f"Database error: {e}")
-            bot_logger.error(f"Database error in update input for {tracking_number}: {e}")
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            bot.reply_to(message, f"Tracking {tracking_number} not found.")
+            bot_logger.warning(f"Tracking {tracking_number} not found for update input by admin {message.from_user.id}")
             return
-        finally:
-            cursor.close()
-            conn.close()
         updates = message.text.strip()
         update_dict = {k: v.strip('"') if v.startswith('"') and v.endswith('"') else v for k, v in (pair.split('=', 1) for pair in updates.split()) if k in ['status', 'checkpoints', 'delivery_location', 'recipient_email', 'origin_location', 'webhook_url', 'email_notifications']}
-        new_status = update_dict.get('status', current_status)
-        new_checkpoints = update_dict.get('checkpoints', current_checkpoints)
-        new_location = update_dict.get('delivery_location', current_location)
-        new_email = update_dict.get('recipient_email', current_email)
-        new_origin = update_dict.get('origin_location', current_origin)
-        new_webhook = update_dict.get('webhook_url', current_webhook)
-        new_email_notifications = update_dict.get('email_notifications', str(current_email_notifications)).lower() in ('true', '1', 'yes')
+        new_status = update_dict.get('status', shipment.status)
+        new_checkpoints = update_dict.get('checkpoints', shipment.checkpoints)
+        new_location = update_dict.get('delivery_location', shipment.delivery_location)
+        new_email = update_dict.get('recipient_email', shipment.recipient_email)
+        new_origin = update_dict.get('origin_location', shipment.origin_location)
+        new_webhook = update_dict.get('webhook_url', shipment.webhook_url)
+        new_email_notifications = update_dict.get('email_notifications', str(shipment.email_notifications)).lower() in ('true', '1', 'yes')
         if new_status not in VALID_STATUSES:
             bot.reply_to(message, f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}")
             bot_logger.warning(f"Invalid status in update input by admin {message.from_user.id}: {new_status}")
@@ -1076,25 +1020,26 @@ def delete_shipment(message):
             bot_logger.error(f"Invalid tracking number in /delete by admin {message.from_user.id}")
             return
         try:
-            conn = db_pool.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM shipments WHERE tracking_number = %s", (tracking_number,))
-            conn.commit()
-            bot_logger.info(f"Deleted shipment {tracking_number} by admin {message.from_user.id}")
-            try:
-                response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
-                if response.status_code != 204:
-                    bot_logger.warning(f"Broadcast failed for {tracking_number}: {response.status_code}")
-            except requests.RequestException as e:
-                bot_logger.error(f"Broadcast error for {tracking_number}: {e}")
-            bot.reply_to(message, f"Deleted {tracking_number}.")
-            send_dynamic_menu(message.chat.id)
-        except mysql.connector.Error as e:
+            shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+            if shipment:
+                db.session.delete(shipment)
+                db.session.commit()
+                bot_logger.info(f"Deleted shipment {tracking_number} by admin {message.from_user.id}")
+                try:
+                    response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+                    if response.status_code != 204:
+                        bot_logger.warning(f"Broadcast failed for {tracking_number}: {response.status_code}")
+                except requests.RequestException as e:
+                    bot_logger.error(f"Broadcast error for {tracking_number}: {e}")
+                bot.reply_to(message, f"Deleted {tracking_number}.")
+                send_dynamic_menu(message.chat.id)
+            else:
+                bot.reply_to(message, f"Shipment {tracking_number} not found.")
+                bot_logger.warning(f"Shipment {tracking_number} not found for admin {message.from_user.id}")
+        except SQLAlchemyError as e:
+            db.session.rollback()
             bot.reply_to(message, f"Database error: {e}")
             bot_logger.error(f"Database error deleting {tracking_number}: {e}")
-        finally:
-            cursor.close()
-            conn.close()
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in /delete for admin {message.from_user.id}: {e}")
@@ -1106,15 +1051,11 @@ def list_shipments(message):
         bot_logger.warning(f"Access denied for /list by user {message.from_user.id}")
         return
     try:
-        conn = db_pool.get_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT tracking_number, status, last_updated FROM shipments")
-        results = cursor.fetchall()
-        conn.close()
-        response = "Shipments:\n" + "\n".join([f"{r['tracking_number']}: {r['status']} (Updated: {r['last_updated']})" for r in results]) if results else "No shipments."
+        shipments = Shipment.query.with_entities(Shipment.tracking_number, Shipment.status, Shipment.last_updated).all()
+        response = "Shipments:\n" + "\n".join([f"{s.tracking_number}: {s.status} (Updated: {s.last_updated})" for s in shipments]) if shipments else "No shipments."
         bot.reply_to(message, response)
         bot_logger.info(f"Listed shipments for admin {message.from_user.id}")
-    except mysql.connector.Error as e:
+    except SQLAlchemyError as e:
         bot.reply_to(message, f"Database error: {e}")
         bot_logger.error(f"Database error in /list for admin {message.from_user.id}: {e}")
 
@@ -1163,11 +1104,12 @@ def run_bot():
 
 if __name__ == '__main__':
     try:
-        init_db()
+        with app.app_context():
+            init_db()
         bot_thread = threading.Thread(target=run_bot, daemon=True)
         bot_thread.start()
         flask_logger.info("Starting Flask server")
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+        socketio.run(app, host='0.0.0.0', port=5000)
     except Exception as e:
         flask_logger.critical(f"Application startup failed: {e}")
         bot_logger.critical(f"Application startup failed: {e}")
