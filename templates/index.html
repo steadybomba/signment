@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DHL Tracking</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: url('/static/background.jpg') no-repeat center center fixed; background-size: cover; }
+        .header { background: #f4a900; color: white; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; }
+        .header img { height: 40px; }
+        .menu { font-size: 24px; }
+        .container { padding: 20px; text-align: center; }
+        .track-section { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .track-section input { width: 80%; padding: 10px; margin-bottom: 10px; }
+        .track-section button { background: #d32f2f; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
+        .track-section button:hover { background: #b71c1c; }
+        .option { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); text-align: center; }
+        .option img { height: 30px; }
+        .business-option { position: relative; overflow: hidden; }
+        .business-option::after { content: ''; position: absolute; top: 0; right: 0; width: 0; height: 0; border-top: 50px solid #f4a900; border-left: 50px solid transparent; }
+    </style>
+    <!-- Tawk.to chat -->
+    <script type="text/javascript">
+        var Tawk_API = Tawk_API || {}, Tawk_LoadStart = new Date();
+        (function() {
+            var s1 = document.createElement("script"), s0 = document.getElementsByTagName("script")[0];
+            s1.async = true;
+            s1.src = 'https://embed.tawk.to/{{ tawk_property_id }}/{{ tawk_widget_id }}';
+            s1.charset = 'UTF-8';
+            s1.setAttribute('crossorigin', '*');
+            s0.parentNode.insertBefore(s1, s0);
+        })();
+    </script>
+</head>
+<body>
+    <div class="header">
+        <img src="/static/logo.png" alt="DHL Logo">
+        <div class="menu">☰</div>
+    </div>
+    <div class="container">
+        <h1>Track Your Shipment</h1>
+        <div class="track-section">
+            <form method="POST" action="/track">
+                <input type="text" name="tracking_number" placeholder="Enter your tracking number(s)">
+                <button type="submit">Track</button>
+            </form>
+        </div>
+        <div class="option">
+            <img src="/static/calendar.png" alt="Ship Now Icon">
+            <h2>Ship Now</h2>
+            <p>Find the right service</p>
+        </div>
+        <div class="option">
+            <img src="/static/quote.png" alt="Get a Quote Icon">
+            <h2>Get a Quote</h2>
+            <p>Estimate cost to share and compare</p>
+        </div>
+        <div class="option business-option">
+            <img src="/static/building.png" alt="Business Account Icon">
+            <h2>Request a Business Account</h2>
+            <p>Shipping regularly or frequently? Learn about volume discounts</p>
+        </div>
+    </div>
+</body>
+</html>

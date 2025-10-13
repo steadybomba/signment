@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tracking Result - {{ tracking_number }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f0f0f0; }
+        .header { background: #f4a900; color: white; padding: 10px; text-align: center; }
+        .map-container { height: 400px; margin: 20px 0; }
+        #map { height: 100%; }
+        .details { background: white; padding: 15px; border-radius: 5px; box-shadow: 0 0 5px rgba(0,0,0,0.1); }
+        .checkpoint { margin: 10px 0; }
+    </style>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <!-- Tawk.to chat -->
+    <script type="text/javascript">
+        var Tawk_API = Tawk_API || {}, Tawk_LoadStart = new Date();
+        (function() {
+            var s1 = document.createElement("script"), s0 = document.getElementsByTagName("script")[0];
+            s1.async = true;
+            s1.src = 'https://embed.tawk.to/{{ tawk_property_id }}/{{ tawk_widget_id }}';
+            s1.charset = 'UTF-8';
+            s1.setAttribute('crossorigin', '*');
+            s0.parentNode.insertBefore(s1, s0);
+        })();
+    </script>
+</head>
+<body>
+    <div class="header">Tracking Details for {{ tracking_number }}</div>
+    <div class="map-container">
+        <div id="map"></div>
+    </div>
+    <div class="details" id="details">
+        <h2>Status: <span id="status">Loading...</span></h2>
+        <h3>Checkpoints:</h3>
+        <div id="checkpoints"></div>
+        <h3>Delivery Location: <span id="delivery_location">Loading...</span></h3>
+    </div>
+
+    <script>
+        var socket = new WebSocket('ws://' + window.location.host + '/');
+        var map = L.map('map').setView([0, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, }).addTo(map);
+
+        socket.onmessage = function(event) {
+            var data = JSON.parse(event.data);
+            if (data.tracking_number === "{{ tracking_number }}") {
+                document.getElementById('status').textContent = data.status || 'Not Found';
+                document.getElementById('delivery_location').textContent = data.delivery_location || 'N/A';
+                var checkpointsDiv = document.getElementById('checkpoints');
+                checkpointsDiv.innerHTML = '';
+                if (data.checkpoints) {
+                    data.checkpoints.forEach(function(checkpoint) {
+                        var p = document.createElement('p');
+                        p.className = 'checkpoint';
+                        p.textContent = checkpoint;
+                        checkpointsDiv.appendChild(p);
+                    });
+                }
+                if (data.coords) {
+                    map.eachLayer(function(layer) { if (layer instanceof L.Marker) map.removeLayer(layer); });
+                    data.coords.forEach(function(coord) { L.marker([coord.lat, coord.lon]).addTo(map).bindPopup(coord.desc); });
+                    if (data.coords.length) { map.fitBounds(data.coords.map(c => [c.lat, c.lon])); }
+                }
+            }
+        };
+
+        socket.onopen = function() {
+            socket.send(JSON.stringify({'request_tracking': true, 'tracking_number': "{{ tracking_number }}"}));
+        };
+
+        socket.onclose = function() {
+            console.log('WebSocket disconnected');
+        };
+    </script>
+</body>
+</html>

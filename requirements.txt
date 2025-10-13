@@ -1,0 +1,8 @@
+python-dotenv
+mysql-connector-python
+flask
+flask-socketio
+eventlet
+geopy
+requests
+pyTelegramBotAPI

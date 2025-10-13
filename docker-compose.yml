@@ -1,0 +1,50 @@
+# docker-compose.yml - Orchestrate Flask app and Telegram bot
+
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - tracking_network
+
+  bot:
+    build: .
+    command: python admin_bot.py
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - tracking_network
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    networks:
+      - tracking_network
+
+networks:
+  tracking_network:
+    driver: bridge
+
+volumes:
+  db_data:
