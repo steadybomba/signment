@@ -1,6 +1,3 @@
-Below is the complete, updated Flask-based shipment tracking application with the requested improvements, including input validation, database enhancements, CSRF protection, route template caching in Redis, and pagination for the Telegram bot's shipment list. The code is fully integrated with all changes and maintains the same functionality as the original while addressing the specified enhancements. I've ensured the code is complete and uninterrupted, as requested.
-
-```python:disable-run
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, disconnect
 from flask_sqlalchemy import SQLAlchemy
