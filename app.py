@@ -149,6 +149,7 @@ TAWK_WIDGET_ID = os.getenv('TAWK_WIDGET_ID')
 GLOBAL_WEBHOOK_URL = os.getenv('GLOBAL_WEBHOOK_URL')
 
 # Redis client
+redis_client = None
 try:
     redis_client = redis.Redis(
         host=REDIS_HOST,
@@ -159,9 +160,12 @@ try:
     redis_client.ping()
     console.print("[info]Redis connection established[/info]")
 except redis.RedisError as e:
-    flask_logger.error("Redis connection failed", extra={'tracking_number': ''})
-    console.print(Panel(f"[error]Redis connection failed: {e}[/error]", title="Redis Error", border_style="red"))
-    raise
+    flask_logger.warning(f"Redis connection failed: {e}. Falling back to in-memory client tracking.", extra={'tracking_number': ''})
+    console.print(Panel(f"[warning]Redis connection failed: {e}. Using in-memory client tracking.[/warning]", title="Redis Warning", border_style="yellow"))
+    redis_client = None
+
+# In-memory fallback for client tracking
+in_memory_clients = {}
 
 # Valid statuses
 VALID_STATUSES = ['Pending', 'In_Transit', 'Delayed', 'Customs_Hold', 'Out_for_Delivery', 'Delivered', 'Returned']
@@ -326,30 +330,46 @@ def geocode_locations(checkpoints):
     return coords
 
 def add_client(tracking_number, sid):
-    try:
-        redis_client.sadd(f"clients:{tracking_number}", sid)
-        flask_logger.debug(f"Added client {sid}", extra={'tracking_number': tracking_number})
-    except redis.RedisError as e:
-        flask_logger.error(f"Redis error adding client {sid}: {e}", extra={'tracking_number': tracking_number})
-        console.print(Panel(f"[error]Redis error for {tracking_number}: {e}[/error]", title="Redis Error", border_style="red"))
+    if redis_client:
+        try:
+            redis_client.sadd(f"clients:{tracking_number}", sid)
+            flask_logger.debug(f"Added client {sid}", extra={'tracking_number': tracking_number})
+        except redis.RedisError as e:
+            flask_logger.error(f"Redis error adding client {sid}: {e}", extra={'tracking_number': tracking_number})
+            console.print(Panel(f"[error]Redis error for {tracking_number}: {e}[/error]", title="Redis Error", border_style="red"))
+    else:
+        if tracking_number not in in_memory_clients:
+            in_memory_clients[tracking_number] = set()
+        in_memory_clients[tracking_number].add(sid)
+        flask_logger.debug(f"Added client {sid} to in-memory store", extra={'tracking_number': tracking_number})
 
 def remove_client(tracking_number, sid):
-    try:
-        redis_client.srem(f"clients:{tracking_number}", sid)
-        flask_logger.debug(f"Removed client {sid}", extra={'tracking_number': tracking_number})
-    except redis.RedisError as e:
-        flask_logger.error(f"Redis error removing client {sid}: {e}", extra={'tracking_number': tracking_number})
-        console.print(Panel(f"[error]Redis error for {tracking_number}: {e}[/error]", title="Redis Error", border_style="red"))
+    if redis_client:
+        try:
+            redis_client.srem(f"clients:{tracking_number}", sid)
+            flask_logger.debug(f"Removed client {sid}", extra={'tracking_number': tracking_number})
+        except redis.RedisError as e:
+            flask_logger.error(f"Redis error removing client {sid}: {e}", extra={'tracking_number': tracking_number})
+            console.print(Panel(f"[error]Redis error for {tracking_number}: {e}[/error]", title="Redis Error", border_style="red"))
+    else:
+        if tracking_number in in_memory_clients:
+            in_memory_clients[tracking_number].discard(sid)
+            flask_logger.debug(f"Removed client {sid} from in-memory store", extra={'tracking_number': tracking_number})
 
 def get_clients(tracking_number):
-    try:
-        clients = redis_client.smembers(f"clients:{tracking_number}")
-        flask_logger.debug(f"Fetched clients: {clients}", extra={'tracking_number': tracking_number})
+    if redis_client:
+        try:
+            clients = redis_client.smembers(f"clients:{tracking_number}")
+            flask_logger.debug(f"Fetched clients: {clients}", extra={'tracking_number': tracking_number})
+            return clients
+        except redis.RedisError as e:
+            flask_logger.error(f"Redis error fetching clients: {e}", extra={'tracking_number': tracking_number})
+            console.print(Panel(f"[error]Redis error for {tracking_number}: {e}[/error]", title="Redis Error", border_style="red"))
+            return set()
+    else:
+        clients = in_memory_clients.get(tracking_number, set())
+        flask_logger.debug(f"Fetched clients from in-memory store: {clients}", extra={'tracking_number': tracking_number})
         return clients
-    except redis.RedisError as e:
-        flask_logger.error(f"Redis error fetching clients: {e}", extra={'tracking_number': tracking_number})
-        console.print(Panel(f"[error]Redis error for {tracking_number}: {e}[/error]", title="Redis Error", border_style="red"))
-        return set()
 
 def simulate_tracking(tracking_number):
     sanitized_tn = sanitize_tracking_number(tracking_number)
@@ -554,13 +574,13 @@ def trigger_broadcast(tracking_number):
 def health_check():
     try:
         db.session.execute('SELECT 1')
-        redis_client.ping()
+        redis_status = 'ok' if redis_client and redis_client.ping() else 'unavailable'
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.starttls()
             server.login(SMTP_USER, SMTP_PASS)
         flask_logger.debug("Health check passed", extra={'tracking_number': ''})
-        console.print("[info]Health check passed: DB, Redis, SMTP OK[/info]")
-        return jsonify({'status': 'healthy', 'database': 'ok', 'redis': 'ok', 'smtp': 'ok'}), 200
+        console.print(f"[info]Health check passed: DB=ok, Redis={redis_status}, SMTP=ok[/info]")
+        return jsonify({'status': 'healthy', 'database': 'ok', 'redis': redis_status, 'smtp': 'ok'}), 200
     except (SQLAlchemyError, redis.RedisError, smtplib.SMTPException) as e:
         flask_logger.error(f"Health check failed: {e}", extra={'tracking_number': ''})
         console.print(Panel(f"[error]Health check failed: {e}[/error]", title="Health Check Error", border_style="red"))
@@ -617,8 +637,9 @@ def handle_request_tracking(data):
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    for key in redis_client.scan_iter("clients:*"):
-        remove_client(key.replace("clients:", ""), request.sid)
+    for tracking_number in (in_memory_clients.keys() if not redis_client else redis_client.scan_iter("clients:*")):
+        key = tracking_number.replace("clients:", "") if redis_client else tracking_number
+        remove_client(key, request.sid)
     flask_logger.debug(f"Client disconnected: {request.sid}", extra={'tracking_number': ''})
 
 # Telegram bot functions
