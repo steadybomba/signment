@@ -1,4 +1,3 @@
-```python
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, disconnect
 from flask_sqlalchemy import SQLAlchemy
@@ -1274,4 +1273,3 @@ if __name__ == '__main__':
     init_db()
     eventlet.spawn(start_bot)
     socketio.run(app, host='0.0.0.0', port=5000, debug=os.getenv('FLASK_ENV') == 'development')
-```
