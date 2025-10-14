@@ -5,23 +5,127 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DHL Tracking</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: url('/static/background.jpg') no-repeat center center fixed; background-size: cover; }
-        .header { background: #f4a900; color: white; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; }
-        .header img { height: 40px; }
-        .menu { font-size: 24px; }
-        .container { padding: 20px; text-align: center; }
-        .track-section { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-        .track-section input { width: 80%; padding: 10px; margin-bottom: 10px; }
-        .track-section .g-recaptcha { margin: 10px auto; display: inline-block; }
-        .track-section button { background: #d32f2f; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
-        .track-section button:hover { background: #b71c1c; }
-        .option { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); text-align: center; }
-        .option img { height: 30px; }
-        .business-option { position: relative; overflow: hidden; }
-        .business-option::after { content: ''; position: absolute; top: 0; right: 0; width: 0; height: 0; border-top: 50px solid #f4a900; border-left: 50px solid transparent; }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: url('/static/background.jpg') no-repeat center center fixed;
+            background-size: cover;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: #f4a900;
+            color: white;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header img {
+            height: 40px;
+        }
+        .menu {
+            font-size: 24px;
+            cursor: pointer;
+        }
+        .container {
+            padding: 20px;
+            text-align: center;
+            flex: 1;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .track-section {
+            background: #fff;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .track-section input {
+            width: 100%;
+            max-width: 500px;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        .track-section .g-recaptcha {
+            margin: 10px auto;
+            display: inline-block;
+        }
+        .track-section button {
+            background: #d32f2f;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .track-section button:hover {
+            background: #b71c1c;
+        }
+        .error-message {
+            color: #d32f2f;
+            margin-top: 10px;
+            display: none;
+        }
+        .option {
+            background: #fff;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .option img {
+            height: 30px;
+            margin-bottom: 10px;
+        }
+        .business-option {
+            position: relative;
+            overflow: hidden;
+        }
+        .business-option::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 0;
+            height: 0;
+            border-top: 50px solid #f4a900;
+            border-left: 50px solid transparent;
+        }
+        @media (max-width: 600px) {
+            .header img {
+                height: 30px;
+            }
+            .menu {
+                font-size: 20px;
+            }
+            .container {
+                padding: 10px;
+            }
+            .track-section input {
+                font-size: 14px;
+            }
+            .track-section button {
+                font-size: 14px;
+                padding: 8px 16px;
+            }
+            .option {
+                padding: 15px;
+            }
+        }
     </style>
     <!-- reCAPTCHA script -->
-    <script src="https://www.google.com/recaptcha/api.js"></script>
+    <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+    <!-- Socket.IO script -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <!-- Tawk.to chat -->
     <script type="text/javascript">
         var Tawk_API = Tawk_API || {}, Tawk_LoadStart = new Date();
@@ -31,6 +135,12 @@
             s1.src = 'https://embed.tawk.to/{{ tawk_property_id }}/{{ tawk_widget_id }}';
             s1.charset = 'UTF-8';
             s1.setAttribute('crossorigin', '*');
+            s1.onload = function() {
+                console.log('Tawk.to script loaded successfully');
+            };
+            s1.onerror = function() {
+                console.error('Failed to load Tawk.to script');
+            };
             s0.parentNode.insertBefore(s1, s0);
         })();
     </script>
@@ -43,10 +153,11 @@
     <div class="container">
         <h1>Track Your Shipment</h1>
         <div class="track-section">
-            <form method="POST" action="/track">
+            <form id="trackForm" method="POST" action="/track">
                 <input type="text" name="tracking_number" placeholder="Enter your tracking number(s)" required>
                 <div class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}"></div>
                 <button type="submit">Track</button>
+                <div class="error-message" id="errorMessage"></div>
             </form>
         </div>
         <div class="option">
@@ -65,5 +176,67 @@
             <p>Shipping regularly or frequently? Learn about volume discounts</p>
         </div>
     </div>
+    <script>
+        // Initialize Socket.IO
+        const socket = io('{{ WEBSOCKET_SERVER }}', {
+            transports: ['websocket'],
+            pingTimeout: 20000,
+            pingInterval: 10000
+        });
+
+        socket.on('connect', () => {
+            console.log('Connected to WebSocket server');
+        });
+
+        socket.on('status', (data) => {
+            console.log('Status:', data.message);
+        });
+
+        socket.on('tracking_update', (data) => {
+            console.log('Tracking update:', data);
+            if (!data.found) {
+                alert(`Tracking number ${data.tracking_number} not found: ${data.error}`);
+            } else {
+                // Redirect to tracking result page with tracking number
+                window.location.href = `/track?tracking_number=${encodeURIComponent(data.tracking_number)}`;
+            }
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Disconnected from WebSocket server');
+        });
+
+        // Handle form submission with AJAX
+        document.getElementById('trackForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const formData = new FormData(form);
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.style.display = 'none';
+            errorMessage.textContent = '';
+
+            try {
+                const response = await fetch('/track', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Emit WebSocket event to request tracking update
+                    socket.emit('request_tracking', {
+                        tracking_number: formData.get('tracking_number')
+                    });
+                } else {
+                    errorMessage.textContent = data.error || 'An error occurred';
+                    errorMessage.style.display = 'block';
+                }
+            } catch (error) {
+                errorMessage.textContent = 'Failed to connect to server';
+                errorMessage.style.display = 'block';
+                console.error('Form submission error:', error);
+            }
+        });
+    </script>
 </body>
 </html>
