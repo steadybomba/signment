@@ -102,13 +102,17 @@ redis_client = redis.Redis(
 )
 
 # Valid statuses
-VALID_STATUSES = ['Pending', 'In_Transit', 'Out_for_Delivery', 'Delivered']
+VALID_STATUSES = ['Pending', 'In_Transit', 'Delayed', 'Customs_Hold', 'Out_for_Delivery', 'Delivered', 'Returned']
 
 # Simulation constants
 STATUS_TRANSITIONS = {
-    'Pending': {'next': ['In_Transit'], 'delay': (30, 120)},
-    'In_Transit': {'next': ['Out_for_Delivery'], 'delay': (120, 600)},
-    'Out_for_Delivery': {'next': ['Delivered'], 'delay': (60, 180)}
+    'Pending': {'next': ['In_Transit'], 'delay': (30, 120), 'events': {}},
+    'In_Transit': {'next': ['Out_for_Delivery', 'Delayed', 'Customs_Hold'], 'delay': (120, 600), 'probabilities': [0.8, 0.1, 0.1]},
+    'Delayed': {'next': ['In_Transit'], 'delay': (300, 900), 'events': {'Delayed due to weather', 'Delayed due to traffic'}},
+    'Customs_Hold': {'next': ['In_Transit'], 'delay': (600, 1200), 'events': {'Held at customs for inspection'}},
+    'Out_for_Delivery': {'next': ['Delivered', 'Returned'], 'delay': (60, 180), 'probabilities': [0.95, 0.05]},
+    'Returned': {'next': [], 'delay': (0, 0), 'events': {'Returned to sender'}},
+    'Delivered': {'next': [], 'delay': (0, 0), 'events': {}}
 }
 
 # Route templates
@@ -285,7 +289,12 @@ def simulate_tracking(tracking_number):
         flask_logger.error(f"Invalid tracking number: {tracking_number}")
         return
 
-    while True:
+    retries = 0
+    max_retries = 5
+    max_simulation_time = timedelta(days=30)  # Prevent infinite simulation
+    start_time = datetime.now()
+
+    while datetime.now() - start_time < max_simulation_time:
         try:
             shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
             if not shipment:
@@ -299,59 +308,80 @@ def simulate_tracking(tracking_number):
             webhook_url = shipment.webhook_url or GLOBAL_WEBHOOK_URL
             recipient_email = shipment.recipient_email
 
-            if status != 'Delivered':
-                current_time = datetime.now()
-                template = ROUTE_TEMPLATES.get(delivery_location, ROUTE_TEMPLATES.get(origin_location, ROUTE_TEMPLATES['Lagos, NG']))
-                if not checkpoints or checkpoints[-1].split(' - ')[1] != delivery_location:
-                    next_index = min(len(checkpoints), len(template) - 1)
-                    next_checkpoint = f"{current_time.strftime('%Y-%m-%d %H:%M')} - {template[next_index]} - Processed"
-                    if next_checkpoint not in checkpoints:
-                        checkpoints.append(next_checkpoint)
-                        transition = STATUS_TRANSITIONS.get(status, {'next': ['Delivered'], 'delay': (60, 300)})
-                        new_status = random.choice(transition['next']) if transition['next'] else status
-                        send_notification = new_status != status
-                        if new_status != status:
-                            status = new_status
-                            if status == 'Delivered':
-                                checkpoints.append(f"{current_time.strftime('%Y-%m-%d %H:%M')} - {delivery_location} - Delivered")
-
-                        shipment.status = status
-                        shipment.checkpoints = ';'.join(checkpoints)
-                        shipment.last_updated = current_time
-                        db.session.commit()
-                        flask_logger.info(f"Updated shipment {sanitized_tn}: status={status}, checkpoints={checkpoints}")
-
-                        if send_notification and recipient_email:
-                            eventlet.spawn(send_email_notification, sanitized_tn, status, checkpoints, delivery_location, recipient_email)
-
-                        payload = {
-                            'tracking_number': sanitized_tn,
-                            'status': status,
-                            'checkpoints': checkpoints,
-                            'delivery_location': delivery_location,
-                            'last_updated': current_time.isoformat(),
-                            'event': 'status_update'
-                        }
-                        try:
-                            response = requests.post(webhook_url, json=payload, timeout=5)
-                            if response.status_code != 200:
-                                flask_logger.warning(f"Webhook failed for {sanitized_tn}: {response.status_code} - {response.text}")
-                            else:
-                                flask_logger.debug(f"Webhook sent for {sanitized_tn}: {payload}")
-                        except requests.RequestException as e:
-                            flask_logger.error(f"Webhook error for {sanitized_tn}: {e}")
-
-                        broadcast_update(sanitized_tn)
-
-                delay = random.uniform(*transition['delay'])
-                flask_logger.debug(f"Sleeping for {delay} seconds for {sanitized_tn}")
-                eventlet.sleep(delay)
-            else:
+            if status in ['Delivered', 'Returned']:
                 break
+
+            current_time = datetime.now()
+            template = ROUTE_TEMPLATES.get(delivery_location, ROUTE_TEMPLATES.get(origin_location, ROUTE_TEMPLATES['Lagos, NG']))
+            transition = STATUS_TRANSITIONS.get(status, {'next': ['Delivered'], 'delay': (60, 300), 'probabilities': [1.0], 'events': {}})
+            delay_range = transition['delay']
+            next_states = transition['next']
+            probabilities = transition.get('probabilities', [1.0 / len(next_states)] * len(next_states))
+            events = transition.get('events', {})
+
+            # Calculate delay based on route length
+            route_length = len(template)
+            delay_multiplier = 1 + (route_length / 10)  # Longer routes have longer delays
+            delay = random.uniform(delay_range[0], delay_range[1]) * delay_multiplier
+
+            # Add checkpoint if applicable
+            if 'Out for Delivery' not in status and 'Delivered' not in status:
+                next_index = min(len(checkpoints), len(template) - 1)
+                next_checkpoint = f"{current_time.strftime('%Y-%m-%d %H:%M')} - {template[next_index]} - Processed"
+                if next_checkpoint not in checkpoints:
+                    checkpoints.append(next_checkpoint)
+
+            # Transition to next status with probability
+            new_status = random.choices(next_states, probabilities)[0]
+            send_notification = new_status != status
+            if new_status != status:
+                status = new_status
+                if status in events:
+                    event_msg = random.choice(list(events)) if isinstance(events, set) else random.choice(events)
+                    checkpoints.append(f"{current_time.strftime('%Y-%m-%d %H:%M')} - {delivery_location} - {event_msg}")
+                if status == 'Delivered':
+                    checkpoints.append(f"{current_time.strftime('%Y-%m-%d %H:%M')} - {delivery_location} - Delivered")
+                if status == 'Returned':
+                    checkpoints.append(f"{current_time.strftime('%Y-%m-%d %H:%M')} - {origin_location} - Returned")
+
+            shipment.status = status
+            shipment.checkpoints = ';'.join(checkpoints)
+            shipment.last_updated = current_time
+            db.session.commit()
+            flask_logger.info(f"Updated shipment {sanitized_tn}: status={status}, checkpoints={checkpoints}")
+
+            if send_notification and recipient_email:
+                eventlet.spawn(send_email_notification, sanitized_tn, status, ';'.join(checkpoints), delivery_location, recipient_email)
+
+            payload = {
+                'tracking_number': sanitized_tn,
+                'status': status,
+                'checkpoints': checkpoints,
+                'delivery_location': delivery_location,
+                'last_updated': current_time.isoformat(),
+                'event': 'status_update'
+            }
+            try:
+                response = requests.post(webhook_url, json=payload, timeout=5)
+                if response.status_code != 200:
+                    flask_logger.warning(f"Webhook failed for {sanitized_tn}: {response.status_code} - {response.text}")
+                else:
+                    flask_logger.debug(f"Webhook sent for {sanitized_tn}: {payload}")
+            except requests.RequestException as e:
+                flask_logger.error(f"Webhook error for {sanitized_tn}: {e}")
+
+            broadcast_update(sanitized_tn)
+
+            flask_logger.debug(f"Sleeping for {delay} seconds for {sanitized_tn}")
+            eventlet.sleep(delay)
+            retries = 0  # Reset retries on success
         except SQLAlchemyError as e:
             flask_logger.error(f"Database error for {sanitized_tn}: {e}")
-            eventlet.sleep(60)
-            continue
+            retries += 1
+            if retries >= max_retries:
+                flask_logger.critical(f"Max retries exceeded for {sanitized_tn}. Stopping simulation.")
+                break
+            eventlet.sleep(2 ** retries)  # Exponential backoff
 
 def broadcast_update(tracking_number):
     sanitized_tn = sanitize_tracking_number(tracking_number)
@@ -880,75 +910,6 @@ def callback_query(call):
     except Exception as e:
         bot.answer_callback_query(call.id, f"Error: {e}")
         bot_logger.error(f"Callback query error for {call.from_user.id}: {e}")
-
-@bot.message_handler(content_types=['text'], func=lambda message: message.reply_to_message and message.reply_to_message.text.startswith("Enter shipment details:"))
-def handle_add_input(message):
-    if not is_admin(message.from_user.id):
-        bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for add input by user {message.from_user.id}")
-        return
-    try:
-        parts = message.text.split(maxsplit=7)
-        if len(parts) < 4:
-            bot.reply_to(message, "Usage: [tracking_number] <status> \"<checkpoints>\" <delivery_location> <recipient_email> [origin_location] [webhook_url]")
-            bot_logger.warning(f"Invalid add input format by admin {message.from_user.id}")
-            return
-        tracking_number = sanitize_tracking_number(parts[0].strip()) if len(parts) > 4 else generate_unique_id()
-        status = parts[1].strip() if len(parts) > 1 else 'Pending'
-        checkpoints = parts[2].strip('"') if len(parts) > 2 else ''
-        delivery_location = parts[3].strip() if len(parts) > 3 else 'Unknown'
-        recipient_email = parts[4].strip() if len(parts) > 4 else ''
-        origin_location = parts[5].strip() if len(parts) > 5 else None
-        webhook_url = parts[6].strip() if len(parts) > 6 else None
-        if status not in VALID_STATUSES:
-            bot.reply_to(message, f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}")
-            bot_logger.warning(f"Invalid status in add input by admin {message.from_user.id}: {status}")
-            return
-        save_shipment(tracking_number, status, checkpoints, delivery_location, recipient_email, origin_location, webhook_url)
-        bot.reply_to(message, f"Added {tracking_number}. Email to {recipient_email}. Webhook: {webhook_url or 'default'}.")
-        bot_logger.info(f"Added shipment {tracking_number} by admin {message.from_user.id}")
-        send_dynamic_menu(message.chat.id)
-    except Exception as e:
-        bot.reply_to(message, f"Error: {e}")
-        bot_logger.error(f"Error in add input for admin {message.from_user.id}: {e}")
-
-@bot.message_handler(content_types=['text'], func=lambda message: message.reply_to_message and message.reply_to_message.text.startswith("Enter updates for"))
-def handle_update_input(message, tracking_number):
-    if not is_admin(message.from_user.id):
-        bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for update input by user {message.from_user.id}")
-        return
-    try:
-        tracking_number = sanitize_tracking_number(tracking_number)
-        if not tracking_number:
-            bot.reply_to(message, "Invalid tracking number.")
-            bot_logger.error(f"Invalid tracking number in update input by admin {message.from_user.id}")
-            return
-        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
-        if not shipment:
-            bot.reply_to(message, f"Tracking {tracking_number} not found.")
-            bot_logger.warning(f"Tracking {tracking_number} not found for update input by admin {message.from_user.id}")
-            return
-        updates = message.text.strip()
-        update_dict = {k: v.strip('"') if v.startswith('"') and v.endswith('"') else v for k, v in (pair.split('=', 1) for pair in updates.split()) if k in ['status', 'checkpoints', 'delivery_location', 'recipient_email', 'origin_location', 'webhook_url', 'email_notifications']}
-        new_status = update_dict.get('status', shipment.status)
-        new_checkpoints = update_dict.get('checkpoints', shipment.checkpoints)
-        new_location = update_dict.get('delivery_location', shipment.delivery_location)
-        new_email = update_dict.get('recipient_email', shipment.recipient_email)
-        new_origin = update_dict.get('origin_location', shipment.origin_location)
-        new_webhook = update_dict.get('webhook_url', shipment.webhook_url)
-        new_email_notifications = update_dict.get('email_notifications', str(shipment.email_notifications)).lower() in ('true', '1', 'yes')
-        if new_status not in VALID_STATUSES:
-            bot.reply_to(message, f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}")
-            bot_logger.warning(f"Invalid status in update input by admin {message.from_user.id}: {new_status}")
-            return
-        save_shipment(tracking_number, new_status, new_checkpoints, new_location, new_email, new_origin, new_webhook, new_email_notifications)
-        bot.reply_to(message, f"Updated {tracking_number}. Email to {new_email}. Webhook: {new_webhook or 'default'}. Email Notifications: {'Enabled' if new_email_notifications else 'Disabled'}.")
-        bot_logger.info(f"Updated shipment {tracking_number} by admin {message.from_user.id}")
-        send_dynamic_menu(message.chat.id)
-    except Exception as e:
-        bot.reply_to(message, f"Error: {e}")
-        bot_logger.error(f"Error in update input for admin {message.from_user.id}: {e}")
 
 @bot.message_handler(commands=['generate_id'])
 def generate_id_command(message):
