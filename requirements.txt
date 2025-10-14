@@ -1,3 +1,4 @@
+```
 # Core dependencies for Flask application
 Flask==2.3.3
 Flask-SQLAlchemy==3.1.1
@@ -30,8 +31,9 @@ validators==0.28.1
 geopy==2.4.1
 
 # Rate limiting
-flask-limiter==4.0.1
+flask-limiter==3.11.0
 redis==5.0.8  # Storage backend for Flask-Limiter
 
 # Production WSGI server
 gunicorn==22.0.0
+```
