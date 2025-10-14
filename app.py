@@ -39,7 +39,7 @@ in_memory_clients = {}
 paused_simulations = {}  # Dictionary to track paused simulations
 sim_speed_multipliers = {}  # Dictionary to track simulation speed multipliers
 
-# Configuration imports (assuming they exist in config.py)
+# Configuration imports
 from config import (
     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM,
     RECAPTCHA_SECRET_KEY, RECAPTCHA_VERIFY_URL,
@@ -50,7 +50,7 @@ from config import (
 # Redis setup
 redis_client = redis.Redis.from_url(app.config.get('REDIS_URL'), decode_responses=True) if app.config.get('REDIS_URL') else None
 
-# Models (assuming Shipment model is defined)
+# Models
 class Shipment(db.Model):
     __tablename__ = 'shipments'
     id = db.Column(db.Integer, primary_key=True)
@@ -193,7 +193,7 @@ def geocode_locations(checkpoints):
             try:
                 geo = geolocator.geocode(location, timeout=5)
                 if geo:
-                    coord = (geo.latitude, geo.longitude, checkpoint)
+                    coord = {'lat': geo.latitude, 'lon': geo.longitude, 'desc': checkpoint}
                     geocode_cache[checkpoint] = coord
                     coords.append(coord)
                     flask_logger.debug(f"Geocoded {location}: {coord}", extra={'tracking_number': ''})
@@ -401,7 +401,7 @@ def broadcast_update(tracking_number):
             checkpoints = checkpoints_str.split(';') if checkpoints_str else []
             coords = geocode_locations(checkpoints)
             coords_list = [{'lat': lat, 'lon': lon, 'desc': desc} for lat, lon, desc in coords]
-            update_data = json.dumps({
+            update_data = {
                 'tracking_number': sanitized_tn,
                 'status': status,
                 'checkpoints': checkpoints,
@@ -410,9 +410,9 @@ def broadcast_update(tracking_number):
                 'found': True,
                 'paused': paused_simulations.get(sanitized_tn, False),
                 'speed_multiplier': sim_speed_multipliers.get(sanitized_tn, 1.0)
-            }).encode('utf-8')
+            }
             for sid in get_clients(sanitized_tn):
-                socketio.emit('tracking_update', update_data, room=sid, namespace='/', binary=True)
+                socketio.emit('tracking_update', update_data, room=sid)
                 flask_logger.debug(f"Broadcast update to {sid}", extra={'tracking_number': sanitized_tn})
         else:
             for sid in get_clients(sanitized_tn):
@@ -458,12 +458,33 @@ def track():
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         flask_logger.warning(f"Invalid tracking number submitted: {tracking_number}", extra={'tracking_number': str(tracking_number)})
-        return jsonify({'error': 'Invalid tracking number'}), 400
-    sim_speed_multipliers[sanitized_tn] = sim_speed_multipliers.get(sanitized_tn, 1.0)  # Ensure default speed
-    eventlet.spawn(simulate_tracking, sanitized_tn)
-    flask_logger.info(f"Started tracking simulation", extra={'tracking_number': sanitized_tn})
-    console.print(f"[info]Started tracking simulation for {sanitized_tn} with speed multiplier {sim_speed_multipliers[sanitized_tn]}[/info]")
-    return render_template('tracking_result.html', tracking_number=sanitized_tn, tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID'])
+        return render_template('tracking_result.html', error='Invalid tracking number', tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID'])
+
+    try:
+        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+        if not shipment:
+            flask_logger.warning(f"Shipment not found: {sanitized_tn}", extra={'tracking_number': sanitized_tn})
+            return render_template('tracking_result.html', error='Shipment not found', tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID'])
+
+        checkpoints_str = shipment.checkpoints or ''
+        checkpoints = checkpoints_str.split(';') if checkpoints_str else []
+        coords = geocode_locations(checkpoints)
+        coords_list = [{'lat': lat, 'lon': lon, 'desc': desc} for lat, lon, desc in coords]
+        
+        sim_speed_multipliers[sanitized_tn] = sim_speed_multipliers.get(sanitized_tn, 1.0)  # Ensure default speed
+        eventlet.spawn(simulate_tracking, sanitized_tn)
+        flask_logger.info(f"Started tracking simulation", extra={'tracking_number': sanitized_tn})
+        console.print(f"[info]Started tracking simulation for {sanitized_tn} with speed multiplier {sim_speed_multipliers[sanitized_tn]}[/info]")
+        return render_template('tracking_result.html', 
+                             shipment=shipment, 
+                             checkpoints=checkpoints, 
+                             coords=coords_list, 
+                             tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
+                             tawk_widget_id=app.config['TAWK_WIDGET_ID'])
+    except SQLAlchemyError as e:
+        flask_logger.error(f"Database error: {e}", extra={'tracking_number': sanitized_tn})
+        console.print(Panel(f"[error]Database error for {sanitized_tn}: {e}[/error]", title="Database Error", border_style="red"))
+        return render_template('tracking_result.html', error='Database error occurred', tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID'])
 
 @app.route('/broadcast/<tracking_number>')
 @limiter.limit("20 per hour")
