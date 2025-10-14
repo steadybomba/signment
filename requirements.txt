@@ -1,3 +1,4 @@
+# Core dependencies for Flask application
 Flask==2.3.3
 Flask-SQLAlchemy==3.1.1
 Flask-SocketIO==5.3.6
@@ -21,3 +22,9 @@ python-dotenv==1.0.1
 
 # Enhanced console output
 rich==13.9.2
+
+# Input validation
+validators==0.28.1
+
+# Production WSGI server
+gunicorn==22.0.0
