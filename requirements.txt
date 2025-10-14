@@ -26,5 +26,8 @@ rich==13.9.2
 # Input validation
 validators==0.28.1
 
+# Geocoding for location validation
+geopy==2.4.1
+
 # Production WSGI server
 gunicorn==22.0.0
