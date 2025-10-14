@@ -1,10 +1,10 @@
-# docker-compose.yml - Orchestrate Flask app and Telegram bot
-
 version: '3.8'
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "5000:5000"
     volumes:
@@ -13,32 +13,30 @@ services:
       - .env
     depends_on:
       - db
+      - redis
     networks:
       - tracking_network
-
-  bot:
-    build: .
-    command: python admin_bot.py
-    volumes:
-      - .:/app
-    env_file:
-      - .env
-    depends_on:
-      - db
-    networks:
-      - tracking_network
+    command: gunicorn --bind 0.0.0.0:5000 app:app
 
   db:
-    image: mysql:8.0
+    image: postgres:16
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
-      MYSQL_DATABASE: ${DB_DATABASE}
-      MYSQL_USER: ${DB_USER}
-      MYSQL_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE}
     volumes:
-      - db_data:/var/lib/mysql
+      - db_data:/var/lib/postgresql/data
     ports:
-      - "3306:3306"
+      - "5432:5432"
+    networks:
+      - tracking_network
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
     networks:
       - tracking_network
 
@@ -48,3 +46,4 @@ networks:
 
 volumes:
   db_data:
+  redis_data:
