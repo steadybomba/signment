@@ -130,6 +130,30 @@
             padding-top: 10px;
             border-top: 1px solid #ccc;
         }
+        /* Custom control styles */
+        .leaflet-control-custom {
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 5px 10px;
+            box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+            cursor: pointer;
+            font-size: 14px;
+            color: #d32f2f;
+            text-align: center;
+        }
+        .leaflet-control-custom:hover {
+            background: #f5f5f5;
+        }
+        .leaflet-control-custom.active {
+            background: #d32f2f;
+            color: #fff;
+        }
+        .leaflet-control-custom:disabled {
+            background: #e0e0e0;
+            color: #666;
+            cursor: not-allowed;
+        }
 
         /* Responsive Design */
         @media (max-width: 480px) {
@@ -147,6 +171,7 @@
             .footer-section h3 { font-size: 1em; }
             .footer-section p, .footer-section a { font-size: 0.9em; margin: 4px 0; }
             .footer .copyright { font-size: 0.8em; margin-top: 10px; padding-top: 8px; }
+            .leaflet-control-custom { font-size: 12px; padding: 4px 8px; }
         }
 
         @media (min-width: 481px) and (max-width: 768px) {
@@ -162,6 +187,7 @@
             .footer-section h3 { font-size: 1.1em; }
             .footer-section p, .footer-section a { font-size: 0.92em; margin: 5px 0; }
             .footer .copyright { font-size: 0.82em; margin-top: 12px; padding-top: 8px; }
+            .leaflet-control-custom { font-size: 13px; }
         }
 
         @media (min-width: 769px) and (max-width: 1024px) {
@@ -188,7 +214,7 @@
         }
 
         /* Touch-friendly adjustments */
-        .menu, .back-button {
+        .menu, .back-button, .leaflet-control-custom {
             -webkit-tap-highlight-color: transparent;
         }
     </style>
@@ -274,18 +300,36 @@
 
     <script>
         // Initialize Leaflet map
-        const map = L.map('map').setView([0, 0], 2);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        const map = L.map('map', {
+            zoomControl: true
+        }).setView([0, 0], 2);
+
+        // Tile layers
+        const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         }).addTo(map);
 
-        // Store polyline and animation state
+        const esriSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.esri.com/">Esri</a>, USGS, NOAA'
+        });
+
+        // Layer control
+        const baseLayers = {
+            "Street Map": osmLayer,
+            "Satellite": esriSatellite
+        };
+        L.control.layers(baseLayers).addTo(map);
+
+        // Store polyline, animation state, and bounds
         let routePolyline = null;
         let animatedPolyline = null;
         let animationFrameId = null;
+        let isAnimationEnabled = true;
+        let routeBounds = null;
 
-        // Function to sort coordinates by timestamp in desc
+        // Function to sort coordinates by timestamp
         function sortCoordsByTimestamp(coords) {
             return coords.slice().sort((a, b) => {
                 const aTime = a.desc.split(' - ')[0];
@@ -311,7 +355,7 @@
                     map.removeLayer(animatedPolyline);
                 }
                 animatedPolyline = L.polyline(currentLatLngs, {
-                    color: '#d32f2f', // DHL red
+                    color: '#d32f2f',
                     weight: 4,
                     dashArray: '5, 10',
                     opacity: 0.7
@@ -343,7 +387,6 @@
                         animateNextSegment();
                     });
                 } else {
-                    // Ensure final polyline remains
                     if (animatedPolyline) {
                         map.removeLayer(animatedPolyline);
                         animatedPolyline = null;
@@ -359,9 +402,9 @@
             animateNextSegment();
         }
 
-        // Function to update map with markers, static polyline, and animation
+        // Function to update map
         function updateMap(coords) {
-            // Clear existing markers, polyline, and animation
+            // Clear existing markers, polylines, and animation
             map.eachLayer(layer => {
                 if (layer instanceof L.Marker || layer instanceof L.Polyline) {
                     map.removeLayer(layer);
@@ -382,8 +425,14 @@
 
             if (!coords || !coords.length) {
                 console.warn('No coordinates available for map');
+                document.getElementById('toggleAnimation').disabled = true;
+                document.getElementById('resetView').disabled = true;
                 return;
             }
+
+            // Enable controls
+            document.getElementById('toggleAnimation').disabled = coords.length < 2;
+            document.getElementById('resetView').disabled = false;
 
             // Sort coordinates by timestamp
             const sortedCoords = sortCoordsByTimestamp(coords);
@@ -393,21 +442,70 @@
                 L.marker([coord.lat, coord.lon]).addTo(map).bindPopup(coord.desc);
             });
 
-            // Draw static polyline as fallback
-            const latlngs = sortedCoords.map(c => [c.lat, c.lon]);
-            routePolyline = L.polyline(latlngs, {
-                color: '#d32f2f',
-                weight: 4,
-                dashArray: '5, 10',
-                opacity: 0.7
-            }).addTo(map);
+            // Store bounds
+            routeBounds = L.latLngBounds(sortedCoords.map(c => [c.lat, c.lon]));
 
-            // Start animation
-            animateRoute(sortedCoords);
+            // Draw static polyline or animate
+            const latlngs = sortedCoords.map(c => [c.lat, c.lon]);
+            if (isAnimationEnabled && sortedCoords.length >= 2) {
+                animateRoute(sortedCoords);
+            } else {
+                routePolyline = L.polyline(latlngs, {
+                    color: '#d32f2f',
+                    weight: 4,
+                    dashArray: '5, 10',
+                    opacity: 0.7
+                }).addTo(map);
+            }
 
             // Fit map to bounds
-            map.fitBounds(latlngs);
+            map.fitBounds(routeBounds);
         }
+
+        // Custom control: Toggle Animation
+        const ToggleAnimationControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function(map) {
+                const container = L.DomUtil.create('button', 'leaflet-control-custom');
+                container.id = 'toggleAnimation';
+                container.innerHTML = 'Toggle Animation';
+                container.setAttribute('aria-label', 'Toggle route animation');
+                container.setAttribute('aria-pressed', 'true');
+                container.classList.add('active');
+                container.disabled = {{ coords | tojson }}.length < 2;
+                container.onclick = function() {
+                    isAnimationEnabled = !isAnimationEnabled;
+                    container.setAttribute('aria-pressed', isAnimationEnabled);
+                    container.classList.toggle('active');
+                    console.log('Animation toggled:', isAnimationEnabled);
+                    updateMap({{ coords | tojson }}); // Redraw map with current coords
+                };
+                return container;
+            }
+        });
+
+        // Custom control: Reset View
+        const ResetViewControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function(map) {
+                const container = L.DomUtil.create('button', 'leaflet-control-custom');
+                container.id = 'resetView';
+                container.innerHTML = 'Reset View';
+                container.setAttribute('aria-label', 'Reset map view to route');
+                container.disabled = !{{ coords | tojson }}.length;
+                container.onclick = function() {
+                    if (routeBounds) {
+                        map.fitBounds(routeBounds);
+                        console.log('Map view reset to route bounds');
+                    }
+                };
+                return container;
+            }
+        });
+
+        // Add custom controls
+        map.addControl(new ToggleAnimationControl());
+        map.addControl(new ResetViewControl());
 
         // Initial coordinates from Jinja2
         const initialCoords = {{ coords | tojson }};
@@ -415,6 +513,8 @@
             updateMap(initialCoords);
         } else {
             console.warn('No initial coordinates provided');
+            document.getElementById('toggleAnimation').disabled = true;
+            document.getElementById('resetView').disabled = true;
         }
 
         // Socket.IO connection
@@ -448,6 +548,8 @@
                     updateMap(data.coords);
                 } else {
                     console.warn('No coordinates in tracking update');
+                    document.getElementById('toggleAnimation').disabled = true;
+                    document.getElementById('resetView').disabled = true;
                 }
             } else if (!data.found) {
                 document.getElementById('status').textContent = 'Not Found';
@@ -470,6 +572,8 @@
                     map.removeLayer(routePolyline);
                     routePolyline = null;
                 }
+                document.getElementById('toggleAnimation').disabled = true;
+                document.getElementById('resetView').disabled = true;
             }
         });
 
