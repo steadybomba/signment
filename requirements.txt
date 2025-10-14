@@ -1,15 +1,23 @@
-Flask==3.0.3
-Flask-SocketIO==5.3.6
+Flask==2.3.3
 Flask-SQLAlchemy==3.1.1
-geopy==2.4.1
+Flask-SocketIO==5.3.6
+
+# WebSocket and async support
+python-socketio==5.11.4
 eventlet==0.36.1
-python-dotenv==1.0.1
-redis==5.0.8
-python-json-logger==2.0.7
-Flask-Limiter==3.11.0
-requests==2.32.3
+
+# Telegram bot
 pyTelegramBotAPI==4.22.1
-SQLAlchemy==2.0.35
+
+# HTTP requests
+requests==2.32.3
+
+# Database driver (choose one based on your database)
+psycopg2-binary==2.9.9  # For PostgreSQL
+# mysqlclient==2.2.4    # Uncomment for MySQL
+
+# Environment variable management
+python-dotenv==1.0.1
+
+# Enhanced console output
 rich==13.9.2
-gunicorn==22.0.0
-psycopg2-binary==2.9.9
