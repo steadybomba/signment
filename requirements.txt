@@ -1,8 +1,12 @@
-python-dotenv
-mysql-connector-python
-flask
-flask-socketio
-eventlet
-geopy
-requests
-pyTelegramBotAPI
+Flask==3.0.3
+Flask-SocketIO==5.3.6
+Flask-SQLAlchemy==3.1.1
+geopy==2.4.1
+eventlet==0.36.1
+python-dotenv==1.0.1
+redis==5.0.8
+python-json-logger==2.0.7
+Flask-Limiter==4.0.1
+requests==2.32.3
+pyTelegramBotAPI==4.22.1
+SQLAlchemy==2.0.35 rich==13.9.2
