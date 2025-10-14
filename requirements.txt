@@ -6,8 +6,10 @@ eventlet==0.36.1
 python-dotenv==1.0.1
 redis==5.0.8
 python-json-logger==2.0.7
-Flask-Limiter==4.0.1
+Flask-Limiter==3.11.0
 requests==2.32.3
 pyTelegramBotAPI==4.22.1
 SQLAlchemy==2.0.35
 rich==13.9.2
+gunicorn==22.0.0
+psycopg2-binary==2.9.9
