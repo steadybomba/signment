@@ -1,3 +1,4 @@
+```python
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, disconnect
 from flask_sqlalchemy import SQLAlchemy
@@ -31,6 +32,7 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 from rich.theme import Theme
+import importlib.metadata
 
 # Initialize rich console with custom theme
 custom_theme = Theme({
@@ -95,9 +97,13 @@ for var in required_env_vars:
         raise ValueError(f"Missing required environment variable: {var}")
 
 # Display startup banner
+try:
+    flask_version = importlib.metadata.version('flask')
+except importlib.metadata.PackageNotFoundError:
+    flask_version = "unknown"
 console.print(Panel(
     f"[bold cyan]Tracking App Starting[/bold cyan]\n"
-    f"Flask Version: {Flask.__version__}\n"
+    f"Flask Version: {flask_version}\n"
     f"Environment: {os.getenv('FLASK_ENV', 'production')}\n"
     f"Database: PostgreSQL\n"
     f"SMTP: {os.getenv('SMTP_HOST')}\n"
@@ -1017,6 +1023,28 @@ def callback_query(call):
             bot.answer_callback_query(call.id)
             bot.send_message(call.message.chat.id, f"Allowed Admins: {', '.join(map(str, ALLOWED_ADMINS)) or 'None'}")
             bot_logger.info("Sent admin list", extra={'tracking_number': ''})
+        elif call.data == "list":
+            shipments = get_shipment_list()
+            if shipments:
+                bot.answer_callback_query(call.id)
+                bot.send_message(call.message.chat.id, f"Shipments:\n{', '.join(shipments)}")
+                bot_logger.info(f"Sent shipment list: {len(shipments)} shipments", extra={'tracking_number': ''})
+            else:
+                bot.answer_callback_query(call.id, "No shipments.")
+                bot_logger.debug("No shipments for list", extra={'tracking_number': ''})
+        elif call.data == "help":
+            bot.answer_callback_query(call.id)
+            help_text = (
+                "/myid - Get your Telegram user ID\n"
+                "/start or /menu - Open the admin menu\n"
+                "/generate_id - Generate a unique tracking ID\n"
+                "/add - Add a new shipment\n"
+                "/update <tracking_number> <field=value> - Update a shipment\n"
+                "/delete <tracking_number> - Delete a shipment\n"
+                "Use the menu for interactive options."
+            )
+            bot.send_message(call.message.chat.id, help_text)
+            bot_logger.info("Sent help text", extra={'tracking_number': ''})
         elif call.data == "menu":
             send_dynamic_menu(call.message.chat.id, call.message.message_id)
     except Exception as e:
@@ -1205,23 +1233,45 @@ def list_shipments(message):
         return
     shipments = get_shipment_list()
     if shipments:
-        response = "Shipments:\n" + "\n".join(shipments)
-        bot.reply_to(message, response)
-        bot_logger.info(f"Listed {len(shipments)} shipments", extra={'tracking_number': ''})
-        console.print(f"[info]Listed {len(shipments)} shipments for admin {message.from_user.id}[/info]")
+        bot.reply_to(message, f"Shipments:\n{', '.join(shipments)}")
+        bot_logger.info(f"Sent shipment list: {len(shipments)} shipments", extra={'tracking_number': ''})
     else:
-        bot.reply_to(message, "No shipments found.")
-        bot_logger.debug("No shipments found for /list", extra={'tracking_number': ''})
+        bot.reply_to(message, "No shipments.")
+        bot_logger.debug("No shipments for /list", extra={'tracking_number': ''})
 
-# Start Telegram bot polling in a separate thread
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "Access denied.")
+        bot_logger.warning("Access denied for /help", extra={'tracking_number': ''})
+        return
+    help_text = (
+        "/myid - Get your Telegram user ID\n"
+        "/start or /menu - Open the admin menu\n"
+        "/generate_id - Generate a unique tracking ID\n"
+        "/add - Add a new shipment\n"
+        "/update <tracking_number> <field=value> - Update a shipment\n"
+        "/delete <tracking_number> - Delete a shipment\n"
+        "/list - List all shipments\n"
+        "Use the menu for interactive options."
+    )
+    bot.reply_to(message, help_text)
+    bot_logger.info("Sent help text", extra={'tracking_number': ''})
+
 def start_bot():
+    console.print("[info]Starting Telegram bot polling[/info]")
+    bot_logger.info("Starting Telegram bot polling", extra={'tracking_number': ''})
     try:
         bot.infinity_polling()
     except Exception as e:
-        bot_logger.error(f"Telegram bot polling error: {e}", extra={'tracking_number': ''})
-        console.print(Panel(f"[error]Telegram bot polling error: {e}[/error]", title="Telegram Error", border_style="red"))
+        bot_logger.error(f"Bot polling error: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Bot polling error: {e}[/error]", title="Telegram Error", border_style="red"))
+        time.sleep(5)
+        start_bot()
 
+# Initialize application
 if __name__ == '__main__':
     init_db()
-    threading.Thread(target=start_bot, daemon=True).start()
-    socketio.run(app, host='0.0.0.0', port=5000)
+    eventlet.spawn(start_bot)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=os.getenv('FLASK_ENV') == 'development')
+```
