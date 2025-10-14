@@ -9,4 +9,5 @@ python-json-logger==2.0.7
 Flask-Limiter==4.0.1
 requests==2.32.3
 pyTelegramBotAPI==4.22.1
-SQLAlchemy==2.0.35 rich==13.9.2
+SQLAlchemy==2.0.35
+rich==13.9.2
