@@ -1,4 +1,3 @@
-```python
 import re
 import os
 import json
@@ -621,4 +620,3 @@ if __name__ == '__main__':
         console.print(Panel(f"[error]Telegram bot failed to start: {e}[/error]", title="Telegram Error", border_style="red"))
         raise
     socketio.run(app, host='0.0.0.0', port=5000, debug=app.config['FLASK_ENV'] == 'development')
-```
