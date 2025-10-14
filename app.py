@@ -1131,8 +1131,6 @@ def callback_query(call):
             else:
                 bot.answer_callback_query(call.id, "No shipments.")
                 bot_logger.debug(f"No shipments for list, page {page}", extra={'tracking_number': ''})
-        elif call.data.startswith("menu_page_"):
-            send_dynamic_menu(call.message.chat.id, call.message.message_id, page)
         elif call.data == "help":
             bot.answer_callback_query(call.id)
             help_text = (
@@ -1307,10 +1305,6 @@ def update_shipment(message):
         bot.register_next_step_handler(msg, lambda m: handle_update_input(m, tracking_number))
         bot_logger.debug(f"Prompted to update {tracking_number}", extra={'tracking_number': tracking_number})
         console.print(f"[info]Admin {message.from_user.id} prompted to update {tracking_number}[/info]")
-    except Exception as e:
-        bot.reply_to(message, f"Error: {e}")
-        bot_logger.error(f"Error in update command: {e}", extra={'tracking_number': ''})
-        console.print(Panel(f"[error]Error in update command for admin {message.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
 
 @bot.message_handler(commands=['delete'])
 def delete_shipment(message):
@@ -1330,7 +1324,7 @@ def delete_shipment(message):
             bot_logger.error("Invalid tracking number", extra={'tracking_number': str(tracking_number)})
             return
         shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
-                if shipment:
+        if shipment:
             db.session.delete(shipment)
             db.session.commit()
             bot_logger.info(f"Deleted shipment {tracking_number}", extra={'tracking_number': tracking_number})
@@ -1359,40 +1353,18 @@ def list_shipments(message):
         return
     shipments, total = get_shipment_list(page=1, per_page=10)
     if shipments:
-        bot.reply_to(message, f"Shipments (Page 1):\n{', '.join(shipments)}")
+        bot.reply_to(message, f"Shipments:\n{', '.join(shipments)}")
         bot_logger.info(f"Sent shipment list: {len(shipments)} shipments", extra={'tracking_number': ''})
-        console.print(f"[info]Listed {len(shipments)} shipments for admin {message.from_user.id}[/info]")
     else:
         bot.reply_to(message, "No shipments found.")
         bot_logger.debug("No shipments found for /list", extra={'tracking_number': ''})
 
-@bot.message_handler(content_types=['text'])
-def handle_text(message):
-    if not is_admin(message.from_user.id):
-        bot.reply_to(message, "Access denied.")
-        bot_logger.warning("Access denied for text message", extra={'tracking_number': ''})
-        return
-    bot.reply_to(message, "Unknown command. Use /start or /menu to begin.")
-    bot_logger.debug("Received unknown text message", extra={'tracking_number': ''})
-
-# Initialize database and cache
-with app.app_context():
+# Start the Flask app and Telegram bot
+if __name__ == '__main__':
     init_db()
     cache_route_templates()
-
-# Start Telegram bot in a separate thread
-def run_bot():
-    try:
-        bot_logger.info("Starting Telegram bot", extra={'tracking_number': ''})
-        console.print("[info]Starting Telegram bot[/info]")
-        bot.infinity_polling(timeout=10, long_polling_timeout=5)
-    except Exception as e:
-        bot_logger.critical(f"Telegram bot crashed: {e}", extra={'tracking_number': ''})
-        console.print(Panel(f"[critical]Telegram bot crashed: {e}[/critical]", title="Bot Error", border_style="red"))
-        time.sleep(5)
-        run_bot()
-
-if __name__ == '__main__':
-    threading.Thread(target=run_bot, daemon=True).start()
-    console.print("[info]Starting Flask server with SocketIO[/info]")
+    bot_thread = threading.Thread(target=bot.polling, kwargs={'none_stop': True, 'interval': 1})
+    bot_thread.daemon = True
+    bot_thread.start()
+    console.print("[info]Telegram bot started in background thread[/info]")
     socketio.run(app, host='0.0.0.0', port=5000, debug=os.getenv('FLASK_ENV') == 'development')
