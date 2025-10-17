@@ -21,7 +21,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 import validators
 from upstash_redis import Redis
 import logging
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, OperationalError
+from time import sleep
 
 # Patch for gevent/gunicorn
 eventlet.monkey_patch()
@@ -175,15 +176,30 @@ def send_email_notification(tracking_number, status, checkpoints, delivery_locat
         console.print(Panel(f"[error]Email failed for {tracking_number}: {e}[/error]", title="Email Error", border_style="red"))
 
 def init_db():
-    try:
-        db.create_all()
-        db.session.execute('SELECT 1')
-        flask_logger.info("Database initialized successfully")
-        console.print("[info]Database initialized[/info]")
-    except SQLAlchemyError as e:
-        flask_logger.error(f"Database initialization failed: {e}")
-        console.print(Panel(f"[error]Database initialization failed: {e}[/error]", title="Database Error", border_style="red"))
-        raise
+    max_retries = 5
+    retry_delay = 5  # seconds
+    for attempt in range(max_retries):
+        try:
+            with app.app_context():  # Ensure app context for database operations
+                db.create_all()
+                db.session.execute('SELECT 1')  # Test connection
+                db.session.commit()
+                flask_logger.info("Database initialized successfully")
+                console.print("[info]Database initialized[/info]")
+                return
+        except OperationalError as e:
+            flask_logger.error(f"Database connection attempt {attempt + 1} failed: {e}")
+            console.print(Panel(f"[error]Database connection attempt {attempt + 1} failed: {e}[/error]", title="Database Error", border_style="red"))
+            if attempt < max_retries - 1:
+                sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+            continue
+        except SQLAlchemyError as e:
+            flask_logger.error(f"Database initialization failed: {e}")
+            console.print(Panel(f"[error]Database initialization failed: {e}[/error]", title="Database Error", border_style="red"))
+            raise
+    flask_logger.critical("Failed to initialize database after max retries")
+    console.print(Panel("[critical]Failed to initialize database after max retries[/critical]", title="Database Error", border_style="red"))
+    raise Exception("Database initialization failed")
 
 def verify_recaptcha(response_token):
     if not app.config['RECAPTCHA_SECRET_KEY'] or 'your-secret-key' in app.config['RECAPTCHA_SECRET_KEY']:
