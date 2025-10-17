@@ -467,11 +467,15 @@
         const socket = io();
         socket.on('connect', () => {
             console.log('Socket.IO connected');
-            socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
+            {% if shipment %}
+                socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
+            {% else %}
+                socket.emit('request_tracking', { tracking_number: '' });
+            {% endif %}
         });
         socket.on('tracking_update', (data) => {
             console.log('Received tracking update:', data);
-            if (data.tracking_number === '{{ shipment.tracking_number | default("") }}' && data.found) {
+            if (data.found) {
                 document.getElementById('status').textContent = data.status || 'Not Found';
                 document.getElementById('delivery_location').textContent = data.delivery_location || 'N/A';
                 const checkpointsDiv = document.getElementById('checkpoints');
@@ -496,7 +500,7 @@
                     document.getElementById('toggleAnimation').disabled = true;
                     document.getElementById('resetView').disabled = true;
                 }
-            } else if (!data.found) {
+            } else {
                 document.getElementById('status').textContent = 'Not Found';
                 document.getElementById('delivery_location').textContent = 'N/A';
                 document.getElementById('checkpoints').innerHTML = '<p class="checkpoint">Shipment not found</p>';
