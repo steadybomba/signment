@@ -10,31 +10,34 @@ from rich.panel import Panel
 import logging
 import eventlet
 import re
-import shlex  # For robust input parsing
+import shlex
+import json
+import redis
+
+# Patch eventlet for compatibility with gunicorn
+eventlet.monkey_patch()
 
 # Logging setup
 bot_logger = logging.getLogger('telegram_bot')
 
-# In-memory stores (use Redis in production for multi-worker setups)
-shipment_cache = {}
-chat_data_store = {}  # For batch operations, etc.
-route_templates = {}
+# Redis client (shared with app.py)
+redis_client = redis.Redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
 
 # Global console (will be synced from app)
 console = Console()
 
 # Lazy import functions to avoid circular imports
 def get_app_modules():
-    from app import db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification, console as app_console, paused_simulations, sim_speed_multipliers
+    from app import db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification, console as app_console
     global console
     console = app_console  # Sync with app's console
-    return db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification, paused_simulations, sim_speed_multipliers
+    return db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification
 
 def get_config_values():
-    from config import WEBSOCKET_SERVER, VALID_STATUSES, ALLOWED_ADMINS
     from app import app
+    from config import WEBSOCKET_SERVER, VALID_STATUSES, ALLOWED_ADMINS
     token = app.config.get('TELEGRAM_BOT_TOKEN')
-    websocket_server = WEBSOCKET_SERVER or 'http://localhost:5000' if WEBSOCKET_SERVER else 'http://localhost:5000'
+    websocket_server = WEBSOCKET_SERVER or 'https://signment.onrender.com'
     valid_statuses = VALID_STATUSES or ['Pending', 'In_Transit', 'Out_for_Delivery', 'Delivered', 'Returned', 'Delayed']
     allowed_admins = [int(uid) for uid in ALLOWED_ADMINS] if ALLOWED_ADMINS else []
     return token, websocket_server, valid_statuses, allowed_admins
@@ -46,27 +49,58 @@ def get_bot():
     if _bot_instance is None:
         token, _, _, _ = get_config_values()
         if not token:
+            bot_logger.critical("Missing TELEGRAM_BOT_TOKEN in config", extra={'tracking_number': ''})
+            console.print(Panel("[critical]Missing TELEGRAM_BOT_TOKEN in config[/critical]", title="Config Error", border_style="red"))
             raise ValueError("Missing TELEGRAM_BOT_TOKEN in config")
-        _bot_instance = telebot.TeleBot(token)
+        try:
+            _bot_instance = telebot.TeleBot(token)
+            bot_logger.info("Bot initialized successfully", extra={'tracking_number': ''})
+            console.print("[info]Bot initialized successfully[/info]")
+        except Exception as e:
+            bot_logger.critical(f"Failed to initialize bot: {e}", extra={'tracking_number': ''})
+            console.print(Panel(f"[critical]Failed to initialize bot: {e}[/critical]", title="Bot Init Error", border_style="red"))
+            raise
     return _bot_instance
 
 bot = get_bot()
 
+def check_bot_status():
+    """Check if the bot is running and can communicate with Telegram API."""
+    try:
+        bot.get_me()
+        return True
+    except telebot.apihelper.ApiTelegramException as e:
+        bot_logger.error(f"Bot status check failed: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Bot status check failed: {e}[/error]", title="Telegram Error", border_style="red"))
+        return False
+
 def cache_route_templates():
-    """Cache predefined route templates for shipment simulations."""
-    global route_templates
+    """Cache predefined route templates in Redis."""
     route_templates = {
         'Lagos, NG': ['Lagos, NG', 'Abuja, NG', 'Port Harcourt, NG', 'Kano, NG'],
         'New York, NY': ['New York, NY', 'Chicago, IL', 'Los Angeles, CA', 'Miami, FL'],
         'London, UK': ['London, UK', 'Manchester, UK', 'Birmingham, UK', 'Edinburgh, UK'],
-        # Add more as needed
     }
-    bot_logger.debug("Cached route templates", extra={'tracking_number': ''})
-    console.print("[info]Cached route templates[/info]")
+    try:
+        redis_client.set("route_templates", json.dumps(route_templates))
+        bot_logger.debug("Cached route templates in Redis", extra={'tracking_number': ''})
+        console.print("[info]Cached route templates in Redis[/info]")
+    except Exception as e:
+        bot_logger.error(f"Failed to cache route templates: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Failed to cache route templates: {e}[/error]", title="Redis Error", border_style="red"))
 
 def get_cached_route_templates():
-    """Retrieve cached route templates."""
-    return route_templates
+    """Retrieve cached route templates from Redis."""
+    try:
+        cached = redis_client.get("route_templates")
+        if cached:
+            return json.loads(cached)
+        bot_logger.warning("Route templates not found in Redis, returning default", extra={'tracking_number': ''})
+        return {'Lagos, NG': ['Lagos, NG']}
+    except Exception as e:
+        bot_logger.error(f"Failed to retrieve route templates: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Failed to retrieve route templates: {e}[/error]", title="Redis Error", border_style="red"))
+        return {'Lagos, NG': ['Lagos, NG']}
 
 def is_admin(user_id):
     """Check if the user is an admin based on ALLOWED_ADMINS."""
@@ -77,9 +111,9 @@ def is_admin(user_id):
 
 def generate_unique_id():
     """Generate a unique tracking number using timestamp and random string."""
-    db, Shipment, _, _, _, _, _, _, _, _ = get_app_modules()
+    db, Shipment, _, _, _, _, _, _ = get_app_modules()
     attempts = 0
-    while attempts < 10:  # Prevent infinite loop
+    while attempts < 10:
         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
         random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         new_id = f"TRK{timestamp}{random_str}"
@@ -92,7 +126,7 @@ def generate_unique_id():
 
 def get_shipment_list(page=1, per_page=5):
     """Fetch a paginated list of shipment tracking numbers."""
-    db, Shipment, _, _, _, _, _, _, _, _ = get_app_modules()
+    db, Shipment, _, _, _, _, _, _ = get_app_modules()
     try:
         offset = (page - 1) * per_page
         shipments = Shipment.query.with_entities(Shipment.tracking_number).order_by(Shipment.tracking_number).offset(offset).limit(per_page).all()
@@ -104,21 +138,22 @@ def get_shipment_list(page=1, per_page=5):
         return [], 0
 
 def get_shipment_details(tracking_number):
-    """Fetch shipment details, using cache to reduce database queries."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, paused_simulations, sim_speed_multipliers, _ = get_app_modules()
+    """Fetch shipment details, using Redis cache."""
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         return None
-    if sanitized_tn in shipment_cache:
-        bot_logger.debug(f"Retrieved {sanitized_tn} from cache", extra={'tracking_number': sanitized_tn})
-        return shipment_cache[sanitized_tn]
+    cached = redis_client.get(f"shipment:{sanitized_tn}")
+    if cached:
+        bot_logger.debug(f"Retrieved {sanitized_tn} from Redis", extra={'tracking_number': sanitized_tn})
+        return json.loads(cached)
     try:
         shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
         details = shipment.to_dict() if shipment else None
         if details:
-            details['paused'] = paused_simulations.get(sanitized_tn, False)
-            details['speed_multiplier'] = sim_speed_multipliers.get(sanitized_tn, 1.0)
-            shipment_cache[sanitized_tn] = details
+            details['paused'] = redis_client.hget("paused_simulations", sanitized_tn) == "true"
+            details['speed_multiplier'] = float(redis_client.hget("sim_speed_multipliers", sanitized_tn) or 1.0)
+            redis_client.setex(f"shipment:{sanitized_tn}", 3600, json.dumps(details))
         bot_logger.debug(f"Fetched details for {sanitized_tn}", extra={'tracking_number': sanitized_tn})
         return details
     except SQLAlchemyError as e:
@@ -127,24 +162,23 @@ def get_shipment_details(tracking_number):
         return None
 
 def invalidate_cache(tracking_number):
-    """Invalidate cache entry for a tracking number."""
+    """Invalidate Redis cache for a tracking number."""
     sanitized_tn = sanitize_tracking_number(tracking_number)
-    if sanitized_tn in shipment_cache:
-        del shipment_cache[sanitized_tn]
+    redis_client.delete(f"shipment:{sanitized_tn}")
 
 def save_shipment(tracking_number, status, checkpoints, delivery_location, recipient_email='', origin_location=None, webhook_url=None, email_notifications=True):
-    """Save or update a shipment in the database and update cache."""
-    db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification, paused_simulations, sim_speed_multipliers = get_app_modules()
-    _, WEBSOCKET_SERVER, VALID_STATUSES, _ = get_config_values()
+    """Save or update a shipment in the database and update Redis cache."""
+    db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification, _ = get_app_modules()
+    _, websocket_server, valid_statuses, _ = get_config_values()
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         raise ValueError("Invalid tracking number")
-    if status not in VALID_STATUSES:
-        raise ValueError(f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}")
+    if status not in valid_statuses:
+        raise ValueError(f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
     if not validate_location(delivery_location):
-        raise ValueError(f"Invalid delivery location. Must be one of: {', '.join(route_templates.keys())}")
+        raise ValueError(f"Invalid delivery location. Must be one of: {', '.join(get_cached_route_templates().keys())}")
     if origin_location and not validate_location(origin_location):
-        raise ValueError(f"Invalid origin location. Must be one of: {', '.join(route_templates.keys())}")
+        raise ValueError(f"Invalid origin location. Must be one of: {', '.join(get_cached_route_templates().keys())}")
     if recipient_email and not validate_email(recipient_email):
         raise ValueError("Invalid recipient email")
     if webhook_url and not validate_webhook_url(webhook_url):
@@ -180,17 +214,16 @@ def save_shipment(tracking_number, status, checkpoints, delivery_location, recip
             )
             db.session.add(shipment)
         db.session.commit()
-        # Update cache
         details = shipment.to_dict()
-        details['paused'] = paused_simulations.get(sanitized_tn, False)
-        details['speed_multiplier'] = sim_speed_multipliers.get(sanitized_tn, 1.0)
-        shipment_cache[sanitized_tn] = details
+        details['paused'] = redis_client.hget("paused_simulations", sanitized_tn) == "true"
+        details['speed_multiplier'] = float(redis_client.hget("sim_speed_multipliers", sanitized_tn) or 1.0)
+        redis_client.setex(f"shipment:{sanitized_tn}", 3600, json.dumps(details))
         bot_logger.info(f"Saved shipment: status={status}", extra={'tracking_number': sanitized_tn})
         console.print(f"[info]Saved shipment {sanitized_tn}: {status}[/info]")
         if recipient_email and email_notifications:
             eventlet.spawn(send_email_notification, sanitized_tn, status, checkpoints, delivery_location, recipient_email)
         try:
-            response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{sanitized_tn}', timeout=5)
+            response = requests.get(f'{websocket_server}/broadcast/{sanitized_tn}', timeout=5)
             if response.status_code != 204:
                 bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': sanitized_tn})
         except requests.RequestException as e:
@@ -275,8 +308,8 @@ def send_menu(message):
 @bot.message_handler(commands=['stop'])
 def stop_simulation(message):
     """Handle /stop command to pause a shipment's simulation."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, paused_simulations, _, _ = get_app_modules()
-    _, WEBSOCKET_SERVER, _, _ = get_config_values()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
         bot_logger.warning(f"Access denied for /stop by {message.from_user.id}", extra={'tracking_number': ''})
@@ -301,16 +334,16 @@ def stop_simulation(message):
             bot.reply_to(message, f"Shipment `{tracking_number}` is already completed (`{shipment['status']}`).", parse_mode='Markdown')
             bot_logger.warning(f"Cannot pause completed shipment: {tracking_number}", extra={'tracking_number': tracking_number})
             return
-        if paused_simulations.get(tracking_number, False):
+        if redis_client.hget("paused_simulations", tracking_number) == "true":
             bot.reply_to(message, f"Simulation for `{tracking_number}` is already paused.", parse_mode='Markdown')
             bot_logger.warning(f"Simulation already paused: {tracking_number}", extra={'tracking_number': tracking_number})
             return
-        paused_simulations[tracking_number] = True
+        redis_client.hset("paused_simulations", tracking_number, "true")
         invalidate_cache(tracking_number)
         bot_logger.info(f"Paused simulation for {tracking_number}", extra={'tracking_number': tracking_number})
         console.print(Panel(f"[info]Paused simulation for {tracking_number} by admin {message.from_user.id}[/info]", title="Simulation Paused", border_style="green"))
         try:
-            response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+            response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
             if response.status_code != 204:
                 bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
         except requests.RequestException as e:
@@ -325,8 +358,8 @@ def stop_simulation(message):
 @bot.message_handler(commands=['continue'])
 def continue_simulation(message):
     """Handle /continue command to resume a paused shipment's simulation."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, paused_simulations, _, _ = get_app_modules()
-    _, WEBSOCKET_SERVER, _, _ = get_config_values()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
         bot_logger.warning(f"Access denied for /continue by {message.from_user.id}", extra={'tracking_number': ''})
@@ -342,7 +375,7 @@ def continue_simulation(message):
         bot_logger.error(f"Invalid tracking number: {parts[1]}", extra={'tracking_number': parts[1]})
         return
     try:
-        if not paused_simulations.get(tracking_number, False):
+        if redis_client.hget("paused_simulations", tracking_number) != "true":
             bot.reply_to(message, f"Simulation for `{tracking_number}` is not paused.", parse_mode='Markdown')
             bot_logger.warning(f"Simulation not paused: {tracking_number}", extra={'tracking_number': tracking_number})
             return
@@ -355,12 +388,12 @@ def continue_simulation(message):
             bot.reply_to(message, f"Shipment `{tracking_number}` is already completed (`{shipment['status']}`).", parse_mode='Markdown')
             bot_logger.warning(f"Cannot resume completed shipment: {tracking_number}", extra={'tracking_number': tracking_number})
             return
-        paused_simulations[tracking_number] = False
+        redis_client.hdel("paused_simulations", tracking_number)
         invalidate_cache(tracking_number)
         bot_logger.info(f"Resumed simulation for {tracking_number}", extra={'tracking_number': tracking_number})
         console.print(Panel(f"[info]Resumed simulation for {tracking_number} by admin {message.from_user.id}[/info]", title="Simulation Resumed", border_style="green"))
         try:
-            response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+            response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
             if response.status_code != 204:
                 bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
         except requests.RequestException as e:
@@ -375,8 +408,8 @@ def continue_simulation(message):
 @bot.message_handler(commands=['setspeed'])
 def set_simulation_speed(message):
     """Handle /setspeed command to set simulation speed for a shipment."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, _, sim_speed_multipliers, _ = get_app_modules()
-    _, WEBSOCKET_SERVER, _, _ = get_config_values()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
         bot_logger.warning(f"Access denied for /setspeed by {message.from_user.id}", extra={'tracking_number': ''})
@@ -402,12 +435,12 @@ def set_simulation_speed(message):
             bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
             bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
             return
-        sim_speed_multipliers[tracking_number] = speed
+        redis_client.hset("sim_speed_multipliers", tracking_number, str(speed))
         invalidate_cache(tracking_number)
         bot_logger.info(f"Set simulation speed for {tracking_number} to {speed}x", extra={'tracking_number': tracking_number})
         console.print(Panel(f"[info]Set simulation speed for {tracking_number} to {speed}x by admin {message.from_user.id}[/info]", title="Speed Updated", border_style="green"))
         try:
-            response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+            response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
             if response.status_code != 204:
                 bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
         except requests.RequestException as e:
@@ -425,7 +458,7 @@ def set_simulation_speed(message):
 @bot.message_handler(commands=['getspeed'])
 def get_simulation_speed(message):
     """Handle /getspeed command to retrieve simulation speed for a shipment."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, _, sim_speed_multipliers, _ = get_app_modules()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
         bot_logger.warning(f"Access denied for /getspeed by {message.from_user.id}", extra={'tracking_number': ''})
@@ -446,7 +479,7 @@ def get_simulation_speed(message):
             bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
             bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
             return
-        speed = sim_speed_multipliers.get(tracking_number, 1.0)
+        speed = float(redis_client.hget("sim_speed_multipliers", tracking_number) or 1.0)
         bot_logger.info(f"Retrieved simulation speed for {tracking_number}: {speed}x", extra={'tracking_number': tracking_number})
         console.print(Panel(f"[info]Retrieved simulation speed for {tracking_number}: {speed}x by admin {message.from_user.id}[/info]", title="Speed Retrieved", border_style="green"))
         bot.reply_to(message, f"Simulation speed for `{tracking_number}` is `{speed}x`.", parse_mode='Markdown')
@@ -495,7 +528,7 @@ def handle_reply_input(message):
 
 def handle_add_input(message):
     """Handle input for adding a new shipment using shlex for parsing."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, _, _, _ = get_app_modules()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
         bot_logger.warning(f"Access denied for add input by {message.from_user.id}", extra={'tracking_number': ''})
@@ -506,7 +539,6 @@ def handle_add_input(message):
         bot_logger.info(f"Add shipment cancelled by admin {message.from_user.id}", extra={'tracking_number': ''})
         return
     try:
-        # Use shlex to handle quoted strings
         args = shlex.split(message.text)
         if len(args) < 4:
             raise ValueError("Invalid format. Expected at least 4 arguments.")
@@ -541,7 +573,7 @@ def handle_add_input(message):
 
 def handle_update_input(message, tracking_number):
     """Handle input for updating an existing shipment."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, _, _, _ = get_app_modules()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
         bot_logger.warning(f"Access denied for update input by {message.from_user.id}", extra={'tracking_number': tracking_number})
@@ -558,7 +590,6 @@ def handle_update_input(message, tracking_number):
             bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
             return
         updates = {}
-        # Parse key=value pairs (allow spaces in values by splitting on first =)
         for part in message.text.strip().split():
             if '=' in part:
                 key, value = part.split('=', 1)
@@ -595,8 +626,8 @@ def handle_update_input(message, tracking_number):
 
 def handle_setspeed_input(message, tracking_number):
     """Handle input for setting simulation speed."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, _, sim_speed_multipliers, _ = get_app_modules()
-    _, WEBSOCKET_SERVER, _, _ = get_config_values()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
         bot_logger.warning(f"Access denied for set speed input by {message.from_user.id}", extra={'tracking_number': tracking_number})
@@ -617,12 +648,12 @@ def handle_setspeed_input(message, tracking_number):
             bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
             bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
             return
-        sim_speed_multipliers[tracking_number] = speed
+        redis_client.hset("sim_speed_multipliers", tracking_number, str(speed))
         invalidate_cache(tracking_number)
         bot_logger.info(f"Set simulation speed for {tracking_number} to {speed}x", extra={'tracking_number': tracking_number})
         console.print(Panel(f"[info]Set simulation speed for {tracking_number} to {speed}x by admin {message.from_user.id}[/info]", title="Speed Updated", border_style="green"))
         try:
-            response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+            response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
             if response.status_code != 204:
                 bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
         except requests.RequestException as e:
@@ -654,7 +685,6 @@ def callback_query(call):
         action = parts[0]
         arg = parts[1] if len(parts) > 1 else None
         if arg and arg[0].isdigit():
-            # Extract page if present
             match = re.search(r'_(\d+)$', data)
             if match:
                 page = int(match.group(1))
@@ -769,22 +799,20 @@ def show_shipment_details(call, tracking_number):
 
 def delete_shipment(call, tracking_number, page):
     """Delete a specific shipment from the database and clear related state."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, paused_simulations, sim_speed_multipliers, _ = get_app_modules()
-    _, WEBSOCKET_SERVER, _, _ = get_config_values()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
     try:
         shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
         if shipment:
             db.session.delete(shipment)
             db.session.commit()
-            if tracking_number in paused_simulations:
-                del paused_simulations[tracking_number]
-            if tracking_number in sim_speed_multipliers:
-                del sim_speed_multipliers[tracking_number]
+            redis_client.hdel("paused_simulations", tracking_number)
+            redis_client.hdel("sim_speed_multipliers", tracking_number)
             invalidate_cache(tracking_number)
             bot_logger.info(f"Deleted shipment {tracking_number}", extra={'tracking_number': tracking_number})
             console.print(f"[info]Deleted shipment {tracking_number} by admin {call.from_user.id}[/info]")
             try:
-                response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+                response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
                 if response.status_code != 204:
                     bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
             except requests.RequestException as e:
@@ -802,10 +830,22 @@ def delete_shipment(call, tracking_number, page):
         bot.answer_callback_query(call.id, f"Error deleting `{tracking_number}`: {e}", show_alert=True)
 
 def get_chat_data(chat_id, key, default=[]):
-    return chat_data_store.get(f"{chat_id}_{key}", default)
+    """Retrieve chat data from Redis."""
+    try:
+        data = redis_client.get(f"chat:{chat_id}:{key}")
+        return json.loads(data) if data else default
+    except Exception as e:
+        bot_logger.error(f"Redis error fetching chat data: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Redis error fetching chat data: {e}[/error]", title="Redis Error", border_style="red"))
+        return default
 
 def set_chat_data(chat_id, key, value):
-    chat_data_store[f"{chat_id}_{key}"] = value
+    """Store chat data in Redis."""
+    try:
+        redis_client.setex(f"chat:{chat_id}:{key}", 3600, json.dumps(value))
+    except Exception as e:
+        bot_logger.error(f"Redis error setting chat data: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Redis error setting chat data: {e}[/error]", title="Redis Error", border_style="red"))
 
 def toggle_batch_selection(call, tracking_number):
     """Toggle selection of a shipment for batch deletion."""
@@ -822,8 +862,8 @@ def toggle_batch_selection(call, tracking_number):
 
 def batch_delete_shipments(call, page):
     """Delete multiple shipments in a single transaction."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, paused_simulations, sim_speed_multipliers, _ = get_app_modules()
-    _, WEBSOCKET_SERVER, _, _ = get_config_values()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
     batch_list = get_chat_data(call.message.chat.id, 'batch_delete', [])
     if not batch_list:
         bot.answer_callback_query(call.id, "No shipments selected.", show_alert=True)
@@ -835,14 +875,12 @@ def batch_delete_shipments(call, page):
             shipment = Shipment.query.filter_by(tracking_number=tn).first()
             if shipment:
                 db.session.delete(shipment)
-                if tn in paused_simulations:
-                    del paused_simulations[tn]
-                if tn in sim_speed_multipliers:
-                    del sim_speed_multipliers[tn]
+                redis_client.hdel("paused_simulations", tn)
+                redis_client.hdel("sim_speed_multipliers", tn)
                 invalidate_cache(tn)
                 deleted_count += 1
                 try:
-                    response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tn}', timeout=5)
+                    response = requests.get(f'{websocket_server}/broadcast/{tn}', timeout=5)
                     if response.status_code != 204:
                         bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tn})
                 except requests.RequestException as e:
@@ -862,9 +900,9 @@ def batch_delete_shipments(call, page):
 
 def trigger_broadcast(call, tracking_number):
     """Trigger a broadcast for a specific shipment to update clients."""
-    _, WEBSOCKET_SERVER, _, _ = get_config_values()
+    _, websocket_server, _, _ = get_config_values()
     try:
-        response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+        response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
         if response.status_code == 204:
             bot.answer_callback_query(call.id, f"Broadcast triggered for `{tracking_number}`", show_alert=True)
             bot_logger.info(f"Broadcast triggered for {tracking_number}", extra={'tracking_number': tracking_number})
@@ -879,7 +917,7 @@ def trigger_broadcast(call, tracking_number):
 
 def toggle_email_notifications(call, tracking_number, page):
     """Toggle email notifications for a specific shipment."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, _, _, _ = get_app_modules()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
     try:
         shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
         if not shipment:
@@ -902,8 +940,8 @@ def toggle_email_notifications(call, tracking_number, page):
 
 def pause_simulation_callback(call, tracking_number, page):
     """Handle callback to pause a shipment's simulation via inline menu."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, paused_simulations, _, _ = get_app_modules()
-    _, WEBSOCKET_SERVER, _, _ = get_config_values()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
     try:
         shipment = get_shipment_details(tracking_number)
         if not shipment:
@@ -914,17 +952,17 @@ def pause_simulation_callback(call, tracking_number, page):
             bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` is already completed (`{shipment['status']}`).", show_alert=True)
             bot_logger.warning(f"Cannot pause completed shipment: {tracking_number}", extra={'tracking_number': tracking_number})
             return
-        if paused_simulations.get(tracking_number, False):
+        if redis_client.hget("paused_simulations", tracking_number) == "true":
             bot.answer_callback_query(call.id, f"Simulation for `{tracking_number}` is already paused.", show_alert=True)
             bot_logger.warning(f"Simulation already paused: {tracking_number}", extra={'tracking_number': tracking_number})
             return
-        paused_simulations[tracking_number] = True
+        redis_client.hset("paused_simulations", tracking_number, "true")
         invalidate_cache(tracking_number)
         bot.answer_callback_query(call.id, f"Simulation paused for `{tracking_number}`", show_alert=True)
         bot_logger.info(f"Paused simulation for {tracking_number}", extra={'tracking_number': tracking_number})
         console.print(Panel(f"[info]Paused simulation for {tracking_number} by admin {call.from_user.id}[/info]", title="Simulation Paused", border_style="green"))
         try:
-            response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+            response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
             if response.status_code != 204:
                 bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
         except requests.RequestException as e:
@@ -938,10 +976,10 @@ def pause_simulation_callback(call, tracking_number, page):
 
 def resume_simulation_callback(call, tracking_number, page):
     """Handle callback to resume a shipment's simulation via inline menu."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, paused_simulations, _, _ = get_app_modules()
-    _, WEBSOCKET_SERVER, _, _ = get_config_values()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
     try:
-        if not paused_simulations.get(tracking_number, False):
+        if redis_client.hget("paused_simulations", tracking_number) != "true":
             bot.answer_callback_query(call.id, f"Simulation for `{tracking_number}` is not paused.", show_alert=True)
             bot_logger.warning(f"Simulation not paused: {tracking_number}", extra={'tracking_number': tracking_number})
             return
@@ -954,13 +992,13 @@ def resume_simulation_callback(call, tracking_number, page):
             bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` is already completed (`{shipment['status']}`).", show_alert=True)
             bot_logger.warning(f"Cannot resume completed shipment: {tracking_number}", extra={'tracking_number': tracking_number})
             return
-        paused_simulations[tracking_number] = False
+        redis_client.hdel("paused_simulations", tracking_number)
         invalidate_cache(tracking_number)
         bot.answer_callback_query(call.id, f"Simulation resumed for `{tracking_number}`", show_alert=True)
         bot_logger.info(f"Resumed simulation for {tracking_number}", extra={'tracking_number': tracking_number})
         console.print(Panel(f"[info]Resumed simulation for {tracking_number} by admin {call.from_user.id}[/info]", title="Simulation Resumed", border_style="green"))
         try:
-            response = requests.get(f'{WEBSOCKET_SERVER}/broadcast/{tracking_number}', timeout=5)
+            response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
             if response.status_code != 204:
                 bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
         except requests.RequestException as e:
@@ -974,13 +1012,13 @@ def resume_simulation_callback(call, tracking_number, page):
 
 def show_simulation_speed(call, tracking_number):
     """Display the simulation speed for a specific shipment."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _, _, sim_speed_multipliers, _ = get_app_modules()
+    db, Shipment, sanitize_tracking_number, _, _, _, _, _ = get_app_modules()
     shipment = get_shipment_details(tracking_number)
     if not shipment:
         bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
         bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
         return
-    speed = sim_speed_multipliers.get(tracking_number, 1.0)
+    speed = float(redis_client.hget("sim_speed_multipliers", tracking_number) or 1.0)
     bot.answer_callback_query(call.id, f"Simulation speed for `{tracking_number}` is `{speed}x`.", show_alert=True)
     bot_logger.info(f"Retrieved simulation speed for {tracking_number}: {speed}x", extra={'tracking_number': tracking_number})
     console.print(Panel(f"[info]Retrieved simulation speed for {tracking_number}: {speed}x by admin {call.from_user.id}[/info]", title="Speed Retrieved", border_style="green"))
@@ -1009,13 +1047,34 @@ def start_bot():
         try:
             bot.infinity_polling(timeout=20, long_polling_timeout=5, none_stop=True)
             break
-        except Exception as e:
+        except telebot.apihelper.ApiTelegramException as e:
             retries += 1
-            bot_logger.error(f"Bot polling error (attempt {retries}/{max_retries}): {e}", extra={'tracking_number': ''})
-            console.print(Panel(f"[error]Bot polling error (attempt {retries}/{max_retries}): {e}[/error]", title="Telegram Error", border_style="red"))
+            if e.error_code == 429:  # Too Many Requests
+                retry_delay = min(retry_delay * 2, 60)
+                bot_logger.warning(f"Rate limit hit, retrying in {retry_delay}s: {e}", extra={'tracking_number': ''})
+                console.print(Panel(f"[warning]Rate limit hit, retrying in {retry_delay}s: {e}[/warning]", title="Telegram Rate Limit", border_style="yellow"))
+            elif e.error_code == 401:  # Unauthorized
+                bot_logger.critical(f"Invalid Telegram bot token: {e}", extra={'tracking_number': ''})
+                console.print(Panel(f"[critical]Invalid Telegram bot token: {e}[/critical]", title="Telegram Error", border_style="red"))
+                raise ValueError("Invalid TELEGRAM_BOT_TOKEN")
+            else:
+                bot_logger.error(f"Bot polling error (attempt {retries}/{max_retries}): {e}", extra={'tracking_number': ''})
+                console.print(Panel(f"[error]Bot polling error (attempt {retries}/{max_retries}): {e}[/error]", title="Telegram Error", border_style="red"))
             if retries < max_retries:
                 console.print(f"[info]Retrying in {retry_delay} seconds...[/info]")
                 eventlet.sleep(retry_delay)
                 retry_delay *= 2
             else:
                 console.print(Panel(f"[critical]Max retries exceeded. Bot polling failed.[/critical]", title="Telegram Critical", border_style="red"))
+                raise RuntimeError("Max retries exceeded for bot polling")
+        except Exception as e:
+            retries += 1
+            bot_logger.error(f"Unexpected polling error (attempt {retries}/{max_retries}): {e}", extra={'tracking_number': ''})
+            console.print(Panel(f"[error]Unexpected polling error (attempt {retries}/{max_retries}): {e}[/error]", title="Telegram Error", border_style="red"))
+            if retries < max_retries:
+                console.print(f"[info]Retrying in {retry_delay} seconds...[/info]")
+                eventlet.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                console.print(Panel(f"[critical]Max retries exceeded. Bot polling failed.[/critical]", title="Telegram Critical", border_style="red"))
+                raise RuntimeError("Max retries exceeded for bot polling")
