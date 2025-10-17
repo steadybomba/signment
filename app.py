@@ -19,9 +19,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 import validators
-import redis
+from upstash_redis import Redis
 import logging
 from sqlalchemy.exc import SQLAlchemyError
+from upstash_redis.exceptions import ResponseError
 
 # Patch for gevent/gunicorn
 eventlet.monkey_patch()
@@ -52,13 +53,14 @@ for var in required_vars:
 
 # Redis setup
 redis_client = None
-if app.config.get('REDIS_URL'):
+if app.config.get('REDIS_URL') and app.config.get('REDIS_TOKEN'):
     try:
-        redis_client = redis.Redis.from_url(app.config['REDIS_URL'], decode_responses=True)
-        redis_client.ping()
+        redis_client = Redis(url=app.config['REDIS_URL'], token=app.config['REDIS_TOKEN'])
+        redis_client.set("test", "ping")  # Test connection
+        redis_client.delete("test")
         flask_logger.info("Redis connection successful")
         console.print("[info]Redis connection successful[/info]")
-    except redis.RedisError as e:
+    except ResponseError as e:
         flask_logger.error(f"Redis connection failed: {e}")
         console.print(Panel(f"[error]Redis connection failed: {e}[/error]", title="Redis Error", border_style="red"))
         redis_client = None
@@ -222,13 +224,16 @@ def geocode_locations(checkpoints):
 
                 # Check Redis cache
                 if redis_client:
-                    cached_result = redis_client.get(cache_key)
-                    if cached_result:
-                        coord = json.loads(cached_result)
-                        geocode_cache[checkpoint] = coord
-                        coords.append(coord)
-                        flask_logger.debug(f"Geocode cache hit for {location}: {coord}", extra={'tracking_number': ''})
-                        continue
+                    try:
+                        cached_result = redis_client.get(cache_key)
+                        if cached_result:
+                            coord = json.loads(cached_result)
+                            geocode_cache[checkpoint] = coord
+                            coords.append(coord)
+                            flask_logger.debug(f"Geocode cache hit for {location}: {coord}", extra={'tracking_number': ''})
+                            continue
+                    except ResponseError as e:
+                        flask_logger.warning(f"Redis get error for {cache_key}: {e}", extra={'tracking_number': ''})
 
                 # Forward geocoding with geocode.maps.co
                 url = f"https://geocode.maps.co/search?q={location}&api_key={api_key}"
@@ -246,7 +251,7 @@ def geocode_locations(checkpoints):
                     if redis_client:
                         try:
                             redis_client.setex(cache_key, 86400, json.dumps(coord))  # Cache for 24 hours
-                        except redis.RedisError as e:
+                        except ResponseError as e:
                             flask_logger.warning(f"Failed to cache geocode result: {e}", extra={'tracking_number': ''})
                     coords.append(coord)
                     flask_logger.debug(f"Geocoded {location}: {coord}", extra={'tracking_number': ''})
@@ -262,7 +267,7 @@ def add_client(tracking_number, sid):
         try:
             redis_client.sadd(f"clients:{tracking_number}", sid)
             flask_logger.debug(f"Added client {sid}", extra={'tracking_number': tracking_number})
-        except redis.RedisError as e:
+        except ResponseError as e:
             flask_logger.error(f"Redis error adding client {sid}: {e}", extra={'tracking_number': tracking_number})
             console.print(Panel(f"[error]Redis error for {tracking_number}: {e}[/error]", title="Redis Error", border_style="red"))
     else:
@@ -276,7 +281,7 @@ def remove_client(tracking_number, sid):
         try:
             redis_client.srem(f"clients:{tracking_number}", sid)
             flask_logger.debug(f"Removed client {sid}", extra={'tracking_number': tracking_number})
-        except redis.RedisError as e:
+        except ResponseError as e:
             flask_logger.error(f"Redis error removing client {sid}: {e}", extra={'tracking_number': tracking_number})
             console.print(Panel(f"[error]Redis error for {tracking_number}: {e}[/error]", title="Redis Error", border_style="red"))
     else:
@@ -290,7 +295,7 @@ def get_clients(tracking_number):
             clients = redis_client.smembers(f"clients:{tracking_number}")
             flask_logger.debug(f"Fetched clients: {clients}", extra={'tracking_number': tracking_number})
             return clients
-        except redis.RedisError as e:
+        except ResponseError as e:
             flask_logger.error(f"Redis error fetching clients: {e}", extra={'tracking_number': tracking_number})
             console.print(Panel(f"[error]Redis error for {tracking_number}: {e}[/error]", title="Redis Error", border_style="red"))
             return set()
@@ -617,9 +622,10 @@ def health_check():
         status['database'] = str(e)
     try:
         if redis_client:
-            redis_client.ping()
+            redis_client.set("test", "ping")
+            redis_client.delete("test")
             status['redis'] = 'ok'
-    except redis.RedisError as e:
+    except ResponseError as e:
         status['redis'] = str(e)
     try:
         with smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT'], timeout=5) as server:
