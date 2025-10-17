@@ -1,4 +1,3 @@
-```python
 import os
 from dotenv import load_dotenv
 
@@ -86,4 +85,3 @@ class Config(object):
     for var in required_vars:
         if not os.getenv(var):
             raise ValueError(f"Missing required environment variable: {var}")
-```
