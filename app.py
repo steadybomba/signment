@@ -12,7 +12,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from flask import Flask, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from flask_limiter import FlaskLimiter
+from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO, emit, disconnect
 from rich.console import Console
@@ -29,7 +29,7 @@ eventlet.monkey_patch()
 app = Flask(__name__)
 app.config.from_object('config.Config')
 db = SQLAlchemy(app)
-limiter = FlaskLimiter(
+limiter = Limiter(
     get_remote_address,
     app=app,
     default_limits=app.config.get('RATELIMIT_DEFAULTS', ['200 per day', '50 per hour']),
