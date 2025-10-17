@@ -10,8 +10,6 @@ import time
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut
 from flask import Flask, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
@@ -43,7 +41,7 @@ in_memory_clients = {}
 paused_simulations = {}
 sim_speed_multipliers = {}
 
-# Validate critical environment variables (handled in config.py, but verify here)
+# Validate critical environment variables
 required_vars = ['SECRET_KEY', 'SQLALCHEMY_DATABASE_URI', 'SMTP_USER', 'SMTP_PASS', 'TELEGRAM_BOT_TOKEN']
 for var in required_vars:
     if not app.config.get(var):
@@ -203,8 +201,10 @@ def verify_recaptcha(response_token):
         return False
 
 def geocode_locations(checkpoints):
-    geolocator = Nominatim(user_agent="tracking_simulator")
     coords = []
+    api_key = app.config['GEOCODING_API_KEY']
+    last_request_time = [0]  # Track last request time for rate limiting
+
     for checkpoint in checkpoints:
         if checkpoint in geocode_cache:
             coords.append(geocode_cache[checkpoint])
@@ -212,15 +212,49 @@ def geocode_locations(checkpoints):
         parts = checkpoint.split(' - ')
         if len(parts) >= 2:
             location = parts[1].strip()
+            cache_key = f"geocode:{location}"
             try:
-                geo = geolocator.geocode(location, timeout=5)
-                if geo:
-                    coord = {'lat': geo.latitude, 'lon': geo.longitude, 'desc': checkpoint}
+                # Rate limit: 1 request per second
+                current_time = time.time()
+                if current_time - last_request_time[0] < 1:
+                    time.sleep(1 - (current_time - last_request_time[0]))
+                last_request_time[0] = time.time()
+
+                # Check Redis cache
+                if redis_client:
+                    cached_result = redis_client.get(cache_key)
+                    if cached_result:
+                        coord = json.loads(cached_result)
+                        geocode_cache[checkpoint] = coord
+                        coords.append(coord)
+                        flask_logger.debug(f"Geocode cache hit for {location}: {coord}", extra={'tracking_number': ''})
+                        continue
+
+                # Forward geocoding with geocode.maps.co
+                url = f"https://geocode.maps.co/search?q={location}&api_key={api_key}"
+                response = requests.get(url, timeout=5)
+                response.raise_for_status()
+                results = response.json()
+                if results and isinstance(results, list) and len(results) > 0:
+                    result = results[0]
+                    coord = {
+                        'lat': float(result.get('lat', 0)),
+                        'lon': float(result.get('lon', 0)),
+                        'desc': checkpoint
+                    }
                     geocode_cache[checkpoint] = coord
+                    if redis_client:
+                        try:
+                            redis_client.setex(cache_key, 86400, json.dumps(coord))  # Cache for 24 hours
+                        except redis.RedisError as e:
+                            flask_logger.warning(f"Failed to cache geocode result: {e}", extra={'tracking_number': ''})
                     coords.append(coord)
                     flask_logger.debug(f"Geocoded {location}: {coord}", extra={'tracking_number': ''})
-            except GeocoderTimedOut:
-                flask_logger.warning(f"Geocoding timed out for {location}", extra={'tracking_number': ''})
+                else:
+                    flask_logger.warning(f"No geocode results for {location}", extra={'tracking_number': ''})
+            except requests.RequestException as e:
+                flask_logger.warning(f"Geocoding failed for {location}: {e}", extra={'tracking_number': ''})
+                console.print(Panel(f"[warning]Geocoding failed for {location}: {e}[/warning]", title="Geocode Error", border_style="yellow"))
     return coords
 
 def add_client(tracking_number, sid):
