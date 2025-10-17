@@ -177,11 +177,15 @@ def send_email_notification(tracking_number, status, checkpoints, delivery_locat
         console.print(Panel(f"[error]Email failed for {tracking_number}: {e}[/error]", title="Email Error", border_style="red"))
 
 def init_db():
+    flask_logger.info("Starting database initialization")
+    console.print("[info]Starting database initialization[/info]")
     max_retries = 5
     retry_delay = 5  # seconds
     for attempt in range(max_retries):
         try:
             with app.app_context():
+                flask_logger.debug(f"Attempting to create shipments table (attempt {attempt + 1})")
+                console.print(f"[info]Attempting to create shipments table (attempt {attempt + 1})[/info]")
                 # Explicitly create table if it doesn't exist
                 db.session.execute(text("""
                     CREATE TABLE IF NOT EXISTS shipments (
@@ -220,6 +224,10 @@ def init_db():
         except SQLAlchemyError as e:
             flask_logger.error(f"Database initialization failed: {e}")
             console.print(Panel(f"[error]Database initialization failed: {e}[/error]", title="Database Error", border_style="red"))
+            raise
+        except Exception as e:
+            flask_logger.error(f"Unexpected error during database initialization: {e}")
+            console.print(Panel(f"[error]Unexpected error during database initialization: {e}[/error]", title="Database Error", border_style="red"))
             raise
     flask_logger.critical("Failed to initialize database after max retries")
     console.print(Panel("[critical]Failed to initialize database after max retries[/critical]", title="Database Error", border_style="red"))
@@ -780,8 +788,15 @@ def handle_disconnect():
     except Exception as e:
         flask_logger.error(f"Error on disconnect: {e}", extra={'tracking_number': ''})
 
-if __name__ == '__main__':
+# Initialize database on startup
+try:
     init_db()
+except Exception as e:
+    flask_logger.critical(f"Failed to initialize database on startup: {e}")
+    console.print(Panel(f"[critical]Failed to initialize database on startup: {e}[/critical]", title="Startup Error", border_style="red"))
+    raise
+
+if __name__ == '__main__':
     try:
         from telegram import cache_route_templates, start_bot
         cache_route_templates()
