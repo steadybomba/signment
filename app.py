@@ -517,7 +517,6 @@ def broadcast_update(tracking_number):
 
 # Flask routes
 @app.route('/')
-@limiter.limit(app.config['RATELIMIT_DEFAULTS'])
 def index():
     try:
         from forms import TrackForm
@@ -535,7 +534,6 @@ def index():
                          recaptcha_site_key=app.config['RECAPTCHA_SITE_KEY'])
 
 @app.route('/track', methods=['POST'])
-@limiter.limit(app.config['RATELIMIT_DEFAULTS'])
 def track():
     try:
         from forms import TrackForm
@@ -604,7 +602,6 @@ def track():
                              tawk_widget_id=app.config['TAWK_WIDGET_ID'])
 
 @app.route('/broadcast/<tracking_number>')
-@limiter.limit(app.config['RATELIMIT_DEFAULTS'])
 def trigger_broadcast(tracking_number):
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
@@ -615,7 +612,6 @@ def trigger_broadcast(tracking_number):
     return '', 204
 
 @app.route('/health', methods=['GET'])
-@limiter.limit(app.config['RATELIMIT_DEFAULTS'])
 def health_check():
     status = {'status': 'healthy', 'database': 'ok', 'redis': 'unavailable', 'smtp': 'ok', 'telegram': 'unavailable'}
     try:
