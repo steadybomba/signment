@@ -35,7 +35,7 @@ limiter = Limiter(
     get_remote_address,
     app=app,
     default_limits=app.config.get('RATELIMIT_DEFAULTS', ['200 per day', '50 per hour']),
-    storage_uri=app.config.get('RATELIMIT_STORAGE_URI', 'memory://')
+    storage_uri=app.config.get('RATELIMIT_STORAGE_URI', 'redis://' if app.config.get('REDIS_URL') else 'memory://')
 )
 socketio = SocketIO(app, cors_allowed_origins="*")
 console = Console()
