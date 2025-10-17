@@ -16,7 +16,7 @@ class Config(object):
     REDIS_URL = os.getenv('REDIS_URL', None)
     REDIS_TOKEN = os.getenv('REDIS_TOKEN', 'fallback-redis-token')  # Required for Upstash Redis
     SOCKETIO_MESSAGE_QUEUE = os.getenv('REDIS_URL', None)
-    RATELIMIT_STORAGE_URI = os.getenv('REDIS_URL', 'memory://')
+    RATELIMIT_STORAGE_URI = os.getenv('RATELIMIT_STORAGE_URI', 'memory://')  # Use memory:// for Flask-Limiter
     RATELIMIT_DEFAULTS = ['200 per day', '50 per hour']
 
     # SMTP/Email
