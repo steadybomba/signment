@@ -22,6 +22,7 @@ import validators
 from upstash_redis import Redis
 import logging
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
+from sqlalchemy import inspect
 from time import sleep
 
 # Patch for gevent/gunicorn
@@ -180,12 +181,20 @@ def init_db():
     retry_delay = 5  # seconds
     for attempt in range(max_retries):
         try:
-            with app.app_context():  # Ensure app context for database operations
+            with app.app_context():
+                # Create all tables
                 db.create_all()
-                db.session.execute('SELECT 1')  # Test connection
+                # Verify table exists
+                inspector = inspect(db.engine)
+                if not inspector.has_table('shipments'):
+                    flask_logger.error("Shipments table not created after db.create_all()")
+                    console.print(Panel("[error]Shipments table not created[/error]", title="Database Error", border_style="red"))
+                    raise Exception("Failed to create shipments table")
+                # Test connection
+                db.session.execute('SELECT 1')
                 db.session.commit()
-                flask_logger.info("Database initialized successfully")
-                console.print("[info]Database initialized[/info]")
+                flask_logger.info("Database initialized successfully, shipments table verified")
+                console.print("[info]Database initialized, shipments table verified[/info]")
                 return
         except OperationalError as e:
             flask_logger.error(f"Database connection attempt {attempt + 1} failed: {e}")
@@ -216,6 +225,7 @@ def verify_recaptcha(response_token):
             flask_logger.debug(f"reCAPTCHA verification successful: score={result.get('score')}", extra={'tracking_number': ''})
             return True
         flask_logger.warning(f"reCAPTCHA verification failed: {result}", extra={'tracking_number': ''})
+        console.print(Panel(f"[warning]reCAPTCHA verification failed: {result}[/warning]", title="reCAPTCHA Warning", border_style="yellow"))
         return False
     except requests.RequestException as e:
         flask_logger.error(f"reCAPTCHA verification error: {e}", extra={'tracking_number': ''})
@@ -236,13 +246,10 @@ def geocode_locations(checkpoints):
             location = parts[1].strip()
             cache_key = f"geocode:{location}"
             try:
-                # Rate limit: 1 request per second
                 current_time = time.time()
                 if current_time - last_request_time[0] < 1:
                     time.sleep(1 - (current_time - last_request_time[0]))
                 last_request_time[0] = time.time()
-
-                # Check Redis cache
                 if redis_client:
                     try:
                         cached_result = redis_client.get(cache_key)
@@ -254,8 +261,6 @@ def geocode_locations(checkpoints):
                             continue
                     except Exception as e:
                         flask_logger.warning(f"Redis get error for {cache_key}: {e}", extra={'tracking_number': ''})
-
-                # Forward geocoding with geocode.maps.co
                 url = f"https://geocode.maps.co/search?q={location}&api_key={api_key}"
                 response = requests.get(url, timeout=5)
                 response.raise_for_status()
@@ -325,7 +330,6 @@ def get_clients(tracking_number):
         return clients
 
 def keep_alive():
-    """Periodically ping the /health endpoint to maintain uptime."""
     while True:
         try:
             response = requests.get(f"{app.config['WEBSOCKET_SERVER']}/health", timeout=5)
@@ -535,7 +539,7 @@ def broadcast_update(tracking_number):
 @app.route('/')
 def index():
     if request.method == 'HEAD':
-        return '', 200  # Return empty response for HEAD requests
+        return '', 200
     try:
         from forms import TrackForm
     except ImportError as e:
@@ -588,7 +592,6 @@ def track():
                                  tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
                                  tawk_widget_id=app.config['TAWK_WIDGET_ID'])
 
-        # Update recipient_email if provided and valid
         if email and validate_email(email):
             shipment.recipient_email = email
             db.session.commit()
@@ -641,8 +644,9 @@ def trigger_broadcast(tracking_number):
 def health_check():
     status = {'status': 'healthy', 'database': 'ok', 'redis': 'unavailable', 'smtp': 'ok', 'telegram': 'unavailable'}
     try:
+        inspector = inspect(db.engine)
+        status['database'] = 'ok' if inspector.has_table('shipments') else 'shipments table missing'
         db.session.execute('SELECT 1')
-        status['database'] = 'ok'
     except SQLAlchemyError as e:
         status['status'] = 'unhealthy'
         status['database'] = str(e)
