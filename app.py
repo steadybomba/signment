@@ -12,7 +12,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from flask import Flask, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from flask_limiter import Limiter
+from flask_limiter import FlaskLimiter
 from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO, emit, disconnect
 from rich.console import Console
@@ -29,7 +29,12 @@ eventlet.monkey_patch()
 app = Flask(__name__)
 app.config.from_object('config.Config')
 db = SQLAlchemy(app)
-limiter = Limiter(app=app, key_func=get_remote_address, default_limits=app.config.get('RATELIMIT_DEFAULTS', ['200 per day', '50 per hour']))
+limiter = FlaskLimiter(
+    get_remote_address,
+    app=app,
+    default_limits=app.config.get('RATELIMIT_DEFAULTS', ['200 per day', '50 per hour']),
+    storage_uri=app.config.get('RATELIMIT_STORAGE_URI', 'memory://')
+)
 socketio = SocketIO(app, cors_allowed_origins="*")
 console = Console()
 
@@ -512,7 +517,7 @@ def broadcast_update(tracking_number):
 
 # Flask routes
 @app.route('/')
-@limiter.limit(lambda: app.config['RATELIMIT_DEFAULTS'].get('/', '100 per hour'))
+@limiter.limit(app.config['RATELIMIT_DEFAULTS'])
 def index():
     try:
         from forms import TrackForm
@@ -530,7 +535,7 @@ def index():
                          recaptcha_site_key=app.config['RECAPTCHA_SITE_KEY'])
 
 @app.route('/track', methods=['POST'])
-@limiter.limit(lambda: app.config['RATELIMIT_DEFAULTS'].get('/track', '50 per hour'))
+@limiter.limit(app.config['RATELIMIT_DEFAULTS'])
 def track():
     try:
         from forms import TrackForm
@@ -599,7 +604,7 @@ def track():
                              tawk_widget_id=app.config['TAWK_WIDGET_ID'])
 
 @app.route('/broadcast/<tracking_number>')
-@limiter.limit(lambda: app.config['RATELIMIT_DEFAULTS'].get('/broadcast', '20 per hour'))
+@limiter.limit(app.config['RATELIMIT_DEFAULTS'])
 def trigger_broadcast(tracking_number):
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
@@ -610,7 +615,7 @@ def trigger_broadcast(tracking_number):
     return '', 204
 
 @app.route('/health', methods=['GET'])
-@limiter.limit(lambda: app.config['RATELIMIT_DEFAULTS'].get('/health', '100 per hour'))
+@limiter.limit(app.config['RATELIMIT_DEFAULTS'])
 def health_check():
     status = {'status': 'healthy', 'database': 'ok', 'redis': 'unavailable', 'smtp': 'ok', 'telegram': 'unavailable'}
     try:
