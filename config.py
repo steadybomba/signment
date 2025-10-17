@@ -14,6 +14,7 @@ class Config(object):
 
     # Redis (optional)
     REDIS_URL = os.getenv('REDIS_URL', None)
+    REDIS_TOKEN = os.getenv('REDIS_TOKEN', 'fallback-redis-token')  # Required for Upstash Redis
     SOCKETIO_MESSAGE_QUEUE = os.getenv('REDIS_URL', None)
     RATELIMIT_STORAGE_URI = os.getenv('REDIS_URL', 'memory://')
     RATELIMIT_DEFAULTS = ['200 per day', '50 per hour']
@@ -81,7 +82,7 @@ class Config(object):
     VALID_STATUSES = {'Pending', 'In_Transit', 'Out_for_Delivery', 'Delivered', 'Delayed', 'Returned'}
 
     # Validate required environment variables
-    required_vars = ['SECRET_KEY', 'SQLALCHEMY_DATABASE_URI', 'SMTP_USER', 'SMTP_PASS', 'TELEGRAM_BOT_TOKEN']
+    required_vars = ['SECRET_KEY', 'SQLALCHEMY_DATABASE_URI', 'SMTP_USER', 'SMTP_PASS', 'TELEGRAM_BOT_TOKEN', 'REDIS_TOKEN']
     for var in required_vars:
         if not os.getenv(var):
             raise ValueError(f"Missing required environment variable: {var}")
