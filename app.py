@@ -22,7 +22,7 @@ import validators
 from upstash_redis import Redis
 import logging
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from time import sleep
 
 # Patch for gevent/gunicorn
@@ -182,16 +182,31 @@ def init_db():
     for attempt in range(max_retries):
         try:
             with app.app_context():
-                # Create all tables
-                db.create_all()
+                # Explicitly create table if it doesn't exist
+                db.session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS shipments (
+                        id SERIAL PRIMARY KEY,
+                        tracking_number VARCHAR(50) UNIQUE NOT NULL,
+                        status VARCHAR(50) NOT NULL,
+                        checkpoints TEXT,
+                        delivery_location VARCHAR(100) NOT NULL,
+                        last_updated TIMESTAMP NOT NULL,
+                        recipient_email VARCHAR(120),
+                        created_at TIMESTAMP NOT NULL,
+                        origin_location VARCHAR(100),
+                        webhook_url VARCHAR(200),
+                        email_notifications BOOLEAN DEFAULT TRUE
+                    )
+                """))
+                db.session.commit()
                 # Verify table exists
                 inspector = inspect(db.engine)
                 if not inspector.has_table('shipments'):
-                    flask_logger.error("Shipments table not created after db.create_all()")
-                    console.print(Panel("[error]Shipments table not created[/error]", title="Database Error", border_style="red"))
+                    flask_logger.error("Shipments table not created after explicit creation attempt")
+                    console.print(Panel("[error]Shipments table not created after explicit attempt[/error]", title="Database Error", border_style="red"))
                     raise Exception("Failed to create shipments table")
                 # Test connection
-                db.session.execute('SELECT 1')
+                db.session.execute(text('SELECT 1'))
                 db.session.commit()
                 flask_logger.info("Database initialized successfully, shipments table verified")
                 console.print("[info]Database initialized, shipments table verified[/info]")
@@ -580,6 +595,7 @@ def track():
         flask_logger.warning(f"Invalid tracking number submitted: {tracking_number}", extra={'tracking_number': str(tracking_number)})
         return render_template('tracking_result.html', 
                              error='Invalid tracking number', 
+                             coords=[],
                              tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
                              tawk_widget_id=app.config['TAWK_WIDGET_ID'])
 
@@ -589,6 +605,7 @@ def track():
             flask_logger.warning(f"Shipment not found: {sanitized_tn}", extra={'tracking_number': sanitized_tn})
             return render_template('tracking_result.html', 
                                  error='Shipment not found', 
+                                 coords=[],
                                  tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
                                  tawk_widget_id=app.config['TAWK_WIDGET_ID'])
 
@@ -620,6 +637,7 @@ def track():
         console.print(Panel(f"[error]Database error for {sanitized_tn}: {e}[/error]", title="Database Error", border_style="red"))
         return render_template('tracking_result.html', 
                              error='Database error occurred', 
+                             coords=[],
                              tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
                              tawk_widget_id=app.config['TAWK_WIDGET_ID'])
     except Exception as e:
@@ -627,6 +645,7 @@ def track():
         console.print(Panel(f"[error]Unexpected error in track: {e}[/error]", title="Track Error", border_style="red"))
         return render_template('tracking_result.html', 
                              error='Unexpected error', 
+                             coords=[],
                              tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
                              tawk_widget_id=app.config['TAWK_WIDGET_ID'])
 
@@ -646,7 +665,7 @@ def health_check():
     try:
         inspector = inspect(db.engine)
         status['database'] = 'ok' if inspector.has_table('shipments') else 'shipments table missing'
-        db.session.execute('SELECT 1')
+        db.session.execute(text('SELECT 1'))
     except SQLAlchemyError as e:
         status['status'] = 'unhealthy'
         status['database'] = str(e)
