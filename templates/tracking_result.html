@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tracking Result - {{ shipment.tracking_number }}</title>
+    <title>Tracking Result{% if shipment %} - {{ shipment.tracking_number }}{% endif %}</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
@@ -130,7 +130,6 @@
             padding-top: 10px;
             border-top: 1px solid #ccc;
         }
-        /* Custom control styles */
         .leaflet-control-custom {
             background: #fff;
             border: 1px solid #ccc;
@@ -154,8 +153,6 @@
             color: #666;
             cursor: not-allowed;
         }
-
-        /* Responsive Design */
         @media (max-width: 480px) {
             .header { padding: 8px 10px; }
             .header img { height: 30px; }
@@ -173,7 +170,6 @@
             .footer .copyright { font-size: 0.8em; margin-top: 10px; padding-top: 8px; }
             .leaflet-control-custom { font-size: 12px; padding: 4px 8px; }
         }
-
         @media (min-width: 481px) and (max-width: 768px) {
             .header { padding: 10px 15px; }
             .header img { height: 35px; }
@@ -189,7 +185,6 @@
             .footer .copyright { font-size: 0.82em; margin-top: 12px; padding-top: 8px; }
             .leaflet-control-custom { font-size: 13px; }
         }
-
         @media (min-width: 769px) and (max-width: 1024px) {
             .details { max-width: 700px; }
             .map-container { max-width: 700px; }
@@ -200,7 +195,6 @@
             .footer-section p, .footer-section a { font-size: 0.93em; margin: 6px 0; }
             .footer .copyright { font-size: 0.83em; margin-top: 15px; padding-top: 10px; }
         }
-
         @media (min-width: 1025px) {
             .details { max-width: 800px; padding: 25px; }
             .map-container { max-width: 800px; height: 450px; }
@@ -212,15 +206,12 @@
             .footer-section p, .footer-section a { font-size: 0.95em; margin: 6px 0; }
             .footer .copyright { font-size: 0.85em; margin-top: 15px; padding-top: 10px; }
         }
-
-        /* Touch-friendly adjustments */
         .menu, .back-button, .leaflet-control-custom {
             -webkit-tap-highlight-color: transparent;
         }
     </style>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-    <!-- Tawk.to chat -->
     <script type="text/javascript">
         var Tawk_API = Tawk_API || {}, Tawk_LoadStart = new Date();
         (function() {
@@ -243,7 +234,7 @@
             <a href="#">Help</a>
         </div>
     </div>
-    <div class="title">Tracking Details for {{ shipment.tracking_number }}</div>
+    <div class="title">Tracking Details{% if shipment %} for {{ shipment.tracking_number }}{% endif %}</div>
     {% if error %}
         <div class="error-message">{{ error }}</div>
     {% else %}
@@ -299,37 +290,27 @@
     </div>
 
     <script>
-        // Initialize Leaflet map
         const map = L.map('map', {
             zoomControl: true
         }).setView([0, 0], 2);
-
-        // Tile layers
         const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         }).addTo(map);
-
         const esriSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
             maxZoom: 19,
             attribution: '&copy; <a href="https://www.esri.com/">Esri</a>, USGS, NOAA'
         });
-
-        // Layer control
         const baseLayers = {
             "Street Map": osmLayer,
             "Satellite": esriSatellite
         };
         L.control.layers(baseLayers).addTo(map);
-
-        // Store polyline, animation state, and bounds
         let routePolyline = null;
         let animatedPolyline = null;
         let animationFrameId = null;
         let isAnimationEnabled = true;
         let routeBounds = null;
-
-        // Function to sort coordinates by timestamp
         function sortCoordsByTimestamp(coords) {
             return coords.slice().sort((a, b) => {
                 const aTime = a.desc.split(' - ')[0];
@@ -337,20 +318,16 @@
                 return new Date(aTime) - new Date(bTime);
             });
         }
-
-        // Function to animate polyline segment
         function animateSegment(start, end, duration, callback) {
             const startTime = performance.now();
             const startLatLng = [start.lat, start.lon];
             const endLatLng = [end.lat, end.lon];
             let currentLatLngs = [startLatLng];
-
             function step(timestamp) {
                 const progress = Math.min((timestamp - startTime) / duration, 1);
                 const lat = startLatLng[0] + (endLatLng[0] - startLatLng[0]) * progress;
                 const lon = startLatLng[1] + (endLatLng[1] - startLatLng[1]) * progress;
                 currentLatLngs = [startLatLng, [lat, lon]];
-
                 if (animatedPolyline) {
                     map.removeLayer(animatedPolyline);
                 }
@@ -360,7 +337,6 @@
                     dashArray: '5, 10',
                     opacity: 0.7
                 }).addTo(map);
-
                 if (progress < 1) {
                     animationFrameId = requestAnimationFrame(step);
                 } else {
@@ -368,17 +344,13 @@
                     callback();
                 }
             }
-
             animationFrameId = requestAnimationFrame(step);
         }
-
-        // Function to animate entire route
         function animateRoute(coords) {
             if (coords.length < 2) {
                 console.warn('Need at least two coordinates for animation');
                 return;
             }
-
             let index = 0;
             function animateNextSegment() {
                 if (index < coords.length - 1) {
@@ -401,10 +373,7 @@
             }
             animateNextSegment();
         }
-
-        // Function to update map
         function updateMap(coords) {
-            // Clear existing markers, polylines, and animation
             map.eachLayer(layer => {
                 if (layer instanceof L.Marker || layer instanceof L.Polyline) {
                     map.removeLayer(layer);
@@ -422,30 +391,19 @@
                 map.removeLayer(routePolyline);
                 routePolyline = null;
             }
-
             if (!coords || !coords.length) {
                 console.warn('No coordinates available for map');
                 document.getElementById('toggleAnimation').disabled = true;
                 document.getElementById('resetView').disabled = true;
                 return;
             }
-
-            // Enable controls
             document.getElementById('toggleAnimation').disabled = coords.length < 2;
             document.getElementById('resetView').disabled = false;
-
-            // Sort coordinates by timestamp
             const sortedCoords = sortCoordsByTimestamp(coords);
-
-            // Add markers
             sortedCoords.forEach(coord => {
                 L.marker([coord.lat, coord.lon]).addTo(map).bindPopup(coord.desc);
             });
-
-            // Store bounds
             routeBounds = L.latLngBounds(sortedCoords.map(c => [c.lat, c.lon]));
-
-            // Draw static polyline or animate
             const latlngs = sortedCoords.map(c => [c.lat, c.lon]);
             if (isAnimationEnabled && sortedCoords.length >= 2) {
                 animateRoute(sortedCoords);
@@ -457,12 +415,8 @@
                     opacity: 0.7
                 }).addTo(map);
             }
-
-            // Fit map to bounds
             map.fitBounds(routeBounds);
         }
-
-        // Custom control: Toggle Animation
         const ToggleAnimationControl = L.Control.extend({
             options: { position: 'topright' },
             onAdd: function(map) {
@@ -478,13 +432,11 @@
                     container.setAttribute('aria-pressed', isAnimationEnabled);
                     container.classList.toggle('active');
                     console.log('Animation toggled:', isAnimationEnabled);
-                    updateMap({{ coords | tojson }}); // Redraw map with current coords
+                    updateMap({{ coords | tojson }});
                 };
                 return container;
             }
         });
-
-        // Custom control: Reset View
         const ResetViewControl = L.Control.extend({
             options: { position: 'topright' },
             onAdd: function(map) {
@@ -502,12 +454,8 @@
                 return container;
             }
         });
-
-        // Add custom controls
         map.addControl(new ToggleAnimationControl());
         map.addControl(new ResetViewControl());
-
-        // Initial coordinates from Jinja2
         const initialCoords = {{ coords | tojson }};
         if (initialCoords && initialCoords.length) {
             updateMap(initialCoords);
@@ -516,14 +464,11 @@
             document.getElementById('toggleAnimation').disabled = true;
             document.getElementById('resetView').disabled = true;
         }
-
-        // Socket.IO connection
         const socket = io();
         socket.on('connect', () => {
             console.log('Socket.IO connected');
             socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number }}' });
         });
-
         socket.on('tracking_update', (data) => {
             console.log('Received tracking update:', data);
             if (data.tracking_number === '{{ shipment.tracking_number }}' && data.found) {
@@ -576,12 +521,9 @@
                 document.getElementById('resetView').disabled = true;
             }
         });
-
         socket.on('disconnect', () => {
             console.log('Socket.IO disconnected');
         });
-
-        // Hamburger Menu Toggle
         document.querySelector('.menu').addEventListener('click', function() {
             const menuContent = document.querySelector('.menu-content');
             menuContent.style.display = menuContent.style.display === 'block' ? 'none' : 'block';
