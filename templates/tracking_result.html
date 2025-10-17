@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -426,13 +427,13 @@
                 container.setAttribute('aria-label', 'Toggle route animation');
                 container.setAttribute('aria-pressed', 'true');
                 container.classList.add('active');
-                container.disabled = {{ coords | tojson }}.length < 2;
+                container.disabled = {{ coords | default([]) | tojson }}.length < 2;
                 container.onclick = function() {
                     isAnimationEnabled = !isAnimationEnabled;
                     container.setAttribute('aria-pressed', isAnimationEnabled);
                     container.classList.toggle('active');
                     console.log('Animation toggled:', isAnimationEnabled);
-                    updateMap({{ coords | tojson }});
+                    updateMap({{ coords | default([]) | tojson }});
                 };
                 return container;
             }
@@ -444,7 +445,7 @@
                 container.id = 'resetView';
                 container.innerHTML = 'Reset View';
                 container.setAttribute('aria-label', 'Reset map view to route');
-                container.disabled = !{{ coords | tojson }}.length;
+                container.disabled = !{{ coords | default([]) | tojson }}.length;
                 container.onclick = function() {
                     if (routeBounds) {
                         map.fitBounds(routeBounds);
@@ -456,7 +457,7 @@
         });
         map.addControl(new ToggleAnimationControl());
         map.addControl(new ResetViewControl());
-        const initialCoords = {{ coords | tojson }};
+        const initialCoords = {{ coords | default([]) | tojson }};
         if (initialCoords && initialCoords.length) {
             updateMap(initialCoords);
         } else {
@@ -467,11 +468,11 @@
         const socket = io();
         socket.on('connect', () => {
             console.log('Socket.IO connected');
-            socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number }}' });
+            socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
         });
         socket.on('tracking_update', (data) => {
             console.log('Received tracking update:', data);
-            if (data.tracking_number === '{{ shipment.tracking_number }}' && data.found) {
+            if (data.tracking_number === '{{ shipment.tracking_number | default("") }}' && data.found) {
                 document.getElementById('status').textContent = data.status || 'Not Found';
                 document.getElementById('delivery_location').textContent = data.delivery_location || 'N/A';
                 const checkpointsDiv = document.getElementById('checkpoints');
@@ -538,3 +539,4 @@
     </script>
 </body>
 </html>
+```
