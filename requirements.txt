@@ -27,6 +27,7 @@ rich==13.9.2
 
 # Input validation
 validators==0.28.1
+email_validator
 
 # Geocoding for location validation
 geopy==2.4.1
