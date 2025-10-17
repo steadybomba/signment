@@ -6,9 +6,41 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn -k eventlet -w 4 app:app
     envVars:
-      - key: TELEGRAM_BOT_TOKEN
+      - key: FLASK_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: SQLALCHEMY_DATABASE_URI
         sync: false
       - key: REDIS_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: RECAPTCHA_SECRET_KEY
+        sync: false
+      - key: RECAPTCHA_SITE_KEY
+        sync: false
+      - key: GEOCODING_API_KEY
+        sync: false
+      - key: TAWK_PROPERTY_ID
+        sync: false
+      - key: TAWK_WIDGET_ID
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: WEBSOCKET_SERVER
+        value: https://signment.onrender.com
+      - key: GLOBAL_WEBHOOK_URL
         sync: false
   - type: worker
     name: sipment-bot
@@ -20,4 +52,6 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: REDIS_URL
+        sync: false
+      - key: ADMIN_IDS
         sync: false
