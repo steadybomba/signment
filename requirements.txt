@@ -32,7 +32,7 @@ geopy==2.4.1
 
 # Rate limiting
 flask-limiter==3.11.0
-redis==5.0.8  # Storage backend for Flask-Limiter
+upstash-redis==0.15.0  # Storage backend for Flask-Limiter
 
 # Production WSGI server
 gunicorn==22.0.0
