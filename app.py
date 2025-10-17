@@ -518,6 +518,8 @@ def broadcast_update(tracking_number):
 # Flask routes
 @app.route('/')
 def index():
+    if request.method == 'HEAD':
+        return '', 200  # Return empty response for HEAD requests
     try:
         from forms import TrackForm
     except ImportError as e:
@@ -552,6 +554,7 @@ def track():
         return jsonify({'error': 'reCAPTCHA verification failed'}), 400
 
     tracking_number = form.tracking_number.data
+    email = form.email.data
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         flask_logger.warning(f"Invalid tracking number submitted: {tracking_number}", extra={'tracking_number': str(tracking_number)})
@@ -568,6 +571,13 @@ def track():
                                  error='Shipment not found', 
                                  tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
                                  tawk_widget_id=app.config['TAWK_WIDGET_ID'])
+
+        # Update recipient_email if provided and valid
+        if email and validate_email(email):
+            shipment.recipient_email = email
+            db.session.commit()
+            flask_logger.info(f"Updated recipient email to {email}", extra={'tracking_number': sanitized_tn})
+            console.print(f"[info]Updated recipient email to {email} for {sanitized_tn}[/info]")
 
         checkpoints_str = shipment.checkpoints or ''
         checkpoints = checkpoints_str.split(';') if checkpoints_str else []
