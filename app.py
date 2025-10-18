@@ -25,9 +25,10 @@ from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy import inspect, text
 from time import sleep
 
-# Patch for gevent/gunicorn
+# Patch for gevent/gunicorn compatibility
 eventlet.monkey_patch()
 
+# Initialize Flask app and core components
 app = Flask(__name__)
 app.config.from_object('config.Config')
 db = SQLAlchemy(app)
@@ -101,6 +102,7 @@ class Shipment(db.Model):
 
 # Shared utility functions
 def sanitize_tracking_number(tracking_number):
+    """Sanitize tracking number to remove invalid characters and limit length."""
     if not tracking_number or not isinstance(tracking_number, str):
         sim_logger.debug("Invalid tracking number provided", extra={'tracking_number': str(tracking_number)})
         console.print(f"[error]Invalid tracking number: {tracking_number}[/error]")
@@ -109,12 +111,14 @@ def sanitize_tracking_number(tracking_number):
     return sanitized if sanitized else None
 
 def validate_email(email):
+    """Validate email address format."""
     try:
         return validators.email(email)
     except validators.ValidationFailure:
         return False
 
 def validate_location(location):
+    """Validate location against route templates."""
     try:
         from telegram import get_cached_route_templates
         route_templates = get_cached_route_templates()
@@ -124,6 +128,7 @@ def validate_location(location):
     return location in route_templates
 
 def validate_webhook_url(url):
+    """Validate webhook URL format."""
     if not url:
         return True
     try:
@@ -132,6 +137,7 @@ def validate_webhook_url(url):
         return False
 
 def send_email_notification(tracking_number, status, checkpoints, delivery_location, recipient_email):
+    """Send email notification for shipment updates."""
     try:
         shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
         if not shipment or not shipment.email_notifications:
@@ -177,6 +183,7 @@ def send_email_notification(tracking_number, status, checkpoints, delivery_locat
         console.print(Panel(f"[error]Email failed for {tracking_number}: {e}[/error]", title="Email Error", border_style="red"))
 
 def init_db():
+    """Initialize database with retries and table creation."""
     flask_logger.info("Starting database initialization")
     console.print("[info]Starting database initialization[/info]")
     max_retries = 5
@@ -234,6 +241,7 @@ def init_db():
     raise Exception("Database initialization failed")
 
 def verify_recaptcha(response_token):
+    """Verify reCAPTCHA response with Google API."""
     if not app.config['RECAPTCHA_SECRET_KEY'] or 'your-secret-key' in app.config['RECAPTCHA_SECRET_KEY']:
         flask_logger.debug("reCAPTCHA disabled due to missing or default secret key")
         return True
@@ -256,6 +264,7 @@ def verify_recaptcha(response_token):
         return False
 
 def geocode_locations(checkpoints):
+    """Geocode checkpoint locations using external API."""
     coords = []
     api_key = app.config['GEOCODING_API_KEY']
     last_request_time = [0]  # Track last request time for rate limiting
@@ -311,6 +320,7 @@ def geocode_locations(checkpoints):
     return coords
 
 def add_client(tracking_number, sid):
+    """Add WebSocket client to tracking number's client set."""
     if redis_client:
         try:
             redis_client.sadd(f"clients:{tracking_number}", sid)
@@ -325,6 +335,7 @@ def add_client(tracking_number, sid):
         flask_logger.debug(f"Added client {sid} to in-memory store", extra={'tracking_number': tracking_number})
 
 def remove_client(tracking_number, sid):
+    """Remove WebSocket client from tracking number's client set."""
     if redis_client:
         try:
             redis_client.srem(f"clients:{tracking_number}", sid)
@@ -338,6 +349,7 @@ def remove_client(tracking_number, sid):
             flask_logger.debug(f"Removed client {sid} from in-memory store", extra={'tracking_number': tracking_number})
 
 def get_clients(tracking_number):
+    """Retrieve all WebSocket clients for a tracking number."""
     if redis_client:
         try:
             clients = redis_client.smembers(f"clients:{tracking_number}")
@@ -353,6 +365,7 @@ def get_clients(tracking_number):
         return clients
 
 def keep_alive():
+    """Periodically ping WebSocket server to ensure it remains responsive."""
     while True:
         try:
             response = requests.get(f"{app.config['WEBSOCKET_SERVER']}/health", timeout=5)
@@ -368,6 +381,7 @@ def keep_alive():
         time.sleep(60)
 
 def simulate_tracking(tracking_number):
+    """Simulate shipment tracking with status updates and notifications."""
     try:
         from telegram import get_cached_route_templates
     except Exception as e:
@@ -510,6 +524,7 @@ def simulate_tracking(tracking_number):
                 break
 
 def broadcast_update(tracking_number):
+    """Broadcast shipment updates to connected WebSocket clients."""
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         flask_logger.error("Invalid tracking number for broadcast", extra={'tracking_number': str(tracking_number)})
@@ -561,6 +576,7 @@ def broadcast_update(tracking_number):
 # Flask routes
 @app.route('/')
 def index():
+    """Serve the main index page with tracking form."""
     if request.method == 'HEAD':
         return '', 200
     try:
@@ -580,6 +596,7 @@ def index():
 
 @app.route('/track', methods=['POST'])
 def track():
+    """Handle tracking form submission and initiate simulation."""
     try:
         from forms import TrackForm
     except ImportError as e:
@@ -659,6 +676,7 @@ def track():
 
 @app.route('/broadcast/<tracking_number>')
 def trigger_broadcast(tracking_number):
+    """Trigger a broadcast update for a specific tracking number."""
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         flask_logger.warning(f"Invalid tracking number for broadcast: {tracking_number}", extra={'tracking_number': str(tracking_number)})
@@ -669,6 +687,7 @@ def trigger_broadcast(tracking_number):
 
 @app.route('/health', methods=['GET'])
 def health_check():
+    """Perform health check for application components."""
     status = {'status': 'healthy', 'database': 'ok', 'redis': 'unavailable', 'smtp': 'ok', 'telegram': 'unavailable'}
     try:
         inspector = inspect(db.engine)
@@ -707,6 +726,7 @@ def health_check():
 # SocketIO handlers
 @socketio.on('connect')
 def handle_connect():
+    """Handle WebSocket client connection."""
     flask_logger.debug(f"Client connected: {request.sid}", extra={'tracking_number': ''})
     try:
         emit('status', {'message': 'Connected to tracking service'}, broadcast=False)
@@ -715,6 +735,7 @@ def handle_connect():
 
 @socketio.on('request_tracking')
 def handle_request_tracking(data):
+    """Handle WebSocket tracking request."""
     tracking_number = data.get('tracking_number')
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
@@ -776,6 +797,7 @@ def handle_request_tracking(data):
 
 @socketio.on('disconnect')
 def handle_disconnect():
+    """Handle WebSocket client disconnection."""
     try:
         if redis_client:
             for key in redis_client.scan_iter("clients:*"):
