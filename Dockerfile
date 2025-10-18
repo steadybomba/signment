@@ -25,10 +25,7 @@ COPY bot.py .
 COPY utils.py .
 COPY Procfile .
 
-# Copy .env file (optional, can be provided via platform config)
-COPY .env .
-
-# Load environment variables
+# Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 
@@ -36,4 +33,5 @@ ENV PORT=8000
 EXPOSE $PORT
 
 # Run Procfile with honcho
+# Environment variables (e.g., TELEGRAM_BOT_TOKEN, REDIS_URL, SMTP_HOST) should be set via deployment platform config
 CMD ["honcho", "start", "-f", "Procfile"]
