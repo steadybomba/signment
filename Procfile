@@ -1,2 +1,2 @@
-web: gunicorn -w 4 -k eventlet app:app
-bot: python -m telegram_bot
+web: gunicorn --worker-class eventlet -w 1 app:app
+worker: python3 telegram_bot.py
