@@ -25,32 +25,90 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 import validators
-from upstash_redis import Redis
-import logging
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy import inspect, text
 from time import sleep
 
+# Local imports from utils.py
+from utils import (
+    BotConfig, redis_client, console, get_app_modules, enqueue_notification,
+    get_cached_route_templates, sanitize_tracking_number, validate_email,
+    validate_location, validate_webhook_url, send_email_notification,
+    check_bot_status, cache_route_templates
+)
+
 # Initialize Flask app and core components
 app = Flask(__name__)
-app.config.from_object('config.Config')
+
+# Load configuration from utils.py
+try:
+    config = BotConfig(
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment.onrender.com"),
+        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
+        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
+        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}'))
+    )
+    app.config.update(
+        TELEGRAM_BOT_TOKEN=config.telegram_bot_token,
+        REDIS_URL=config.redis_url,
+        WEBSOCKET_SERVER=config.websocket_server,
+        SECRET_KEY=os.getenv("SECRET_KEY", "default-secret-key"),
+        SQLALCHEMY_DATABASE_URI=os.getenv("SQLALCHEMY_DATABASE_URI", "sqlite:///shipments.db"),
+        SMTP_HOST=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        SMTP_PORT=int(os.getenv("SMTP_PORT", 587)),
+        SMTP_USER=os.getenv("SMTP_USER", ""),
+        SMTP_PASS=os.getenv("SMTP_PASS", ""),
+        SMTP_FROM=os.getenv("SMTP_FROM", "no-reply@example.com"),
+        RECAPTCHA_SITE_KEY=os.getenv("RECAPTCHA_SITE_KEY", "your-site-key"),
+        RECAPTCHA_SECRET_KEY=os.getenv("RECAPTCHA_SECRET_KEY", "your-secret-key"),
+        RECAPTCHA_VERIFY_URL="https://www.google.com/recaptcha/api/siteverify",
+        GEOCODING_API_KEY=os.getenv("GEOCODING_API_KEY", ""),
+        TAWK_PROPERTY_ID=os.getenv("TAWK_PROPERTY_ID", ""),
+        TAWK_WIDGET_ID=os.getenv("TAWK_WIDGET_ID", ""),
+        RATELIMIT_DEFAULTS=['200 per day', '50 per hour'],
+        RATELIMIT_STORAGE_URI=os.getenv("RATELIMIT_STORAGE_URI", f"redis://{config.redis_url}" if config.redis_url else "memory://"),
+        GLOBAL_WEBHOOK_URL=os.getenv("GLOBAL_WEBHOOK_URL", config.websocket_server),
+        STATUS_TRANSITIONS=json.loads(os.getenv("STATUS_TRANSITIONS", '''
+            {
+                "Pending": {"next": ["In_Transit"], "delay": [60, 300], "probabilities": [1.0], "events": {}},
+                "In_Transit": {"next": ["Out_for_Delivery", "Delayed"], "delay": [120, 600], "probabilities": [0.9, 0.1], "events": {"Delayed due to weather", "Customs inspection"}},
+                "Out_for_Delivery": {"next": ["Delivered"], "delay": [60, 300], "probabilities": [1.0], "events": {}},
+                "Delayed": {"next": ["Out_for_Delivery"], "delay": [300, 1200], "probabilities": [1.0], "events": {"Resolved delay"}},
+                "Delivered": {"next": [], "delay": [0, 0], "probabilities": [], "events": {}},
+                "Returned": {"next": [], "delay": [0, 0], "probabilities": [], "events": {}}
+            }
+        '''))
+    )
+except Exception as e:
+    console.print(Panel(f"[error]Configuration validation failed: {e}[/error]", title="Config Error", border_style="red"))
+    raise
+
 db = SQLAlchemy(app)
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=app.config.get('RATELIMIT_DEFAULTS', ['200 per day', '50 per hour']),
-    storage_uri=app.config.get('RATELIMIT_STORAGE_URI', 'redis://' if app.config.get('REDIS_URL') else 'memory://')
+    default_limits=app.config['RATELIMIT_DEFAULTS'],
+    storage_uri=app.config['RATELIMIT_STORAGE_URI']
 )
 socketio = SocketIO(app, cors_allowed_origins="*")
-console = Console()
 
 # Logging setup
 flask_logger = logging.getLogger('flask_app')
+flask_logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+flask_logger.addHandler(handler)
+
 sim_logger = logging.getLogger('simulator')
+sim_logger.setLevel(logging.INFO)
+sim_logger.addHandler(handler)
+
+# In-memory caches
 geocode_cache = {}
 in_memory_clients = {}
-paused_simulations = {}
-sim_speed_multipliers = {}
 
 # Validate critical environment variables
 required_vars = ['SECRET_KEY', 'SQLALCHEMY_DATABASE_URI', 'SMTP_USER', 'SMTP_PASS', 'TELEGRAM_BOT_TOKEN']
@@ -60,20 +118,6 @@ for var in required_vars:
         flask_logger.error(error_msg)
         console.print(Panel(f"[error]{error_msg}[/error]", title="Config Error", border_style="red"))
         raise ValueError(error_msg)
-
-# Redis setup
-redis_client = None
-if app.config.get('REDIS_URL') and app.config.get('REDIS_TOKEN'):
-    try:
-        redis_client = Redis(url=app.config['REDIS_URL'], token=app.config['REDIS_TOKEN'])
-        redis_client.set("test", "ping")  # Test connection
-        redis_client.delete("test")
-        flask_logger.info("Redis connection successful")
-        console.print("[info]Redis connection successful[/info]")
-    except Exception as e:
-        flask_logger.error(f"Redis connection failed: {e}")
-        console.print(Panel(f"[error]Redis connection failed: {e}[/error]", title="Redis Error", border_style="red"))
-        redis_client = None
 
 # Models
 class Shipment(db.Model):
@@ -103,88 +147,6 @@ class Shipment(db.Model):
             'email_notifications': self.email_notifications
         }
 
-# Shared utility functions
-def sanitize_tracking_number(tracking_number):
-    """Sanitize tracking number to remove invalid characters and limit length."""
-    if not tracking_number or not isinstance(tracking_number, str):
-        sim_logger.debug("Invalid tracking number provided", extra={'tracking_number': str(tracking_number)})
-        console.print(f"[error]Invalid tracking number: {tracking_number}[/error]")
-        return None
-    sanitized = re.sub(r'[^a-zA-Z0-9\-]', '', tracking_number.strip())[:50]
-    return sanitized if sanitized else None
-
-def validate_email(email):
-    """Validate email address format."""
-    try:
-        return validators.email(email)
-    except validators.ValidationFailure:
-        return False
-
-def validate_location(location):
-    """Validate location against route templates."""
-    try:
-        from telegram_bot import get_cached_route_templates
-        route_templates = get_cached_route_templates()
-    except Exception as e:
-        flask_logger.warning(f"Failed to import route templates: {e}")
-        route_templates = {'Lagos, NG': ['Lagos, NG']}
-    return location in route_templates
-
-def validate_webhook_url(url):
-    """Validate webhook URL format."""
-    if not url:
-        return True
-    try:
-        return validators.url(url)
-    except validators.ValidationFailure:
-        return False
-
-def send_email_notification(tracking_number, status, checkpoints, delivery_location, recipient_email):
-    """Send email notification for shipment updates."""
-    try:
-        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
-        if not shipment or not shipment.email_notifications:
-            flask_logger.debug("Email notifications disabled", extra={'tracking_number': tracking_number})
-            return
-    except SQLAlchemyError as e:
-        flask_logger.error(f"Database error checking email notifications: {e}", extra={'tracking_number': tracking_number})
-        console.print(Panel(f"[error]Database error for {tracking_number}: {e}[/error]", title="Database Error", border_style="red"))
-        return
-
-    if not recipient_email or not validate_email(recipient_email):
-        flask_logger.warning(f"Invalid or no recipient email provided: {recipient_email}", extra={'tracking_number': tracking_number})
-        return
-    subject = f"Shipment Update: Tracking {tracking_number}"
-    body = f"""
-    Dear Customer,
-
-    Your shipment with tracking number {tracking_number} has been updated.
-
-    Status: {status}
-    Delivery Location: {delivery_location}
-    Latest Checkpoint: {checkpoints.split(';')[-1] if checkpoints else 'No checkpoints available'}
-
-    For more details, visit our tracking portal.
-
-    Best regards,
-    Tracking Service Team
-    """
-    msg = MIMEMultipart()
-    msg['From'] = app.config['SMTP_FROM']
-    msg['To'] = recipient_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
-    try:
-        with smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT']) as server:
-            server.starttls()
-            server.login(app.config['SMTP_USER'], app.config['SMTP_PASS'])
-            server.send_message(msg)
-            flask_logger.info(f"Email sent to {recipient_email} for status: {status}", extra={'tracking_number': tracking_number})
-            console.print(f"[info]Email sent for {tracking_number}[/info]")
-    except smtplib.SMTPException as e:
-        flask_logger.error(f"Failed to send email: {e}", extra={'tracking_number': tracking_number})
-        console.print(Panel(f"[error]Email failed for {tracking_number}: {e}[/error]", title="Email Error", border_style="red"))
-
 def init_db():
     """Initialize database with retries and table creation."""
     flask_logger.info("Starting database initialization")
@@ -196,7 +158,6 @@ def init_db():
             with app.app_context():
                 flask_logger.debug(f"Attempting to create shipments table (attempt {attempt + 1})")
                 console.print(f"[info]Attempting to create shipments table (attempt {attempt + 1})[/info]")
-                # Explicitly create table if it doesn't exist
                 db.session.execute(text("""
                     CREATE TABLE IF NOT EXISTS shipments (
                         id SERIAL PRIMARY KEY,
@@ -213,13 +174,11 @@ def init_db():
                     )
                 """))
                 db.session.commit()
-                # Verify table exists
                 inspector = inspect(db.engine)
                 if not inspector.has_table('shipments'):
                     flask_logger.error("Shipments table not created after explicit creation attempt")
                     console.print(Panel("[error]Shipments table not created after explicit attempt[/error]", title="Database Error", border_style="red"))
                     raise Exception("Failed to create shipments table")
-                # Test connection
                 db.session.execute(text('SELECT 1'))
                 db.session.commit()
                 flask_logger.info("Database initialized successfully, shipments table verified")
@@ -229,7 +188,7 @@ def init_db():
             flask_logger.error(f"Database connection attempt {attempt + 1} failed: {e}")
             console.print(Panel(f"[error]Database connection attempt {attempt + 1} failed: {e}[/error]", title="Database Error", border_style="red"))
             if attempt < max_retries - 1:
-                sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                sleep(retry_delay * (2 ** attempt))
             continue
         except SQLAlchemyError as e:
             flask_logger.error(f"Database initialization failed: {e}")
@@ -270,7 +229,7 @@ def geocode_locations(checkpoints):
     """Geocode checkpoint locations using external API."""
     coords = []
     api_key = app.config['GEOCODING_API_KEY']
-    last_request_time = [0]  # Track last request time for rate limiting
+    last_request_time = [0]
 
     for checkpoint in checkpoints:
         if checkpoint in geocode_cache:
@@ -310,7 +269,7 @@ def geocode_locations(checkpoints):
                     geocode_cache[checkpoint] = coord
                     if redis_client:
                         try:
-                            redis_client.setex(cache_key, 86400, json.dumps(coord))  # Cache for 24 hours
+                            redis_client.setex(cache_key, 86400, json.dumps(coord))
                         except Exception as e:
                             flask_logger.warning(f"Failed to cache geocode result: {e}", extra={'tracking_number': ''})
                     coords.append(coord)
@@ -394,12 +353,6 @@ def keep_alive():
 
 def simulate_tracking(tracking_number):
     """Simulate shipment tracking with status updates and notifications."""
-    try:
-        from telegram_bot import get_cached_route_templates
-    except Exception as e:
-        flask_logger.warning(f"Failed to import route templates: {e}")
-        get_cached_route_templates = lambda: {'Lagos, NG': ['Lagos, NG']}
-    
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         sim_logger.error("Invalid tracking number", extra={'tracking_number': str(tracking_number)})
@@ -411,7 +364,7 @@ def simulate_tracking(tracking_number):
     max_simulation_time = timedelta(days=30)
     start_time = datetime.now()
 
-    console.print(f"[info]Starting simulation for {sanitized_tn} with speed multiplier {sim_speed_multipliers.get(sanitized_tn, 1.0)}[/info]")
+    console.print(f"[info]Starting simulation for {sanitized_tn}[/info]")
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -422,7 +375,7 @@ def simulate_tracking(tracking_number):
         task = progress.add_task(f"Simulating {sanitized_tn}", total=100)
         
         while datetime.now() - start_time < max_simulation_time:
-            if paused_simulations.get(sanitized_tn, False):
+            if redis_client and redis_client.hget("paused_simulations", sanitized_tn) == "true":
                 sim_logger.debug(f"Simulation paused for {sanitized_tn}", extra={'tracking_number': sanitized_tn})
                 console.print(f"[info]Simulation paused for {sanitized_tn}[/info]")
                 eventlet.sleep(5)
@@ -463,7 +416,8 @@ def simulate_tracking(tracking_number):
 
                 route_length = len(template)
                 delay_multiplier = 1 + (route_length / 10)
-                speed_multiplier = max(0.1, min(10.0, sim_speed_multipliers.get(sanitized_tn, 1.0)))
+                speed_multiplier = float(redis_client.hget("sim_speed_multipliers", sanitized_tn) or 1.0) if redis_client else 1.0
+                speed_multiplier = max(0.1, min(10.0, speed_multiplier))
                 adjusted_delay = random.uniform(delay_range[0], delay_range[1]) * delay_multiplier / speed_multiplier
 
                 if status not in ['Out_for_Delivery', 'Delivered']:
@@ -495,25 +449,20 @@ def simulate_tracking(tracking_number):
                 sim_logger.debug(f"Updated shipment: status={status}, checkpoints={len(checkpoints)}", extra={'tracking_number': sanitized_tn})
 
                 if send_notification and recipient_email:
-                    eventlet.spawn(send_email_notification, sanitized_tn, status, ';'.join(checkpoints), delivery_location, recipient_email)
+                    enqueue_notification(sanitized_tn, "email", {
+                        "status": status,
+                        "checkpoints": ';'.join(checkpoints),
+                        "delivery_location": delivery_location,
+                        "recipient_email": recipient_email
+                    })
 
                 if webhook_url:
-                    payload = {
-                        'tracking_number': sanitized_tn,
-                        'status': status,
-                        'checkpoints': checkpoints,
-                        'delivery_location': delivery_location,
-                        'last_updated': current_time.isoformat(),
-                        'event': 'status_update'
-                    }
-                    try:
-                        response = requests.post(webhook_url, json=payload, timeout=5)
-                        if response.status_code != 200:
-                            sim_logger.warning(f"Webhook failed: {response.status_code} - {response.text}", extra={'tracking_number': sanitized_tn})
-                        else:
-                            sim_logger.debug(f"Webhook sent: {payload}", extra={'tracking_number': sanitized_tn})
-                    except requests.RequestException as e:
-                        sim_logger.error(f"Webhook error: {e}", extra={'tracking_number': sanitized_tn})
+                    enqueue_notification(sanitized_tn, "webhook", {
+                        "status": status,
+                        "checkpoints": checkpoints,
+                        "delivery_location": delivery_location,
+                        "webhook_url": webhook_url
+                    })
 
                 broadcast_update(sanitized_tn)
 
@@ -564,8 +513,8 @@ def broadcast_update(tracking_number):
                 'delivery_location': delivery_location,
                 'coords': coords_list,
                 'found': True,
-                'paused': paused_simulations.get(sanitized_tn, False),
-                'speed_multiplier': sim_speed_multipliers.get(sanitized_tn, 1.0)
+                'paused': redis_client.hget("paused_simulations", sanitized_tn) == "true" if redis_client else False,
+                'speed_multiplier': float(redis_client.hget("sim_speed_multipliers", sanitized_tn) or 1.0) if redis_client else 1.0
             }
         clients = get_clients(sanitized_tn)
         if clients:
@@ -575,7 +524,7 @@ def broadcast_update(tracking_number):
                     flask_logger.debug(f"Broadcast update to {sid}", extra={'tracking_number': sanitized_tn})
                 except Exception as e:
                     flask_logger.error(f"Failed to emit to {sid}: {e}", extra={'tracking_number': sanitized_tn})
-                    remove_client(sanitized_tn, sid)  # Remove stale client
+                    remove_client(sanitized_tn, sid)
         else:
             flask_logger.debug(f"No clients for broadcast: {sanitized_tn}", extra={'tracking_number': sanitized_tn})
     except SQLAlchemyError as e:
@@ -658,11 +607,10 @@ def track():
         coords = geocode_locations(checkpoints)
         coords_list = [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords]
         
-        sim_speed_multipliers[sanitized_tn] = sim_speed_multipliers.get(sanitized_tn, 1.0)
         if shipment.status not in ['Delivered', 'Returned']:
             eventlet.spawn(simulate_tracking, sanitized_tn)
         flask_logger.info(f"Started tracking simulation", extra={'tracking_number': sanitized_tn})
-        console.print(f"[info]Started tracking simulation for {sanitized_tn} with speed multiplier {sim_speed_multipliers[sanitized_tn]}[/info]")
+        console.print(f"[info]Started tracking simulation for {sanitized_tn}[/info]")
         return render_template('tracking_result.html', 
                              shipment=shipment, 
                              checkpoints=checkpoints, 
@@ -724,10 +672,7 @@ def health_check():
     except smtplib.SMTPException as e:
         status['smtp'] = str(e)
     try:
-        from telegram_bot import check_bot_status
         status['telegram'] = 'ok' if check_bot_status() else 'unavailable'
-    except ImportError:
-        status['telegram'] = 'check_bot_status not implemented'
     except Exception as e:
         status['telegram'] = str(e)
     if status['status'] == 'healthy' and any(v != 'ok' for v in [status['database'], 'smtp']):
@@ -782,8 +727,8 @@ def handle_request_tracking(data):
                 'delivery_location': delivery_location,
                 'coords': coords_list,
                 'found': True,
-                'paused': paused_simulations.get(sanitized_tn, False),
-                'speed_multiplier': sim_speed_multipliers.get(sanitized_tn, 1.0)
+                'paused': redis_client.hget("paused_simulations", sanitized_tn) == "true" if redis_client else False,
+                'speed_multiplier': float(redis_client.hget("sim_speed_multipliers", sanitized_tn) or 1.0) if redis_client else 1.0
             }
         try:
             emit('tracking_update', update_data, room=request.sid)
@@ -834,13 +779,12 @@ except Exception as e:
 
 if __name__ == '__main__':
     try:
-        from telegram_bot import cache_route_templates
         cache_route_templates()
         flask_logger.info("Route templates cached successfully")
         console.print("[info]Route templates cached successfully[/info]")
     except Exception as e:
         flask_logger.error(f"Failed to cache route templates: {e}")
-        console.print(Panel(f"[error]Route templates cache failed: {e}[/error]", title="Telegram Error", border_style="red"))
+        console.print(Panel(f"[error]Route templates cache failed: {e}[/error]", title="Cache Error", border_style="red"))
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
     console.print("[info]Keep-alive thread started[/info]")
