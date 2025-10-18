@@ -1,15 +1,21 @@
+# Patch for gevent/gunicorn compatibility
+import eventlet
+eventlet.monkey_patch()
+
+# Standard library imports
 import re
 import os
 import json
 import random
-import eventlet
-import requests
-import smtplib
 import threading
 import time
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+# Third-party imports
+import requests
+import smtplib
 from flask import Flask, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
@@ -24,9 +30,6 @@ import logging
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy import inspect, text
 from time import sleep
-
-# Patch for gevent/gunicorn compatibility
-eventlet.monkey_patch()
 
 # Initialize Flask app and core components
 app = Flask(__name__)
@@ -120,7 +123,7 @@ def validate_email(email):
 def validate_location(location):
     """Validate location against route templates."""
     try:
-        from telegram import get_cached_route_templates
+        from telegram_bot import get_cached_route_templates
         route_templates = get_cached_route_templates()
     except Exception as e:
         flask_logger.warning(f"Failed to import route templates: {e}")
@@ -383,7 +386,7 @@ def keep_alive():
 def simulate_tracking(tracking_number):
     """Simulate shipment tracking with status updates and notifications."""
     try:
-        from telegram import get_cached_route_templates
+        from telegram_bot import get_cached_route_templates
     except Exception as e:
         flask_logger.warning(f"Failed to import route templates: {e}")
         get_cached_route_templates = lambda: {'Lagos, NG': ['Lagos, NG']}
@@ -711,13 +714,13 @@ def health_check():
     except smtplib.SMTPException as e:
         status['smtp'] = str(e)
     try:
-        from telegram import check_bot_status
+        from telegram_bot import check_bot_status
         status['telegram'] = 'ok' if check_bot_status() else 'unavailable'
     except ImportError:
         status['telegram'] = 'check_bot_status not implemented'
     except Exception as e:
         status['telegram'] = str(e)
-    if status['status'] == 'healthy' and any(v != 'ok' for v in [status['database'], status['smtp']]):
+    if status['status'] == 'healthy' and any(v != 'ok' for v in [status['database'], 'smtp']):
         status['status'] = 'unhealthy'
     flask_logger.info("Health check", extra=status)
     console.print(f"[info]Health check: {status}[/info]")
@@ -820,14 +823,13 @@ except Exception as e:
 
 if __name__ == '__main__':
     try:
-        from telegram import cache_route_templates, start_bot
+        from telegram_bot import cache_route_templates, start_bot
         cache_route_templates()
         flask_logger.info("Route templates cached successfully")
         console.print("[info]Route templates cached successfully[/info]")
     except Exception as e:
         flask_logger.error(f"Failed to cache route templates: {e}")
         console.print(Panel(f"[error]Route templates cache failed: {e}[/error]", title="Telegram Error", border_style="red"))
-        raise
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
     console.print("[info]Keep-alive thread started[/info]")
@@ -838,5 +840,4 @@ if __name__ == '__main__':
     except Exception as e:
         flask_logger.error(f"Failed to start Telegram bot: {e}")
         console.print(Panel(f"[error]Telegram bot failed to start: {e}[/error]", title="Telegram Error", border_style="red"))
-        raise
     socketio.run(app, host='0.0.0.0', port=5000, debug=app.config.get('FLASK_ENV') == 'development')
