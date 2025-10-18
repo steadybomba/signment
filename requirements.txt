@@ -11,6 +11,7 @@ eventlet==0.36.1
 
 # Telegram bot
 pyTelegramBotAPI==4.22.1
+telebot
 
 # HTTP requests
 requests==2.32.3
