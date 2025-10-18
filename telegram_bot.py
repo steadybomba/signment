@@ -1,6 +1,6 @@
-# Part 1: Initialization and Setup
-# This section initializes the Telegram bot, sets up logging, establishes the Redis connection,
-# and defines functions to lazily import app modules and configuration values.
+# Part 1: Initialization
+# This section includes imports, logging setup, Redis connection, bot initialization,
+# and webhook setup for Telegram.
 
 import os
 import re
@@ -107,6 +107,19 @@ def check_bot_status():
         bot_logger.error(f"Bot status check failed: {e}", extra={'tracking_number': ''})
         console.print(Panel(f"[error]Bot status check failed: {e}[/error]", title="Telegram Error", border_style="red"))
         return False
+
+def set_webhook():
+    """Set the Telegram webhook for receiving updates."""
+    webhook_url = f"https://signment.onrender.com/telegram/webhook"
+    try:
+        bot.remove_webhook()  # Clear any existing webhook
+        bot.set_webhook(url=webhook_url)
+        bot_logger.info(f"Webhook set to {webhook_url}")
+        console.print(f"[info]Webhook set to {webhook_url}[/info]")
+    except Exception as e:
+        bot_logger.error(f"Failed to set webhook: {e}")
+        console.print(Panel(f"[error]Failed to set webhook: {e}[/error]", title="Telegram Error", border_style="red"))
+        raise
 
 # Part 2: Utility Functions
 # This section includes utility functions for generating unique tracking numbers,
@@ -231,6 +244,505 @@ def invalidate_cache(tracking_number):
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if redis_client and sanitized_tn:
         redis_client.delete(f"shipment:{sanitized_tn}")
+
+# Part 3: Shipment Management
+# This section includes functions for saving, deleting, and managing shipment details,
+# including webhook and email notifications, as well as batch operations and simulation controls.
+
+def save_shipment(tracking_number, status, checkpoints, delivery_location, recipient_email='', origin_location=None, webhook_url=None, email_notifications=True):
+    """Save or update a shipment in the database and update Redis cache."""
+    db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification = get_app_modules()
+    _, websocket_server, valid_statuses, _ = get_config_values()
+    sanitized_tn = sanitize_tracking_number(tracking_number)
+    if not sanitized_tn:
+        raise ValueError("Invalid tracking number")
+    if status not in valid_statuses:
+        raise ValueError(f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
+    if not validate_location(delivery_location):
+        raise ValueError(f"Invalid delivery location. Must be one of: {', '.join(get_cached_route_templates().keys())}")
+    if origin_location and not validate_location(origin_location):
+        raise ValueError(f"Invalid origin location. Must be one of: {', '.join(get_cached_route_templates().keys())}")
+    if recipient_email and not validate_email(recipient_email):
+        raise ValueError("Invalid recipient email")
+    if webhook_url and not validate_webhook_url(webhook_url):
+        raise ValueError("Invalid webhook URL")
+    
+    try:
+        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+        last_updated = datetime.now()
+        origin_location = origin_location or delivery_location
+        webhook_url = webhook_url or None
+        checkpoints = checkpoints or ''
+        if shipment:
+            shipment.status = status
+            shipment.checkpoints = checkpoints
+            shipment.delivery_location = delivery_location
+            shipment.last_updated = last_updated
+            shipment.recipient_email = recipient_email
+            shipment.origin_location = origin_location
+            shipment.webhook_url = webhook_url
+            shipment.email_notifications = email_notifications
+        else:
+            shipment = Shipment(
+                tracking_number=sanitized_tn,
+                status=status,
+                checkpoints=checkpoints,
+                delivery_location=delivery_location,
+                last_updated=last_updated,
+                recipient_email=recipient_email,
+                created_at=last_updated,
+                origin_location=origin_location,
+                webhook_url=webhook_url,
+                email_notifications=email_notifications
+            )
+            db.session.add(shipment)
+        db.session.commit()
+        details = shipment.to_dict()
+        details['paused'] = redis_client.hget("paused_simulations", sanitized_tn) == "true" if redis_client else False
+        details['speed_multiplier'] = float(redis_client.hget("sim_speed_multipliers", sanitized_tn) or 1.0) if redis_client else 1.0
+        if redis_client:
+            redis_client.setex(f"shipment:{sanitized_tn}", 3600, json.dumps(details))
+        bot_logger.info(f"Saved shipment: status={status}", extra={'tracking_number': sanitized_tn})
+        console.print(f"[info]Saved shipment {sanitized_tn}: {status}[/info]")
+        if recipient_email and email_notifications:
+            eventlet.spawn(send_email_notification, sanitized_tn, status, checkpoints, delivery_location, recipient_email)
+        if webhook_url:
+            eventlet.spawn(send_webhook_notification, sanitized_tn, status, checkpoints, delivery_location, webhook_url)
+        try:
+            response = requests.get(f'{websocket_server}/broadcast/{sanitized_tn}', timeout=5)
+            if response.status_code != 204:
+                bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': sanitized_tn})
+        except requests.RequestException as e:
+            bot_logger.error(f"Broadcast error: {e}", extra={'tracking_number': sanitized_tn})
+            console.print(Panel(f"[warning]Broadcast error for {sanitized_tn}: {e}[/warning]", title="Broadcast Warning", border_style="yellow"))
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        bot_logger.error(f"Database error saving shipment: {e}", extra={'tracking_number': sanitized_tn})
+        console.print(Panel(f"[error]Database error saving {sanitized_tn}: {e}[/error]", title="Database Error", border_style="red"))
+        raise
+    except Exception as e:
+        db.session.rollback()
+        raise
+
+def send_webhook_notification(tracking_number, status, checkpoints, delivery_location, webhook_url):
+    """Send a webhook notification for a shipment."""
+    try:
+        payload = {
+            'tracking_number': tracking_number,
+            'status': status,
+            'checkpoints': checkpoints,
+            'delivery_location': delivery_location,
+            'timestamp': datetime.now().isoformat()
+        }
+        response = requests.post(webhook_url, json=payload, timeout=5)
+        if response.status_code == 200:
+            bot_logger.info(f"Webhook notification sent for {tracking_number}", extra={'tracking_number': tracking_number})
+            console.print(f"[info]Webhook notification sent for {tracking_number} to {webhook_url}[/info]")
+        else:
+            bot_logger.warning(f"Webhook failed for {tracking_number}: HTTP {response.status_code}", extra={'tracking_number': tracking_number})
+            console.print(Panel(f"[warning]Webhook failed for {tracking_number}: HTTP {response.status_code}[/warning]", title="Webhook Warning", border_style="yellow"))
+    except requests.RequestException as e:
+        bot_logger.error(f"Webhook error for {tracking_number}: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Webhook error for {tracking_number}: {e}[/error]", title="Webhook Error", border_style="red"))
+
+def show_shipment_details(call, tracking_number):
+    """Display shipment details with interactive controls."""
+    db, Shipment, sanitize_tracking_number, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
+    try:
+        shipment = get_shipment_details(tracking_number)
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        response = (
+            f"*Shipment*: `{tracking_number}`\n"
+            f"*Status*: `{shipment['status']}`\n"
+            f"*Paused*: `{shipment.get('paused', False)}`\n"
+            f"*Speed Multiplier*: `{shipment.get('speed_multiplier', 1.0)}x`\n"
+            f"*Delivery Location*: `{shipment['delivery_location']}`\n"
+            f"*Origin Location*: `{shipment.get('origin_location', 'None')}`\n"
+            f"*Recipient Email*: `{shipment.get('recipient_email', 'None')}`\n"
+            f"*Checkpoints*: `{shipment.get('checkpoints', 'None')}`\n"
+            f"*Webhook URL*: `{shipment.get('webhook_url', 'Default')}`\n"
+            f"*Email Notifications*: `{'Enabled' if shipment.get('email_notifications', False) else 'Disabled'}`\n"
+            f"*Last Updated*: `{shipment.get('last_updated', 'N/A')}`"
+        )
+        markup = InlineKeyboardMarkup(row_width=2)
+        if shipment['status'] not in ['Delivered', 'Returned']:
+            is_paused = shipment.get('paused', False)
+            markup.add(
+                InlineKeyboardButton("Pause" if not is_paused else "Resume", callback_data=f"{'pause' if not is_paused else 'resume'}_{tracking_number}"),
+                InlineKeyboardButton("Set Speed", callback_data=f"setspeed_{tracking_number}")
+            )
+        markup.add(
+            InlineKeyboardButton("Broadcast", callback_data=f"broadcast_{tracking_number}"),
+            InlineKeyboardButton("Notify", callback_data=f"notify_{tracking_number}"),
+            InlineKeyboardButton("Set Webhook", callback_data=f"set_webhook_{tracking_number}"),
+            InlineKeyboardButton("Test Webhook", callback_data=f"test_webhook_{tracking_number}"),
+            InlineKeyboardButton("Back", callback_data="menu_page_1")
+        )
+        bot.edit_message_text(response, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
+        bot_logger.info(f"Sent shipment details for {tracking_number}", extra={'tracking_number': tracking_number})
+        console.print(f"[info]Sent shipment details for {tracking_number} to admin {call.from_user.id}[/info]")
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error in show shipment details: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error in show shipment details for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def delete_shipment(call, tracking_number, page):
+    """Delete a shipment and invalidate its cache."""
+    db, Shipment, sanitize_tracking_number, _, _, _, _ = get_app_modules()
+    try:
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        db.session.delete(shipment)
+        db.session.commit()
+        if redis_client:
+            redis_client.delete(f"shipment:{tracking_number}")
+            redis_client.hdel("paused_simulations", tracking_number)
+            redis_client.hdel("sim_speed_multipliers", tracking_number)
+        bot_logger.info(f"Deleted shipment {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(f"[info]Deleted shipment {tracking_number} by admin {call.from_user.id}[/info]")
+        bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` deleted.", show_alert=True)
+        send_dynamic_menu(call.message.chat.id, call.message.message_id, page)
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        bot.answer_callback_query(call.id, f"Database error: {e}", show_alert=True)
+        bot_logger.error(f"Database error deleting shipment {tracking_number}: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Database error deleting {tracking_number}: {e}[/error]", title="Database Error", border_style="red"))
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error in delete shipment: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error in delete shipment for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def toggle_batch_selection(call, tracking_number):
+    """Toggle a shipment's selection for batch deletion."""
+    chat_id = call.message.chat.id
+    batch_key = f"batch_delete:{chat_id}"
+    selected = redis_client.smembers(batch_key) if redis_client else set()
+    selected = set(selected)
+    if tracking_number in selected:
+        redis_client.srem(batch_key, tracking_number)
+        bot.answer_callback_query(call.id, f"Deselected `{tracking_number}`.", show_alert=True)
+    else:
+        redis_client.sadd(batch_key, tracking_number)
+        bot.answer_callback_query(call.id, f"Selected `{tracking_number}`.", show_alert=True)
+    bot_logger.info(f"Toggled batch selection for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
+    console.print(f"[info]Toggled batch selection for {tracking_number} by admin {call.from_user.id}[/info]")
+    show_shipment_menu(call, page=1, prefix="batch_select", prompt="Select shipments to delete", extra_buttons=[
+        InlineKeyboardButton("Confirm Delete", callback_data=f"batch_delete_confirm_1"),
+        InlineKeyboardButton("Back", callback_data="menu_page_1")
+    ])
+
+def batch_delete_shipments(call, page):
+    """Delete selected shipments in a batch."""
+    db, Shipment, _, _, _, _, _ = get_app_modules()
+    chat_id = call.message.chat.id
+    batch_key = f"batch_delete:{chat_id}"
+    try:
+        selected = redis_client.smembers(batch_key) if redis_client else set()
+        if not selected:
+            bot.answer_callback_query(call.id, "No shipments selected for deletion.", show_alert=True)
+            bot_logger.warning("No shipments selected for batch deletion", extra={'tracking_number': ''})
+            return
+        for tracking_number in selected:
+            shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+            if shipment:
+                db.session.delete(shipment)
+                if redis_client:
+                    redis_client.delete(f"shipment:{tracking_number}")
+                    redis_client.hdel("paused_simulations", tracking_number)
+                    redis_client.hdel("sim_speed_multipliers", tracking_number)
+        db.session.commit()
+        redis_client.delete(batch_key)
+        bot.answer_callback_query(call.id, f"Deleted {len(selected)} shipments.", show_alert=True)
+        bot_logger.info(f"Batch deleted {len(selected)} shipments by admin {call.from_user.id}", extra={'tracking_number': ''})
+        console.print(f"[info]Batch deleted {len(selected)} shipments by admin {call.from_user.id}[/info]")
+        send_dynamic_menu(call.message.chat.id, call.message.message_id, page)
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        bot.answer_callback_query(call.id, f"Database error: {e}", show_alert=True)
+        bot_logger.error(f"Database error in batch delete: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Database error in batch delete: {e}[/error]", title="Database Error", border_style="red"))
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error in batch delete: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Error in batch delete for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def trigger_broadcast(call, tracking_number):
+    """Trigger a broadcast for a shipment."""
+    _, websocket_server, _, _ = get_config_values()
+    try:
+        shipment = get_shipment_details(tracking_number)
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            bot_logger.warning(f"Shipment not found for broadcast: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
+        if response.status_code == 204:
+            bot.answer_callback_query(call.id, f"Broadcast triggered for `{tracking_number}`.", show_alert=True)
+            bot_logger.info(f"Broadcast triggered for {tracking_number}", extra={'tracking_number': tracking_number})
+            console.print(f"[info]Broadcast triggered for {tracking_number} by admin {call.from_user.id}[/info]")
+        else:
+            bot.answer_callback_query(call.id, f"Broadcast failed: HTTP {response.status_code}", show_alert=True)
+            bot_logger.warning(f"Broadcast failed for {tracking_number}: {response.status_code}", extra={'tracking_number': tracking_number})
+    except requests.RequestException as e:
+        bot.answer_callback_query(call.id, f"Broadcast error: {e}", show_alert=True)
+        bot_logger.error(f"Broadcast error for {tracking_number}: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[warning]Broadcast error for {tracking_number}: {e}[/warning]", title="Broadcast Warning", border_style="yellow"))
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error in broadcast: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error in broadcast for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def toggle_email_notifications(call, tracking_number, page):
+    """Toggle email notifications for a shipment."""
+    db, Shipment, sanitize_tracking_number, _, _, _, _ = get_app_modules()
+    try:
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        shipment.email_notifications = not shipment.email_notifications
+        db.session.commit()
+        invalidate_cache(tracking_number)
+        status = "enabled" if shipment.email_notifications else "disabled"
+        bot.answer_callback_query(call.id, f"Email notifications {status} for `{tracking_number}`.", show_alert=True)
+        bot_logger.info(f"Email notifications {status} for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(f"[info]Email notifications {status} for {tracking_number} by admin {call.from_user.id}[/info]")
+        send_dynamic_menu(call.message.chat.id, call.message.message_id, page)
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        bot.answer_callback_query(call.id, f"Database error: {e}", show_alert=True)
+        bot_logger.error(f"Database error toggling email notifications for {tracking_number}: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Database error toggling email for {tracking_number}: {e}[/error]", title="Database Error", border_style="red"))
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error toggling email notifications: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error toggling email for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def pause_simulation_callback(call, tracking_number, page):
+    """Pause a shipment's simulation via callback."""
+    db, Shipment, sanitize_tracking_number, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
+    try:
+        shipment = get_shipment_details(tracking_number)
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        if shipment['status'] in ['Delivered', 'Returned']:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` is already completed (`{shipment['status']}`).", show_alert=True)
+            bot_logger.warning(f"Cannot pause completed shipment: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        if redis_client and redis_client.hget("paused_simulations", tracking_number) == "true":
+            bot.answer_callback_query(call.id, f"Simulation for `{tracking_number}` is already paused.", show_alert=True)
+            bot_logger.warning(f"Simulation already paused: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        if redis_client:
+            redis_client.hset("paused_simulations", tracking_number, "true")
+        invalidate_cache(tracking_number)
+        bot_logger.info(f"Paused simulation for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[info]Paused simulation for {tracking_number} by admin {call.from_user.id}[/info]", title="Simulation Paused", border_style="green"))
+        try:
+            response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
+            if response.status_code != 204:
+                bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
+        except requests.RequestException as e:
+            bot_logger.error(f"Broadcast error: {e}", extra={'tracking_number': tracking_number})
+            console.print(Panel(f"[warning]Broadcast error for {tracking_number}: {e}[/warning]", title="Broadcast Warning", border_style="yellow"))
+        bot.answer_callback_query(call.id, f"Simulation paused for `{tracking_number}`.", show_alert=True)
+        send_dynamic_menu(call.message.chat.id, call.message.message_id, page)
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error pausing simulation: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error pausing simulation for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def resume_simulation_callback(call, tracking_number, page):
+    """Resume a shipment's simulation via callback."""
+    db, Shipment, sanitize_tracking_number, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
+    try:
+        if redis_client and redis_client.hget("paused_simulations", tracking_number) != "true":
+            bot.answer_callback_query(call.id, f"Simulation for `{tracking_number}` is not paused.", show_alert=True)
+            bot_logger.warning(f"Simulation not paused: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        shipment = get_shipment_details(tracking_number)
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        if shipment['status'] in ['Delivered', 'Returned']:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` is already completed (`{shipment['status']}`).", show_alert=True)
+            bot_logger.warning(f"Cannot resume completed shipment: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        if redis_client:
+            redis_client.hdel("paused_simulations", tracking_number)
+        invalidate_cache(tracking_number)
+        bot_logger.info(f"Resumed simulation for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[info]Resumed simulation for {tracking_number} by admin {call.from_user.id}[/info]", title="Simulation Resumed", border_style="green"))
+        try:
+            response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
+            if response.status_code != 204:
+                bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
+        except requests.RequestException as e:
+            bot_logger.error(f"Broadcast error: {e}", extra={'tracking_number': tracking_number})
+            console.print(Panel(f"[warning]Broadcast error for {tracking_number}: {e}[/warning]", title="Broadcast Warning", border_style="yellow"))
+        bot.answer_callback_query(call.id, f"Simulation resumed for `{tracking_number}`.", show_alert=True)
+        send_dynamic_menu(call.message.chat.id, call.message.message_id, page)
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error resuming simulation: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error resuming simulation for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def show_simulation_speed(call, tracking_number):
+    """Show the simulation speed for a shipment."""
+    try:
+        shipment = get_shipment_details(tracking_number)
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        speed = float(redis_client.hget("sim_speed_multipliers", tracking_number) or 1.0) if redis_client else 1.0
+        bot.answer_callback_query(call.id, f"Simulation speed for `{tracking_number}` is `{speed}x`.", show_alert=True)
+        bot_logger.info(f"Retrieved simulation speed for {tracking_number}: {speed}x", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[info]Retrieved simulation speed for {tracking_number}: {speed}x by admin {call.from_user.id}[/info]", title="Speed Retrieved", border_style="green"))
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error retrieving simulation speed: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error retrieving simulation speed for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def bulk_pause_shipments(call, page):
+    """Pause simulations for selected shipments."""
+    db, Shipment, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
+    chat_id = call.message.chat.id
+    batch_key = f"bulk_pause:{chat_id}"
+    try:
+        selected = redis_client.smembers(batch_key) if redis_client else set()
+        if not selected:
+            bot.answer_callback_query(call.id, "No shipments selected for pausing.", show_alert=True)
+            bot_logger.warning("No shipments selected for bulk pause", extra={'tracking_number': ''})
+            return
+        paused_count = 0
+        for tracking_number in selected:
+            shipment = get_shipment_details(tracking_number)
+            if shipment and shipment['status'] not in ['Delivered', 'Returned'] and redis_client.hget("paused_simulations", tracking_number) != "true":
+                redis_client.hset("paused_simulations", tracking_number, "true")
+                invalidate_cache(tracking_number)
+                try:
+                    response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
+                    if response.status_code != 204:
+                        bot_logger.warning(f"Broadcast failed for {tracking_number}: {response.status_code}", extra={'tracking_number': tracking_number})
+                except requests.RequestException as e:
+                    bot_logger.error(f"Broadcast error for {tracking_number}: {e}", extra={'tracking_number': tracking_number})
+                    console.print(Panel(f"[warning]Broadcast error for {tracking_number}: {e}[/warning]", title="Broadcast Warning", border_style="yellow"))
+                paused_count += 1
+        redis_client.delete(batch_key)
+        bot.answer_callback_query(call.id, f"Paused {paused_count} simulations.", show_alert=True)
+        bot_logger.info(f"Paused {paused_count} simulations by admin {call.from_user.id}", extra={'tracking_number': ''})
+        console.print(f"[info]Paused {paused_count} simulations by admin {call.from_user.id}[/info]")
+        send_dynamic_menu(call.message.chat.id, call.message.message_id, page)
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error in bulk pause: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Error in bulk pause for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def bulk_resume_shipments(call, page):
+    """Resume simulations for selected shipments."""
+    db, Shipment, _, _, _, _, _ = get_app_modules()
+    _, websocket_server, _, _ = get_config_values()
+    chat_id = call.message.chat.id
+    batch_key = f"bulk_resume:{chat_id}"
+    try:
+        selected = redis_client.smembers(batch_key) if redis_client else set()
+        if not selected:
+            bot.answer_callback_query(call.id, "No shipments selected for resuming.", show_alert=True)
+            bot_logger.warning("No shipments selected for bulk resume", extra={'tracking_number': ''})
+            return
+        resumed_count = 0
+        for tracking_number in selected:
+            shipment = get_shipment_details(tracking_number)
+            if shipment and shipment['status'] not in ['Delivered', 'Returned'] and redis_client.hget("paused_simulations", tracking_number) == "true":
+                redis_client.hdel("paused_simulations", tracking_number)
+                invalidate_cache(tracking_number)
+                try:
+                    response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
+                    if response.status_code != 204:
+                        bot_logger.warning(f"Broadcast failed for {tracking_number}: {response.status_code}", extra={'tracking_number': tracking_number})
+                except requests.RequestException as e:
+                    bot_logger.error(f"Broadcast error for {tracking_number}: {e}", extra={'tracking_number': tracking_number})
+                    console.print(Panel(f"[warning]Broadcast error for {tracking_number}: {e}[/warning]", title="Broadcast Warning", border_style="yellow"))
+                resumed_count += 1
+        redis_client.delete(batch_key)
+        bot.answer_callback_query(call.id, f"Resumed {resumed_count} simulations.", show_alert=True)
+        bot_logger.info(f"Resumed {resumed_count} simulations by admin {call.from_user.id}", extra={'tracking_number': ''})
+        console.print(f"[info]Resumed {resumed_count} simulations by admin {call.from_user.id}[/info]")
+        send_dynamic_menu(call.message.chat.id, call.message.message_id, page)
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error in bulk resume: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Error in bulk resume for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def send_manual_email(call, tracking_number):
+    """Send a manual email notification for a shipment."""
+    db, Shipment, _, _, _, _, send_email_notification = get_app_modules()
+    try:
+        shipment = get_shipment_details(tracking_number)
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        if not shipment.get('recipient_email') or not shipment.get('email_notifications'):
+            bot.answer_callback_query(call.id, f"Email notifications disabled or no recipient email for `{tracking_number}`.", show_alert=True)
+            bot_logger.warning(f"Email notifications disabled or no email for {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        eventlet.spawn(
+            send_email_notification,
+            tracking_number,
+            shipment['status'],
+            shipment['checkpoints'],
+            shipment['delivery_location'],
+            shipment['recipient_email']
+        )
+        bot.answer_callback_query(call.id, f"Email notification sent for `{tracking_number}`.", show_alert=True)
+        bot_logger.info(f"Manual email sent for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(f"[info]Manual email sent for {tracking_number} by admin {call.from_user.id}[/info]")
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error sending manual email for {tracking_number}: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error sending manual email for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+def send_manual_webhook(call, tracking_number):
+    """Send a manual webhook notification for a shipment."""
+    _, websocket_server, _, _ = get_config_values()
+    try:
+        shipment = get_shipment_details(tracking_number)
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        webhook_url = shipment.get('webhook_url') or websocket_server
+        eventlet.spawn(
+            send_webhook_notification,
+            tracking_number,
+            shipment['status'],
+            shipment['checkpoints'],
+            shipment['delivery_location'],
+            webhook_url
+        )
+        bot.answer_callback_query(call.id, f"Webhook notification sent for `{tracking_number}`.", show_alert=True)
+        bot_logger.info(f"Manual webhook sent for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(f"[info]Manual webhook sent for {tracking_number} by admin {call.from_user.id}[/info]")
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error sending manual webhook for {tracking_number}: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error sending manual webhook for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
 
 # Part 3: Shipment Management
 # This section includes functions for saving, deleting, and managing shipment details,
@@ -1176,55 +1688,39 @@ def get_simulation_speed(message):
         console.print(Panel(f"[error]Error in getspeed command for admin {message.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
 
 @bot.message_handler(commands=['debug'])
-def debug_shipment(message):
-    """Handle /debug command to display detailed shipment information."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _ = get_app_modules()
+def debug_command(message):
+    """Handle /debug command to display system status."""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
         bot_logger.warning(f"Access denied for /debug by {message.from_user.id}", extra={'tracking_number': ''})
-        console.print(f"[warning]Access denied for /debug by {message.from_user.id}[/warning]")
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "Usage: /debug <tracking_number>")
-        bot_logger.warning("Invalid /debug command format", extra={'tracking_number': ''})
-        return
-    tracking_number = sanitize_tracking_number(parts[1].strip())
-    if not tracking_number:
-        bot.reply_to(message, "Invalid tracking number.")
-        bot_logger.error(f"Invalid tracking number: {parts[1]}", extra={'tracking_number': parts[1]})
         return
     try:
-        shipment = get_shipment_details(tracking_number)
-        if not shipment:
-            bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
-            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
-            return
+        bot_status = check_bot_status()
+        redis_status = redis_client.ping() if redis_client else False
+        db_status = True
+        try:
+            db, _, _, _, _, _, _ = get_app_modules()
+            db.session.execute("SELECT 1")
+        except SQLAlchemyError as e:
+            db_status = False
+            bot_logger.error(f"Database check failed: {e}", extra={'tracking_number': ''})
         response = (
-            f"*Debug Info for Shipment*: `{tracking_number}`\n"
-            f"*Status*: `{shipment['status']}`\n"
-            f"*Paused*: `{shipment.get('paused', False)}`\n"
-            f"*Speed Multiplier*: `{shipment.get('speed_multiplier', 1.0)}x`\n"
-            f"*Delivery Location*: `{shipment['delivery_location']}`\n"
-            f"*Origin Location*: `{shipment.get('origin_location', 'None')}`\n"
-            f"*Recipient Email*: `{shipment.get('recipient_email', 'None')}`\n"
-            f"*Checkpoints*: `{shipment.get('checkpoints', 'None')}`\n"
-            f"*Webhook URL*: `{shipment.get('webhook_url', 'Default')}`\n"
-            f"*Email Notifications*: `{'Enabled' if shipment.get('email_notifications', False) else 'Disabled'}`\n"
-            f"*Created At*: `{shipment.get('created_at', 'N/A')}`\n"
-            f"*Last Updated*: `{shipment.get('last_updated', 'N/A')}`"
+            f"*System Debug Info*\n"
+            f"*Bot Status*: `{'Running' if bot_status else 'Down'}`\n"
+            f"*Redis Status*: `{'Connected' if redis_status else 'Disconnected'}`\n"
+            f"*Database Status*: `{'Connected' if db_status else 'Disconnected'}`"
         )
         bot.reply_to(message, response, parse_mode='Markdown')
-        bot_logger.info(f"Sent debug info for {tracking_number}", extra={'tracking_number': tracking_number})
-        console.print(f"[info]Sent debug info for {tracking_number} to admin {message.from_user.id}[/info]")
+        bot_logger.info(f"Sent debug info to admin {message.from_user.id}", extra={'tracking_number': ''})
+        console.print(f"[info]Sent debug info to admin {message.from_user.id}[/info]")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
-        bot_logger.error(f"Error in debug command: {e}", extra={'tracking_number': tracking_number})
+        bot_logger.error(f"Error in debug command: {e}", extra={'tracking_number': ''})
         console.print(Panel(f"[error]Error in debug command for admin {message.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
 
 @bot.message_handler(commands=['setwebhook'])
 def set_webhook_command(message):
-    """Handle /setwebhook command to set a webhook URL for a shipment."""
+    """Handle /setwebhook command to set webhook for a shipment."""
     db, Shipment, sanitize_tracking_number, _, _, validate_webhook_url, _ = get_app_modules()
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
@@ -1243,7 +1739,7 @@ def set_webhook_command(message):
         return
     if not validate_webhook_url(webhook_url):
         bot.reply_to(message, "Invalid webhook URL.")
-        bot_logger.warning(f"Invalid webhook URL: {webhook_url}", extra={'tracking_number': tracking_number})
+        bot_logger.error(f"Invalid webhook URL: {webhook_url}", extra={'tracking_number': tracking_number})
         return
     try:
         shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
@@ -1255,8 +1751,8 @@ def set_webhook_command(message):
         db.session.commit()
         invalidate_cache(tracking_number)
         bot.reply_to(message, f"Webhook URL set for `{tracking_number}` to `{webhook_url}`.", parse_mode='Markdown')
-        bot_logger.info(f"Set webhook URL for {tracking_number} to {webhook_url}", extra={'tracking_number': tracking_number})
-        console.print(f"[info]Set webhook URL for {tracking_number} to {webhook_url} by admin {message.from_user.id}[/info]")
+        bot_logger.info(f"Set webhook URL for {tracking_number} by admin {message.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(f"[info]Set webhook URL for {tracking_number} by admin {message.from_user.id}[/info]")
     except SQLAlchemyError as e:
         db.session.rollback()
         bot.reply_to(message, f"Database error: {e}")
@@ -1309,16 +1805,15 @@ def test_webhook_command(message):
         bot_logger.error(f"Error in testwebhook command: {e}", extra={'tracking_number': tracking_number})
         console.print(Panel(f"[error]Error in testwebhook command for admin {message.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
 
-# Part 5: Callback and Input Handlers
-# This section contains the callback query handler for inline button interactions and
-# input processing functions for handling user inputs (e.g., adding/updating shipments,
-# setting simulation speeds, or webhooks) prompted by ForceReply messages.
+# Part 5: Callback Handlers
+# This section includes callback query handlers for interactive buttons, handling actions
+# like menu navigation, shipment selection, and simulation controls.
 
 def set_chat_data(chat_id, key, value):
     """Store data in Redis for a chat session."""
     if redis_client:
         redis_client.setex(f"chat:{chat_id}:{key}", 3600, json.dumps(value))
-        bot_logger.debug(f"Set chat data for {chat_id}: {key}", extra={'tracking_number': ''})
+        bot_logger.debug(f"Stored chat data for {chat_id}: {key}", extra={'tracking_number': ''})
 
 def get_chat_data(chat_id, key):
     """Retrieve data from Redis for a chat session."""
@@ -1328,17 +1823,15 @@ def get_chat_data(chat_id, key):
     return None
 
 def show_shipment_menu(call, page=1, prefix="view", prompt="Select a shipment", extra_buttons=None):
-    """Show a paginated list of shipments for actions like view, update, or delete."""
+    """Show a paginated shipment selection menu."""
     shipments, total = get_shipment_list(page=page)
-    chat_id = call.message.chat.id
-    set_chat_data(chat_id, f"{prefix}_shipments", shipments)
+    if not shipments:
+        bot.answer_callback_query(call.id, "No shipments available.", show_alert=True)
+        bot_logger.warning("No shipments available for menu", extra={'tracking_number': ''})
+        return
     markup = InlineKeyboardMarkup(row_width=1)
     for tn in shipments:
-        button_text = tn
-        if prefix == "batch_select":
-            selected = redis_client.smembers(f"batch_delete:{chat_id}") if redis_client else set()
-            button_text = f"✅ {tn}" if tn in selected else tn
-        markup.add(InlineKeyboardButton(button_text, callback_data=f"{prefix}_{tn}"))
+        markup.add(InlineKeyboardButton(tn, callback_data=f"{prefix}_{tn}"))
     if total > 5:
         nav_buttons = []
         if page > 1:
@@ -1351,149 +1844,254 @@ def show_shipment_menu(call, page=1, prefix="view", prompt="Select a shipment", 
     else:
         markup.add(InlineKeyboardButton("Back", callback_data="menu_page_1"))
     try:
-        bot.edit_message_text(f"*{prompt}* (Page {page}, {total} total):", chat_id=call.message.chat.id,
-                             message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
-        bot_logger.debug(f"Sent shipment menu for {prefix}, page {page}", extra={'tracking_number': ''})
+        bot.edit_message_text(f"*{prompt}* (Page {page}, {total} total):", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
+        bot_logger.info(f"Sent shipment menu for {prefix}, page {page}", extra={'tracking_number': ''})
         console.print(f"[info]Sent shipment menu for {prefix}, page {page} to admin {call.from_user.id}[/info]")
     except Exception as e:
         bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
-        bot_logger.error(f"Telegram API error sending shipment menu: {e}", extra={'tracking_number': ''})
-        console.print(Panel(f"[error]Telegram API error sending shipment menu: {e}[/error]", title="Telegram Error", border_style="red"))
+        bot_logger.error(f"Error in shipment menu: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Error in shipment menu for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
 
 @bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
+def handle_callback(call):
     """Handle all callback queries from inline buttons."""
-    if not is_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "Access denied.", show_alert=True)
-        bot_logger.warning(f"Access denied for callback by {call.from_user.id}", extra={'tracking_number': ''})
-        return
+    db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification = get_app_modules()
+    _, websocket_server, valid_statuses, _ = get_config_values()
     data = call.data
+    chat_id = call.message.chat.id
+    message_id = call.message.message_id
     try:
         if data == "generate_id":
             new_id = generate_unique_id()
             bot.answer_callback_query(call.id, f"Generated ID: `{new_id}`", show_alert=True)
             bot_logger.info(f"Generated ID {new_id} for admin {call.from_user.id}", extra={'tracking_number': new_id})
             console.print(f"[info]Generated ID {new_id} for admin {call.from_user.id}[/info]")
+            send_dynamic_menu(chat_id, message_id, page=1)
+
         elif data == "add":
-            markup = ForceReply(selective=True)
-            bot.edit_message_text("Enter shipment details (tracking_number status delivery_location [recipient_email] [origin_location] [webhook_url]):",
-                                 chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
-            set_chat_data(call.message.chat.id, "state", "add_shipment")
+            bot.edit_message_text("Enter shipment details (tracking_number status delivery_location [recipient_email] [origin_location] [webhook_url] [email_notifications]):", chat_id=chat_id, message_id=message_id)
+            bot.register_next_step_handler(call.message, lambda msg: add_shipment_from_message(msg))
             bot_logger.info(f"Prompted add shipment for admin {call.from_user.id}", extra={'tracking_number': ''})
             console.print(f"[info]Prompted add shipment for admin {call.from_user.id}[/info]")
+
         elif data == "settings":
-            bot.edit_message_text("Settings not implemented yet.", chat_id=call.message.chat.id, message_id=call.message.message_id)
-            bot_logger.info(f"Settings accessed by admin {call.from_user.id}", extra={'tracking_number': ''})
-            console.print(f"[info]Settings accessed by admin {call.from_user.id}[/info]")
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("Clear Cache", callback_data="clear_cache"),
+                InlineKeyboardButton("Check Status", callback_data="check_status"),
+                InlineKeyboardButton("Back", callback_data="menu_page_1")
+            )
+            bot.edit_message_text("*Settings Menu*:", chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
+            bot_logger.info(f"Sent settings menu to admin {call.from_user.id}", extra={'tracking_number': ''})
+            console.print(f"[info]Sent settings menu to admin {call.from_user.id}[/info]")
+
+        elif data == "clear_cache":
+            if redis_client:
+                redis_client.flushdb()
+                bot.answer_callback_query(call.id, "Cache cleared.", show_alert=True)
+                bot_logger.info(f"Cache cleared by admin {call.from_user.id}", extra={'tracking_number': ''})
+                console.print(f"[info]Cache cleared by admin {call.from_user.id}[/info]")
+            else:
+                bot.answer_callback_query(call.id, "Redis not available.", show_alert=True)
+                bot_logger.warning("Redis not available for cache clear", extra={'tracking_number': ''})
+            send_dynamic_menu(chat_id, message_id, page=1)
+
+        elif data == "check_status":
+            bot_status = check_bot_status()
+            redis_status = redis_client.ping() if redis_client else False
+            db_status = True
+            try:
+                db.session.execute("SELECT 1")
+            except SQLAlchemyError as e:
+                db_status = False
+                bot_logger.error(f"Database check failed: {e}", extra={'tracking_number': ''})
+            response = (
+                f"*System Debug Info*\n"
+                f"*Bot Status*: `{'Running' if bot_status else 'Down'}`\n"
+                f"*Redis Status*: `{'Connected' if redis_status else 'Disconnected'}`\n"
+                f"*Database Status*: `{'Connected' if db_status else 'Disconnected'}`"
+            )
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("Back", callback_data="settings"))
+            bot.edit_message_text(response, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
+            bot_logger.info(f"Sent system status to admin {call.from_user.id}", extra={'tracking_number': ''})
+            console.print(f"[info]Sent system status to admin {call.from_user.id}[/info]")
+
         elif data == "help":
-            help_text = (
-                "*Available Commands*:\n"
-                "/start, /menu - Show main menu\n"
-                "/track <tracking_number> - Track a shipment\n"
-                "/stats - View system stats\n"
+            response = (
+                "*Help Menu*\n"
+                "Available commands:\n"
+                "/start - Show main menu\n"
+                "/track <tracking_number> - View shipment details\n"
+                "/stats - View system statistics\n"
                 "/notify <tracking_number> - Send manual notification\n"
                 "/search <query> - Search shipments\n"
-                "/bulk_action - Perform bulk actions\n"
+                "/bulk_action - Perform bulk operations\n"
                 "/stop <tracking_number> - Pause simulation\n"
                 "/continue <tracking_number> - Resume simulation\n"
                 "/setspeed <tracking_number> <speed> - Set simulation speed\n"
                 "/getspeed <tracking_number> - Get simulation speed\n"
-                "/debug <tracking_number> - Debug shipment\n"
+                "/debug - Show system status\n"
                 "/setwebhook <tracking_number> <url> - Set webhook URL\n"
-                "/testwebhook <tracking_number> - Test webhook\n"
-                "/myid - Get your Telegram user ID"
+                "/testwebhook <tracking_number> - Test webhook"
             )
-            bot.edit_message_text(help_text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode='Markdown')
-            bot_logger.info(f"Help accessed by admin {call.from_user.id}", extra={'tracking_number': ''})
-            console.print(f"[info]Help accessed by admin {call.from_user.id}[/info]")
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("Back", callback_data="menu_page_1"))
+            bot.edit_message_text(response, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
+            bot_logger.info(f"Sent help menu to admin {call.from_user.id}", extra={'tracking_number': ''})
+            console.print(f"[info]Sent help menu to admin {call.from_user.id}[/info]")
+
         elif data == "cancel":
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-            bot_logger.info(f"Cancelled action by admin {call.from_user.id}", extra={'tracking_number': ''})
-            console.print(f"[info]Cancelled action by admin {call.from_user.id}[/info]")
+            bot.delete_message(chat_id=chat_id, message_id=message_id)
+            bot_logger.info(f"Cancelled action for admin {call.from_user.id}", extra={'tracking_number': ''})
+            console.print(f"[info]Cancelled action for admin {call.from_user.id}[/info]")
+
         elif data.startswith("menu_page_"):
             page = int(data.split("_")[-1])
-            send_dynamic_menu(call.message.chat.id, call.message.message_id, page)
-        elif data.startswith("view_"):
+            send_dynamic_menu(chat_id, message_id, page=page)
+
+        elif data.startswith("list_"):
+            page = int(data.split("_")[-1])
+            show_shipment_menu(call, page=page, prompt="Select a shipment to view")
+
+        elif data.startswith("list_active_"):
+            page = int(data.split("_")[-1])
+            shipments, total = get_shipment_list(page=page, status_filter=['In Transit', 'Pending'])
+            if not shipments:
+                bot.answer_callback_query(call.id, "No active shipments.", show_alert=True)
+                return
+            set_chat_data(chat_id, f"list_active:{page}", shipments)
+            markup = InlineKeyboardMarkup(row_width=1)
+            for tn in shipments:
+                markup.add(InlineKeyboardButton(tn, callback_data=f"view_{tn}"))
+            if total > 5:
+                nav_buttons = []
+                if page > 1:
+                    nav_buttons.append(InlineKeyboardButton("Previous", callback_data=f"list_active_{page-1}"))
+                if page * 5 < total:
+                    nav_buttons.append(InlineKeyboardButton("Next", callback_data=f"list_active_{page+1}"))
+                markup.add(*nav_buttons)
+            markup.add(InlineKeyboardButton("Back", callback_data="menu_page_1"))
+            bot.edit_message_text(f"*Active Shipments* (Page {page}, {total} total):", chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
+            bot_logger.info(f"Sent active shipments list, page {page}", extra={'tracking_number': ''})
+
+        elif data.startswith("list_paused_"):
+            page = int(data.split("_")[-1])
+            shipments, total = get_shipment_list(page=page, paused_filter=True)
+            if not shipments:
+                bot.answer_callback_query(call.id, "No paused shipments.", show_alert=True)
+                return
+            set_chat_data(chat_id, f"list_paused:{page}", shipments)
+            markup = InlineKeyboardMarkup(row_width=1)
+            for tn in shipments:
+                markup.add(InlineKeyboardButton(tn, callback_data=f"view_{tn}"))
+            if total > 5:
+                nav_buttons = []
+                if page > 1:
+                    nav_buttons.append(InlineKeyboardButton("Previous", callback_data=f"list_paused_{page-1}"))
+                if page * 5 < total:
+                    nav_buttons.append(InlineKeyboardButton("Next", callback_data=f"list_paused_{page+1}"))
+                markup.add(*nav_buttons)
+            markup.add(InlineKeyboardButton("Back", callback_data="menu_page_1"))
+            bot.edit_message_text(f"*Paused Shipments* (Page {page}, {total} total):", chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
+            bot_logger.info(f"Sent paused shipments list, page {page}", extra={'tracking_number': ''})
+
+        elif data.startswith("view_") and not data.startswith("view_menu"):
             tracking_number = data.split("_", 1)[1]
             show_shipment_details(call, tracking_number)
+
         elif data.startswith("view_menu_"):
             page = int(data.split("_")[-1])
-            show_shipment_menu(call, page=page, prefix="view", prompt="Select a shipment to view")
-        elif data.startswith("update_"):
-            tracking_number = data.split("_", 1)[1]
-            markup = ForceReply(selective=True)
-            bot.edit_message_text(f"Enter updated details for `{tracking_number}` (status delivery_location [recipient_email] [origin_location] [webhook_url]):",
-                                 chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
-            set_chat_data(call.message.chat.id, "state", f"update_shipment:{tracking_number}")
-            bot_logger.info(f"Prompted update for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
-            console.print(f"[info]Prompted update for {tracking_number} by admin {call.from_user.id}[/info]")
+            show_shipment_menu(call, page=page, prompt="Select a shipment to view")
+
         elif data.startswith("update_menu_"):
             page = int(data.split("_")[-1])
             show_shipment_menu(call, page=page, prefix="update", prompt="Select a shipment to update")
-        elif data.startswith("delete_"):
+
+        elif data.startswith("update_"):
             tracking_number = data.split("_", 1)[1]
-            page = int(get_chat_data(call.message.chat.id, "current_page") or 1)
-            delete_shipment(call, tracking_number, page)
+            bot.edit_message_text(f"Enter new details for `{tracking_number}` (status delivery_location [recipient_email] [origin_location] [webhook_url] [email_notifications]):", chat_id=chat_id, message_id=message_id)
+            bot.register_next_step_handler(call.message, lambda msg: update_shipment_from_message(msg, tracking_number))
+            bot_logger.info(f"Prompted update for {tracking_number}", extra={'tracking_number': tracking_number})
+
         elif data.startswith("delete_menu_"):
             page = int(data.split("_")[-1])
-            set_chat_data(call.message.chat.id, "current_page", page)
             show_shipment_menu(call, page=page, prefix="delete", prompt="Select a shipment to delete")
-        elif data.startswith("batch_select_"):
+
+        elif data.startswith("delete_"):
             tracking_number = data.split("_", 1)[1]
-            toggle_batch_selection(call, tracking_number)
+            page = int(get_chat_data(chat_id, "current_page") or 1)
+            delete_shipment(call, tracking_number, page)
+
         elif data.startswith("batch_delete_menu_"):
             page = int(data.split("_")[-1])
+            set_chat_data(chat_id, "current_page", page)
             show_shipment_menu(call, page=page, prefix="batch_select", prompt="Select shipments to delete", extra_buttons=[
                 InlineKeyboardButton("Confirm Delete", callback_data=f"batch_delete_confirm_{page}"),
                 InlineKeyboardButton("Back", callback_data="menu_page_1")
             ])
+
+        elif data.startswith("batch_select_"):
+            tracking_number = data.split("_", 1)[1]
+            toggle_batch_selection(call, tracking_number)
+
         elif data.startswith("batch_delete_confirm_"):
             page = int(data.split("_")[-1])
             batch_delete_shipments(call, page)
-        elif data.startswith("broadcast_"):
-            tracking_number = data.split("_", 1)[1]
-            trigger_broadcast(call, tracking_number)
+
         elif data.startswith("broadcast_menu_"):
             page = int(data.split("_")[-1])
             show_shipment_menu(call, page=page, prefix="broadcast", prompt="Select a shipment to broadcast")
-        elif data.startswith("toggle_email_"):
+
+        elif data.startswith("broadcast_"):
             tracking_number = data.split("_", 1)[1]
-            page = int(get_chat_data(call.message.chat.id, "current_page") or 1)
-            toggle_email_notifications(call, tracking_number, page)
+            trigger_broadcast(call, tracking_number)
+
         elif data.startswith("toggle_email_menu_"):
             page = int(data.split("_")[-1])
             show_shipment_menu(call, page=page, prefix="toggle_email", prompt="Select a shipment to toggle email notifications")
-        elif data.startswith("pause_"):
+
+        elif data.startswith("toggle_email_"):
             tracking_number = data.split("_", 1)[1]
-            page = int(get_chat_data(call.message.chat.id, "current_page") or 1)
-            pause_simulation_callback(call, tracking_number, page)
+            page = int(get_chat_data(chat_id, "current_page") or 1)
+            toggle_email_notifications(call, tracking_number, page)
+
         elif data.startswith("pause_menu_"):
             page = int(data.split("_")[-1])
             show_shipment_menu(call, page=page, prefix="pause", prompt="Select a shipment to pause")
-        elif data.startswith("resume_"):
+
+        elif data.startswith("pause_"):
             tracking_number = data.split("_", 1)[1]
-            page = int(get_chat_data(call.message.chat.id, "current_page") or 1)
-            resume_simulation_callback(call, tracking_number, page)
+            page = int(get_chat_data(chat_id, "current_page") or 1)
+            pause_simulation_callback(call, tracking_number, page)
+
         elif data.startswith("resume_menu_"):
             page = int(data.split("_")[-1])
             show_shipment_menu(call, page=page, prefix="resume", prompt="Select a shipment to resume")
-        elif data.startswith("setspeed_"):
+
+        elif data.startswith("resume_"):
             tracking_number = data.split("_", 1)[1]
-            markup = ForceReply(selective=True)
-            bot.edit_message_text(f"Enter simulation speed for `{tracking_number}` (0.1 to 10.0):",
-                                 chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
-            set_chat_data(call.message.chat.id, "state", f"set_speed:{tracking_number}")
-            bot_logger.info(f"Prompted set speed for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
-            console.print(f"[info]Prompted set speed for {tracking_number} by admin {call.from_user.id}[/info]")
+            page = int(get_chat_data(chat_id, "current_page") or 1)
+            resume_simulation_callback(call, tracking_number, page)
+
         elif data.startswith("setspeed_menu_"):
             page = int(data.split("_")[-1])
-            show_shipment_menu(call, page=page, prefix="setspeed", prompt="Select a shipment to set simulation speed")
+            show_shipment_menu(call, page=page, prefix="setspeed", prompt="Select a shipment to set speed")
+
+        elif data.startswith("setspeed_"):
+            tracking_number = data.split("_", 1)[1]
+            bot.edit_message_text(f"Enter simulation speed for `{tracking_number}` (0.1 to 10.0):", chat_id=chat_id, message_id=message_id)
+            bot.register_next_step_handler(call.message, lambda msg: set_speed_from_message(msg, tracking_number))
+            bot_logger.info(f"Prompted speed update for {tracking_number}", extra={'tracking_number': tracking_number})
+
+        elif data.startswith("getspeed_menu_"):
+            page = int(data.split("_")[-1])
+            show_shipment_menu(call, page=page, prefix="getspeed", prompt="Select a shipment to view speed")
+
         elif data.startswith("getspeed_"):
             tracking_number = data.split("_", 1)[1]
             show_simulation_speed(call, tracking_number)
-        elif data.startswith("getspeed_menu_"):
-            page = int(data.split("_")[-1])
-            show_shipment_menu(call, page=page, prefix="getspeed", prompt="Select a shipment to view simulation speed")
+
         elif data.startswith("bulk_action_menu_"):
             page = int(data.split("_")[-1])
             markup = InlineKeyboardMarkup(row_width=2)
@@ -1503,19 +2101,19 @@ def callback_query(call):
                 InlineKeyboardButton("Bulk Delete", callback_data=f"batch_delete_menu_{page}"),
                 InlineKeyboardButton("Back", callback_data="menu_page_1")
             )
-            bot.edit_message_text("*Select bulk action*:", chat_id=call.message.chat.id, message_id=call.message.message_id,
-                                 parse_mode='Markdown', reply_markup=markup)
+            bot.edit_message_text("*Select bulk action*:", chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
             bot_logger.info(f"Sent bulk action menu to admin {call.from_user.id}", extra={'tracking_number': ''})
-            console.print(f"[info]Sent bulk action menu to admin {call.from_user.id}[/info]")
+
         elif data.startswith("bulk_pause_menu_"):
             page = int(data.split("_")[-1])
+            set_chat_data(chat_id, "current_page", page)
             show_shipment_menu(call, page=page, prefix="bulk_pause_select", prompt="Select shipments to pause", extra_buttons=[
                 InlineKeyboardButton("Confirm Pause", callback_data=f"bulk_pause_confirm_{page}"),
                 InlineKeyboardButton("Back", callback_data="menu_page_1")
             ])
+
         elif data.startswith("bulk_pause_select_"):
-            tracking_number = data.split("_", 1)[1]
-            chat_id = call.message.chat.id
+            tracking_number = data.split("_", 2)[2]
             batch_key = f"bulk_pause:{chat_id}"
             selected = redis_client.smembers(batch_key) if redis_client else set()
             selected = set(selected)
@@ -1525,24 +2123,26 @@ def callback_query(call):
             else:
                 redis_client.sadd(batch_key, tracking_number)
                 bot.answer_callback_query(call.id, f"Selected `{tracking_number}`.", show_alert=True)
-            bot_logger.info(f"Toggled bulk pause selection for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
-            console.print(f"[info]Toggled bulk pause selection for {tracking_number} by admin {call.from_user.id}[/info]")
+            bot_logger.info(f"Toggled bulk pause selection for {tracking_number}", extra={'tracking_number': tracking_number})
             show_shipment_menu(call, page=1, prefix="bulk_pause_select", prompt="Select shipments to pause", extra_buttons=[
                 InlineKeyboardButton("Confirm Pause", callback_data=f"bulk_pause_confirm_1"),
                 InlineKeyboardButton("Back", callback_data="menu_page_1")
             ])
+
         elif data.startswith("bulk_pause_confirm_"):
             page = int(data.split("_")[-1])
             bulk_pause_shipments(call, page)
+
         elif data.startswith("bulk_resume_menu_"):
             page = int(data.split("_")[-1])
+            set_chat_data(chat_id, "current_page", page)
             show_shipment_menu(call, page=page, prefix="bulk_resume_select", prompt="Select shipments to resume", extra_buttons=[
                 InlineKeyboardButton("Confirm Resume", callback_data=f"bulk_resume_confirm_{page}"),
                 InlineKeyboardButton("Back", callback_data="menu_page_1")
             ])
+
         elif data.startswith("bulk_resume_select_"):
-            tracking_number = data.split("_", 1)[1]
-            chat_id = call.message.chat.id
+            tracking_number = data.split("_", 2)[2]
             batch_key = f"bulk_resume:{chat_id}"
             selected = redis_client.smembers(batch_key) if redis_client else set()
             selected = set(selected)
@@ -1552,108 +2152,66 @@ def callback_query(call):
             else:
                 redis_client.sadd(batch_key, tracking_number)
                 bot.answer_callback_query(call.id, f"Selected `{tracking_number}`.", show_alert=True)
-            bot_logger.info(f"Toggled bulk resume selection for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
-            console.print(f"[info]Toggled bulk resume selection for {tracking_number} by admin {call.from_user.id}[/info]")
+            bot_logger.info(f"Toggled bulk resume selection for {tracking_number}", extra={'tracking_number': tracking_number})
             show_shipment_menu(call, page=1, prefix="bulk_resume_select", prompt="Select shipments to resume", extra_buttons=[
                 InlineKeyboardButton("Confirm Resume", callback_data=f"bulk_resume_confirm_1"),
                 InlineKeyboardButton("Back", callback_data="menu_page_1")
             ])
+
         elif data.startswith("bulk_resume_confirm_"):
             page = int(data.split("_")[-1])
             bulk_resume_shipments(call, page)
-        elif data.startswith("set_webhook_"):
-            tracking_number = data.split("_", 1)[1]
-            markup = ForceReply(selective=True)
-            bot.edit_message_text(f"Enter webhook URL for `{tracking_number}`:", chat_id=call.message.chat.id,
-                                 message_id=call.message.message_id, reply_markup=markup)
-            set_chat_data(call.message.chat.id, "state", f"set_webhook:{tracking_number}")
-            bot_logger.info(f"Prompted set webhook for {tracking_number} by admin {call.from_user.id}", extra={'tracking_number': tracking_number})
-            console.print(f"[info]Prompted set webhook for {tracking_number} by admin {call.from_user.id}[/info]")
+
         elif data.startswith("set_webhook_menu_"):
             page = int(data.split("_")[-1])
             show_shipment_menu(call, page=page, prefix="set_webhook", prompt="Select a shipment to set webhook")
-        elif data.startswith("test_webhook_"):
-            tracking_number = data.split("_", 1)[1]
-            send_manual_webhook(call, tracking_number)
+
+        elif data.startswith("set_webhook_"):
+            tracking_number = data.split("_", 2)[2]
+            bot.edit_message_text(f"Enter webhook URL for `{tracking_number}`:", chat_id=chat_id, message_id=message_id)
+            bot.register_next_step_handler(call.message, lambda msg: set_webhook_from_message(msg, tracking_number))
+            bot_logger.info(f"Prompted webhook update for {tracking_number}", extra={'tracking_number': tracking_number})
+
         elif data.startswith("test_webhook_menu_"):
             page = int(data.split("_")[-1])
             show_shipment_menu(call, page=page, prefix="test_webhook", prompt="Select a shipment to test webhook")
-        elif data.startswith("send_email_"):
-            tracking_number = data.split("_", 1)[1]
-            send_manual_email(call, tracking_number)
+
+        elif data.startswith("test_webhook_"):
+            tracking_number = data.split("_", 2)[2]
+            send_manual_webhook(call, tracking_number)
+
         elif data.startswith("notify_"):
             tracking_number = data.split("_", 1)[1]
             shipment = get_shipment_details(tracking_number)
             if not shipment:
                 bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
-                bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
                 return
             markup = InlineKeyboardMarkup(row_width=2)
             if shipment.get('recipient_email') and shipment.get('email_notifications'):
                 markup.add(InlineKeyboardButton("Send Email", callback_data=f"send_email_{tracking_number}"))
-            if shipment.get('webhook_url'):
+            if shipment.get('webhook_url') or websocket_server:
                 markup.add(InlineKeyboardButton("Send Webhook", callback_data=f"send_webhook_{tracking_number}"))
             markup.add(InlineKeyboardButton("Back", callback_data="menu_page_1"))
-            bot.edit_message_text(f"Select notification type for `{tracking_number}`:", chat_id=call.message.chat.id,
-                                 message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
+            bot.edit_message_text(f"Select notification type for `{tracking_number}`:", chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
             bot_logger.info(f"Sent notification options for {tracking_number}", extra={'tracking_number': tracking_number})
-            console.print(f"[info]Sent notification options for {tracking_number} to admin {call.from_user.id}[/info]")
-        elif data.startswith("list_"):
-            page = int(data.split("_")[-1])
-            show_shipment_menu(call, page=page, prefix="view", prompt="Select a shipment to view")
-        elif data.startswith("list_active_"):
-            page = int(data.split("_")[-1])
-            db, Shipment, _, _, _, _, _ = get_app_modules()
-            shipments = Shipment.query.filter(~Shipment.status.in_(['Delivered', 'Returned'])).with_entities(Shipment.tracking_number).order_by(Shipment.tracking_number).offset((page-1)*5).limit(5).all()
-            total = Shipment.query.filter(~Shipment.status.in_(['Delivered', 'Returned'])).count()
-            set_chat_data(call.message.chat.id, f"list_active_shipments", [s.tracking_number for s in shipments])
-            markup = InlineKeyboardMarkup(row_width=1)
-            for tn in shipments:
-                markup.add(InlineKeyboardButton(tn.tracking_number, callback_data=f"view_{tn.tracking_number}"))
-            if total > 5:
-                nav_buttons = []
-                if page > 1:
-                    nav_buttons.append(InlineKeyboardButton("Previous", callback_data=f"list_active_{page-1}"))
-                if page * 5 < total:
-                    nav_buttons.append(InlineKeyboardButton("Next", callback_data=f"list_active_{page+1}"))
-                markup.add(*nav_buttons)
-            markup.add(InlineKeyboardButton("Back", callback_data="menu_page_1"))
-            bot.edit_message_text(f"*Active Shipments* (Page {page}, {total} total):", chat_id=call.message.chat.id,
-                                 message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
-            bot_logger.info(f"Sent active shipments list, page {page}", extra={'tracking_number': ''})
-            console.print(f"[info]Sent active shipments list, page {page} to admin {call.from_user.id}[/info]")
-        elif data.startswith("list_paused_"):
-            page = int(data.split("_")[-1])
-            db, Shipment, _, _, _, _, _ = get_app_modules()
-            paused = redis_client.hgetall("paused_simulations") if redis_client else {}
-            shipments = Shipment.query.filter(Shipment.tracking_number.in_(paused.keys())).with_entities(Shipment.tracking_number).order_by(Shipment.tracking_number).offset((page-1)*5).limit(5).all()
-            total = len(paused)
-            set_chat_data(call.message.chat.id, f"list_paused_shipments", [s.tracking_number for s in shipments])
-            markup = InlineKeyboardMarkup(row_width=1)
-            for tn in shipments:
-                markup.add(InlineKeyboardButton(tn.tracking_number, callback_data=f"view_{tn.tracking_number}"))
-            if total > 5:
-                nav_buttons = []
-                if page > 1:
-                    nav_buttons.append(InlineKeyboardButton("Previous", callback_data=f"list_paused_{page-1}"))
-                if page * 5 < total:
-                    nav_buttons.append(InlineKeyboardButton("Next", callback_data=f"list_paused_{page+1}"))
-                markup.add(*nav_buttons)
-            markup.add(InlineKeyboardButton("Back", callback_data="menu_page_1"))
-            bot.edit_message_text(f"*Paused Shipments* (Page {page}, {total} total):", chat_id=call.message.chat.id,
-                                 message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
-            bot_logger.info(f"Sent paused shipments list, page {page}", extra={'tracking_number': ''})
-            console.print(f"[info]Sent paused shipments list, page {page} to admin {call.from_user.id}[/info]")
+
+        elif data.startswith("send_email_"):
+            tracking_number = data.split("_", 2)[2]
+            send_manual_email(call, tracking_number)
+
+        elif data.startswith("send_webhook_"):
+            tracking_number = data.split("_", 2)[2]
+            send_manual_webhook(call, tracking_number)
+
         elif data.startswith("search_page_"):
-            query, page = data.split("_")[2:4]
-            page = int(page)
+            parts = data.split("_", 2)
+            query = parts[1]
+            page = int(parts[2])
             shipments, total = search_shipments(query, page=page)
             if not shipments:
-                bot.edit_message_text(f"No more shipments found for query: `{query}`", chat_id=call.message.chat.id,
-                                     message_id=call.message.message_id, parse_mode='Markdown')
-                bot_logger.debug(f"No more shipments for query: {query}, page {page}", extra={'tracking_number': ''})
+                bot.answer_callback_query(call.id, f"No shipments found for query: `{query}`.", show_alert=True)
                 return
-            set_chat_data(call.message.chat.id, f"search:{query}", shipments)
+            set_chat_data(chat_id, f"search:{query}:{page}", shipments)
             markup = InlineKeyboardMarkup(row_width=1)
             for tn in shipments:
                 markup.add(InlineKeyboardButton(tn, callback_data=f"view_{tn}"))
@@ -1665,137 +2223,146 @@ def callback_query(call):
                     nav_buttons.append(InlineKeyboardButton("Next", callback_data=f"search_page_{query}_{page+1}"))
                 markup.add(*nav_buttons)
             markup.add(InlineKeyboardButton("Back", callback_data="menu_page_1"))
-            bot.edit_message_text(f"*Search Results for '{query}'* (Page {page}, {total} total):", chat_id=call.message.chat.id,
-                                 message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
+            bot.edit_message_text(f"*Search Results for '{query}'* (Page {page}, {total} total):", chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
             bot_logger.info(f"Sent search results for query: {query}, page {page}", extra={'tracking_number': ''})
-            console.print(f"[info]Sent search results for query '{query}', page {page} to admin {call.from_user.id}[/info]")
-        else:
-            bot.answer_callback_query(call.id, "Invalid action.", show_alert=True)
-            bot_logger.warning(f"Invalid callback data: {data}", extra={'tracking_number': ''})
+
     except Exception as e:
         bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
-        bot_logger.error(f"Error in callback query: {e}", extra={'tracking_number': ''})
-        console.print(Panel(f"[error]Error in callback query for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+        bot_logger.error(f"Error in callback handler: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Error in callback handler for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
 
-@bot.message_handler(content_types=['text'], func=lambda message: get_chat_data(message.chat.id, "state") is not None)
-def handle_input(message):
-    """Handle text input for states like add_shipment, update_shipment, set_speed, or set_webhook."""
-    state = get_chat_data(message.chat.id, "state")
-    if not state:
+def add_shipment_from_message(message):
+    """Process message to add a new shipment."""
+    db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification = get_app_modules()
+    _, _, valid_statuses, _ = get_config_values()
+    parts = message.text.strip().split(maxsplit=6)
+    if len(parts) < 3:
+        bot.reply_to(message, "Usage: tracking_number status delivery_location [recipient_email] [origin_location] [webhook_url] [email_notifications]")
+        bot_logger.warning("Invalid add shipment format", extra={'tracking_number': ''})
         return
+    tracking_number = sanitize_tracking_number(parts[0])
+    status = parts[1]
+    delivery_location = parts[2]
+    recipient_email = parts[3] if len(parts) > 3 else ''
+    origin_location = parts[4] if len(parts) > 4 else None
+    webhook_url = parts[5] if len(parts) > 5 else None
+    email_notifications = parts[6].lower() == 'true' if len(parts) > 6 else True
     try:
-        if state == "add_shipment":
-            parts = shlex.split(message.text)
-            if len(parts) < 3:
-                bot.reply_to(message, "Please provide at least: tracking_number status delivery_location")
-                bot_logger.warning("Invalid input for add shipment", extra={'tracking_number': ''})
-                return
-            tracking_number, status, delivery_location = parts[:3]
-            recipient_email = parts[3] if len(parts) > 3 else ''
-            origin_location = parts[4] if len(parts) > 4 else None
-            webhook_url = parts[5] if len(parts) > 5 else None
-            try:
-                save_shipment(tracking_number, status, '', delivery_location, recipient_email, origin_location, webhook_url)
-                bot.reply_to(message, f"Shipment `{tracking_number}` added successfully.", parse_mode='Markdown')
-                bot_logger.info(f"Added shipment {tracking_number} by admin {message.from_user.id}", extra={'tracking_number': tracking_number})
-                console.print(f"[info]Added shipment {tracking_number} by admin {message.from_user.id}[/info]")
-            except ValueError as e:
-                bot.reply_to(message, f"Error: {e}")
-                bot_logger.error(f"Error adding shipment {tracking_number}: {e}", extra={'tracking_number': tracking_number})
-                console.print(Panel(f"[error]Error adding shipment {tracking_number}: {e}[/error]", title="Validation Error", border_style="red"))
-        elif state.startswith("update_shipment:"):
-            tracking_number = state.split(":", 1)[1]
-            parts = shlex.split(message.text)
-            if len(parts) < 2:
-                bot.reply_to(message, "Please provide at least: status delivery_location")
-                bot_logger.warning(f"Invalid input for update shipment {tracking_number}", extra={'tracking_number': tracking_number})
-                return
-            status, delivery_location = parts[:2]
-            recipient_email = parts[2] if len(parts) > 2 else ''
-            origin_location = parts[3] if len(parts) > 3 else None
-            webhook_url = parts[4] if len(parts) > 4 else None
-            try:
-                shipment = get_shipment_details(tracking_number)
-                if not shipment:
-                    bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
-                    bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
-                    return
-                save_shipment(tracking_number, status, shipment['checkpoints'], delivery_location, recipient_email, origin_location, webhook_url)
-                bot.reply_to(message, f"Shipment `{tracking_number}` updated successfully.", parse_mode='Markdown')
-                bot_logger.info(f"Updated shipment {tracking_number} by admin {message.from_user.id}", extra={'tracking_number': tracking_number})
-                console.print(f"[info]Updated shipment {tracking_number} by admin {message.from_user.id}[/info]")
-            except ValueError as e:
-                bot.reply_to(message, f"Error: {e}")
-                bot_logger.error(f"Error updating shipment {tracking_number}: {e}", extra={'tracking_number': tracking_number})
-                console.print(Panel(f"[error]Error updating shipment {tracking_number}: {e}[/error]", title="Validation Error", border_style="red"))
-        elif state.startswith("set_speed:"):
-            tracking_number = state.split(":", 1)[1]
-            try:
-                speed = float(message.text.strip())
-                if speed < 0.1 or speed > 10:
-                    bot.reply_to(message, "Speed must be between 0.1 and 10.0.")
-                    bot_logger.warning(f"Invalid speed value: {speed}", extra={'tracking_number': tracking_number})
-                    return
-                shipment = get_shipment_details(tracking_number)
-                if not shipment:
-                    bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
-                    bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
-                    return
-                if redis_client:
-                    redis_client.hset("sim_speed_multipliers", tracking_number, str(speed))
-                invalidate_cache(tracking_number)
-                bot.reply_to(message, f"Simulation speed for `{tracking_number}` set to `{speed}x`.", parse_mode='Markdown')
-                bot_logger.info(f"Set simulation speed for {tracking_number} to {speed}x", extra={'tracking_number': tracking_number})
-                console.print(Panel(f"[info]Set simulation speed for {tracking_number} to {speed}x by admin {message.from_user.id}[/info]", title="Speed Updated", border_style="green"))
-                try:
-                    _, websocket_server, _, _ = get_config_values()
-                    response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
-                    if response.status_code != 204:
-                        bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
-                except requests.RequestException as e:
-                    bot_logger.error(f"Broadcast error: {e}", extra={'tracking_number': tracking_number})
-                    console.print(Panel(f"[warning]Broadcast error for {tracking_number}: {e}[/warning]", title="Broadcast Warning", border_style="yellow"))
-            except ValueError:
-                bot.reply_to(message, "Speed must be a number between 0.1 and 10.0.")
-                bot_logger.warning(f"Invalid speed format: {message.text}", extra={'tracking_number': tracking_number})
-        elif state.startswith("set_webhook:"):
-            tracking_number = state.split(":", 1)[1]
-            webhook_url = message.text.strip()
-            db, Shipment, _, _, _, validate_webhook_url, _ = get_app_modules()
-            if not validate_webhook_url(webhook_url):
-                bot.reply_to(message, "Invalid webhook URL.")
-                bot_logger.warning(f"Invalid webhook URL: {webhook_url}", extra={'tracking_number': tracking_number})
-                return
-            try:
-                shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
-                if not shipment:
-                    bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
-                    bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
-                    return
-                shipment.webhook_url = webhook_url
-                db.session.commit()
-                invalidate_cache(tracking_number)
-                bot.reply_to(message, f"Webhook URL set for `{tracking_number}` to `{webhook_url}`.", parse_mode='Markdown')
-                bot_logger.info(f"Set webhook URL for {tracking_number} to {webhook_url}", extra={'tracking_number': tracking_number})
-                console.print(f"[info]Set webhook URL for {tracking_number} to {webhook_url} by admin {message.from_user.id}[/info]")
-            except SQLAlchemyError as e:
-                db.session.rollback()
-                bot.reply_to(message, f"Database error: {e}")
-                bot_logger.error(f"Database error setting webhook for {tracking_number}: {e}", extra={'tracking_number': tracking_number})
-                console.print(Panel(f"[error]Database error setting webhook for {tracking_number}: {e}[/error]", title="Database Error", border_style="red"))
-        set_chat_data(message.chat.id, "state", None)
-        send_dynamic_menu(message.chat.id)
+        save_shipment(tracking_number, status, '', delivery_location, recipient_email, origin_location, webhook_url, email_notifications)
+        bot.reply_to(message, f"Shipment `{tracking_number}` added.", parse_mode='Markdown')
+        bot_logger.info(f"Added shipment {tracking_number} by admin {message.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(f"[info]Added shipment {tracking_number} by admin {message.from_user.id}[/info]")
+    except ValueError as e:
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error adding shipment: {e}", extra={'tracking_number': tracking_number})
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
-        bot_logger.error(f"Error handling input for state {state}: {e}", extra={'tracking_number': ''})
-        console.print(Panel(f"[error]Error handling input for admin {message.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
-        set_chat_data(message.chat.id, "state", None)
-        send_dynamic_menu(message.chat.id)
+        bot_logger.error(f"Error adding shipment: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error adding shipment for admin {message.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+    send_dynamic_menu(message.chat.id)
 
-if __name__ == "__main__":
+def update_shipment_from_message(message, tracking_number):
+    """Process message to update an existing shipment."""
+    db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification = get_app_modules()
+    _, _, valid_statuses, _ = get_config_values()
+    parts = message.text.strip().split(maxsplit=5)
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: status delivery_location [recipient_email] [origin_location] [webhook_url] [email_notifications]")
+        bot_logger.warning("Invalid update shipment format", extra={'tracking_number': tracking_number})
+        return
+    status = parts[0]
+    delivery_location = parts[1]
+    recipient_email = parts[2] if len(parts) > 2 else ''
+    origin_location = parts[3] if len(parts) > 3 else None
+    webhook_url = parts[4] if len(parts) > 4 else None
+    email_notifications = parts[5].lower() == 'true' if len(parts) > 5 else True
     try:
-        cache_route_templates()
-        bot.infinity_polling()
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        save_shipment(tracking_number, status, shipment.checkpoints, delivery_location, recipient_email, origin_location, webhook_url, email_notifications)
+        bot.reply_to(message, f"Shipment `{tracking_number}` updated.", parse_mode='Markdown')
+        bot_logger.info(f"Updated shipment {tracking_number} by admin {message.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(f"[info]Updated shipment {tracking_number} by admin {message.from_user.id}[/info]")
+    except ValueError as e:
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error updating shipment: {e}", extra={'tracking_number': tracking_number})
     except Exception as e:
-        bot_logger.critical(f"Bot polling failed: {e}", extra={'tracking_number': ''})
-        console.print(Panel(f"[critical]Bot polling failed: {e}[/critical]", title="Critical Error", border_style="red"))
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error updating shipment: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error updating shipment for admin {message.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+    send_dynamic_menu(message.chat.id)
+
+def set_speed_from_message(message, tracking_number):
+    """Process message to set simulation speed for a shipment."""
+    _, _, _, websocket_server, _, _, _ = get_app_modules()
+    try:
+        speed = float(message.text.strip())
+        if speed < 0.1 or speed > 10:
+            bot.reply_to(message, "Speed must be between 0.1 and 10.0.")
+            bot_logger.warning(f"Invalid speed value: {speed}", extra={'tracking_number': tracking_number})
+            return
+        if redis_client:
+            redis_client.hset("sim_speed_multipliers", tracking_number, str(speed))
+        invalidate_cache(tracking_number)
+        bot_logger.info(f"Set simulation speed for {tracking_number} to {speed}x", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[info]Set simulation speed for {tracking_number} to {speed}x by admin {message.from_user.id}[/info]", title="Speed Updated", border_style="green"))
+        try:
+            response = requests.get(f'{websocket_server}/broadcast/{tracking_number}', timeout=5)
+            if response.status_code != 204:
+                bot_logger.warning(f"Broadcast failed: {response.status_code}", extra={'tracking_number': tracking_number})
+        except requests.RequestException as e:
+            bot_logger.error(f"Broadcast error: {e}", extra={'tracking_number': tracking_number})
+            console.print(Panel(f"[warning]Broadcast error for {tracking_number}: {e}[/warning]", title="Broadcast Warning", border_style="yellow"))
+        bot.reply_to(message, f"Simulation speed for `{tracking_number}` set to `{speed}x`.", parse_mode='Markdown')
+    except ValueError:
+        bot.reply_to(message, "Speed must be a number between 0.1 and 10.0.")
+        bot_logger.warning(f"Invalid speed format: {message.text}", extra={'tracking_number': tracking_number})
+    except Exception as e:
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error setting speed: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error setting speed for admin {message.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+    send_dynamic_menu(message.chat.id)
+
+def set_webhook_from_message(message, tracking_number):
+    """Process message to set webhook URL for a shipment."""
+    db, Shipment, sanitize_tracking_number, _, _, validate_webhook_url, _ = get_app_modules()
+    webhook_url = message.text.strip()
+    if not validate_webhook_url(webhook_url):
+        bot.reply_to(message, "Invalid webhook URL.")
+        bot_logger.error(f"Invalid webhook URL: {webhook_url}", extra={'tracking_number': tracking_number})
+        return
+    try:
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
+            bot_logger.warning(f"Shipment not found: {tracking_number}", extra={'tracking_number': tracking_number})
+            return
+        shipment.webhook_url = webhook_url
+        db.session.commit()
+        invalidate_cache(tracking_number)
+        bot.reply_to(message, f"Webhook URL set for `{tracking_number}` to `{webhook_url}`.", parse_mode='Markdown')
+        bot_logger.info(f"Set webhook URL for {tracking_number} by admin {message.from_user.id}", extra={'tracking_number': tracking_number})
+        console.print(f"[info]Set webhook URL for {tracking_number} by admin {message.from_user.id}[/info]")
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        bot.reply_to(message, f"Database error: {e}")
+        bot_logger.error(f"Database error setting webhook for {tracking_number}: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Database error setting webhook for {tracking_number}: {e}[/error]", title="Database Error", border_style="red"))
+    except Exception as e:
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error setting webhook: {e}", extra={'tracking_number': tracking_number})
+        console.print(Panel(f"[error]Error setting webhook for admin {message.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+    send_dynamic_menu(message.chat.id)
+
+# Start the bot
+try:
+    bot.infinity_polling()
+    bot_logger.info("Bot started polling", extra={'tracking_number': ''})
+    console.print("[info]Bot started polling[/info]")
+except Exception as e:
+    bot_logger.error(f"Bot polling error: {e}", extra={'tracking_number': ''})
+    console.print(Panel(f"[error]Bot polling error: {e}[/error]", title="Bot Error", border_style="red"))
+    raise
