@@ -369,18 +369,27 @@ def get_clients(tracking_number):
 
 def keep_alive():
     """Periodically ping WebSocket server to ensure it remains responsive."""
+    max_retries = 3
+    retry_delay = 10
     while True:
-        try:
-            response = requests.get(f"{app.config['WEBSOCKET_SERVER']}/health", timeout=5)
-            if response.status_code == 200:
-                flask_logger.info("Keep-alive ping successful")
-                console.print(f"[info]Keep-alive ping successful: {response.json()['status']}[/info]")
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(f"{app.config['WEBSOCKET_SERVER']}/health", timeout=10)
+                if response.status_code == 200:
+                    flask_logger.info("Keep-alive ping successful")
+                    console.print(f"[info]Keep-alive ping successful: {response.json()['status']}[/info]")
+                    break
+                else:
+                    flask_logger.warning(f"Keep-alive ping failed: {response.status_code}")
+                    console.print(Panel(f"[warning]Keep-alive ping failed: {response.status_code}[/warning]", title="Keep-Alive Warning", border_style="yellow"))
+            except requests.RequestException as e:
+                flask_logger.error(f"Keep-alive ping error: {e}")
+                console.print(Panel(f"[error]Keep-alive ping error: {e}[/error]", title="Keep-Alive Error", border_style="red"))
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (2 ** attempt))
             else:
-                flask_logger.warning(f"Keep-alive ping failed: {response.status_code}")
-                console.print(Panel(f"[warning]Keep-alive ping failed: {response.status_code}[/warning]", title="Keep-Alive Warning", border_style="yellow"))
-        except requests.RequestException as e:
-            flask_logger.error(f"Keep-alive ping error: {e}")
-            console.print(Panel(f"[error]Keep-alive ping error: {e}[/error]", title="Keep-Alive Error", border_style="red"))
+                flask_logger.error("Max retries exceeded for keep-alive ping")
+                console.print(Panel("[error]Max retries exceeded for keep-alive ping[/error]", title="Keep-Alive Error", border_style="red"))
         time.sleep(60)
 
 def simulate_tracking(tracking_number):
@@ -566,6 +575,7 @@ def broadcast_update(tracking_number):
                     flask_logger.debug(f"Broadcast update to {sid}", extra={'tracking_number': sanitized_tn})
                 except Exception as e:
                     flask_logger.error(f"Failed to emit to {sid}: {e}", extra={'tracking_number': sanitized_tn})
+                    remove_client(sanitized_tn, sid)  # Remove stale client
         else:
             flask_logger.debug(f"No clients for broadcast: {sanitized_tn}", extra={'tracking_number': sanitized_tn})
     except SQLAlchemyError as e:
@@ -780,6 +790,7 @@ def handle_request_tracking(data):
             flask_logger.info(f"Sent tracking update to {request.sid}", extra={'tracking_number': sanitized_tn})
         except Exception as e:
             flask_logger.error(f"Failed to emit tracking update to {request.sid}: {e}", extra={'tracking_number': sanitized_tn})
+            remove_client(sanitized_tn, request.sid)
             disconnect(request.sid)
     except SQLAlchemyError as e:
         db.session.rollback()
@@ -823,7 +834,7 @@ except Exception as e:
 
 if __name__ == '__main__':
     try:
-        from telegram_bot import cache_route_templates, start_bot
+        from telegram_bot import cache_route_templates
         cache_route_templates()
         flask_logger.info("Route templates cached successfully")
         console.print("[info]Route templates cached successfully[/info]")
@@ -833,11 +844,4 @@ if __name__ == '__main__':
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
     console.print("[info]Keep-alive thread started[/info]")
-    try:
-        bot_thread = threading.Thread(target=start_bot, daemon=True)
-        bot_thread.start()
-        console.print("[info]Telegram bot started in background thread[/info]")
-    except Exception as e:
-        flask_logger.error(f"Failed to start Telegram bot: {e}")
-        console.print(Panel(f"[error]Telegram bot failed to start: {e}[/error]", title="Telegram Error", border_style="red"))
     socketio.run(app, host='0.0.0.0', port=5000, debug=app.config.get('FLASK_ENV') == 'development')
