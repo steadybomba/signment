@@ -24,6 +24,8 @@ COPY app.py .
 COPY bot.py .
 COPY utils.py .
 COPY Procfile .
+COPY templates/ templates/
+COPY static/ static/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -33,5 +35,5 @@ ENV PORT=8000
 EXPOSE $PORT
 
 # Run Procfile with honcho
-# Environment variables (e.g., TELEGRAM_BOT_TOKEN, REDIS_URL, SMTP_HOST) should be set via deployment platform config
+# Environment variables (e.g., TELEGRAM_BOT_TOKEN, REDIS_URL, SMTP_HOST, RECAPTCHA_SITE_KEY) should be set via deployment platform config
 CMD ["honcho", "start", "-f", "Procfile"]
