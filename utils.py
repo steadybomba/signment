@@ -796,5 +796,3 @@ def send_manual_webhook(call, tracking_number):
     except Exception as e:
         bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
         console.print(Panel(f"[error]Error sending manual webhook for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
-
-#
