@@ -2,6 +2,7 @@ import os
 import json
 import random
 import string
+import re
 import requests
 import logging
 import signal
@@ -13,16 +14,93 @@ from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemyError
 from rich.console import Console
 from rich.panel import Panel
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import smtplib
 import eventlet
 from upstash_redis import Redis
 from tenacity import retry, stop_after_attempt, wait_exponential
 from telebot import TeleBot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # Patch eventlet for compatibility
 eventlet.monkey_patch()
 
 # Global console
 console = Console()
+
+# HTML Email Template
+HTML_EMAIL_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shipment Update</title>
+</head>
+<body style="font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f4;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 600px; margin: 20px auto; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;">
+        <tr>
+            <td style="background-color: #007bff; padding: 20px; text-align: center; border-radius: 8px 8px 0 0;">
+                <h1 style="color: #ffffff; margin: 0; font-size: 24px;">Shipment Update</h1>
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 20px;">
+                <h2 style="color: #333333; font-size: 20px; margin-top: 0;">Tracking Number: {tracking_number}</h2>
+                <p style="color: #555555; font-size: 16px; line-height: 1.5;">
+                    Dear Customer,<br>
+                    Your shipment has been updated. Below are the latest details:
+                </p>
+                <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse: collapse; margin: 20px 0;">
+                    <tr>
+                        <td style="font-weight: bold; color: #333333; border-bottom: 1px solid #e0e0e0;">Status</td>
+                        <td style="color: #007bff; border-bottom: 1px solid #e0e0e0;">{status}</td>
+                    </tr>
+                    <tr>
+                        <td style="font-weight: bold; color: #333333; border-bottom: 1px solid #e0e0e0;">Delivery Location</td>
+                        <td style="color: #555555; border-bottom: 1px solid #e0e0e0;">{delivery_location}</td>
+                    </tr>
+                </table>
+                <h3 style="color: #333333; font-size: 18px; margin-top: 20px;">Checkpoints</h3>
+                {checkpoints_html}
+                <p style="color: #555555; font-size: 16px; line-height: 1.5;">
+                    Track your shipment in real-time at: <a href="{tracking_url}" style="color: #007bff; text-decoration: none;">Track Now</a>
+                </p>
+            </td>
+        </tr>
+        <tr>
+            <td style="background-color: #f8f9fa; padding: 15px; text-align: center; border-radius: 0 0 8px 8px; font-size: 14px; color: #555555;">
+                <p style="margin: 0;">For support, contact us at <a href="mailto:support@example.com" style="color: #007bff; text-decoration: none;">support@example.com</a></p>
+                <p style="margin: 5px 0;">Signment | 123 Logistics Lane, Lagos, NG</p>
+                <p style="margin: 0;"><a href="{unsubscribe_url}" style="color: #007bff; text-decoration: none;">Unsubscribe</a></p>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
+"""
+
+# Plain Text Email Template (Fallback)
+PLAIN_TEXT_TEMPLATE = """
+Shipment Update for {tracking_number}
+
+Dear Customer,
+
+Your shipment has been updated. Below are the latest details:
+
+Tracking Number: {tracking_number}
+Status: {status}
+Delivery Location: {delivery_location}
+Checkpoints:
+{checkpoints_text}
+
+Track your shipment: {tracking_url}
+
+For support, contact us at support@example.com
+Signment | 123 Logistics Lane, Lagos, NG
+Unsubscribe: {unsubscribe_url}
+"""
 
 # Configuration model using Pydantic
 class BotConfig(BaseModel):
@@ -33,6 +111,11 @@ class BotConfig(BaseModel):
     allowed_admins: List[int]
     valid_statuses: List[str]
     route_templates: Dict[str, List[str]]
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    smtp_pass: str
+    smtp_from: str
 
 # Load environment variables
 load_dotenv()
@@ -50,7 +133,12 @@ try:
                 "New York, NY": ["New York, NY", "Chicago, IL", "Los Angeles, CA", "Miami, FL"],
                 "London, UK": ["London, UK", "Manchester, UK", "Birmingham, UK", "Edinburgh, UK"]
             }
-        '''))
+        ''')),
+        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        smtp_port=int(os.getenv("SMTP_PORT", 587)),
+        smtp_user=os.getenv("SMTP_USER", ""),
+        smtp_pass=os.getenv("SMTP_PASS", ""),
+        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
     )
 except ValidationError as e:
     console.print(Panel(f"[error]Configuration validation failed: {e}[/error]", title="Config Error", border_style="red"))
@@ -74,11 +162,11 @@ def get_app_modules():
     try:
         from app import (
             db, Shipment, sanitize_tracking_number, validate_email, validate_location,
-            validate_webhook_url, send_email_notification, console as app_console
+            validate_webhook_url, console as app_console
         )
         global console
         console = app_console
-        return db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification
+        return db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url
     except ImportError as e:
         console.print(Panel(f"[error]Failed to import app modules: {e}[/error]", title="Import Error", border_style="red"))
         raise
@@ -140,7 +228,7 @@ def set_webhook():
 # Database indexes
 def create_db_indexes():
     try:
-        db, _, _, _, _, _, _ = get_app_modules()
+        db, _, _, _, _, _ = get_app_modules()
         with db.engine.connect() as conn:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tracking_number ON shipments (tracking_number)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON shipments (status)")
@@ -174,12 +262,11 @@ def get_cached_route_templates():
 
 def is_admin(user_id):
     """Check if the user is an admin based on ALLOWED_ADMINS."""
-    is_admin_user = user_id in config.allowed_admins
-    return is_admin_user
+    return user_id in config.allowed_admins
 
 def generate_unique_id():
     """Generate a unique tracking number using timestamp and random string."""
-    db, Shipment, _, _, _, _, _ = get_app_modules()
+    db, Shipment, _, _, _, _ = get_app_modules()
     attempts = 0
     while attempts < 10:
         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -193,7 +280,7 @@ def generate_unique_id():
 
 def get_shipment_list(page=1, per_page=5, status_filter=None, paused_filter=None):
     """Fetch a paginated list of shipment tracking numbers."""
-    db, Shipment, _, _, _, _, _ = get_app_modules()
+    db, Shipment, _, _, _, _ = get_app_modules()
     try:
         offset = (page - 1) * per_page
         query = Shipment.query.with_entities(Shipment.tracking_number).order_by(Shipment.tracking_number)
@@ -210,7 +297,7 @@ def get_shipment_list(page=1, per_page=5, status_filter=None, paused_filter=None
 
 def search_shipments(query, page=1, per_page=5):
     """Search shipments by tracking number, status, or location."""
-    db, Shipment, _, _, _, _, _ = get_app_modules()
+    db, Shipment, _, _, _, _ = get_app_modules()
     query = sanitize_input(query).lower()
     try:
         offset = (page - 1) * per_page
@@ -235,7 +322,7 @@ def search_shipments(query, page=1, per_page=5):
 
 def get_shipment_details(tracking_number):
     """Fetch shipment details, using Redis cache."""
-    db, Shipment, sanitize_tracking_number, _, _, _, _ = get_app_modules()
+    db, Shipment, sanitize_tracking_number, _, _, _ = get_app_modules()
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         return None
@@ -261,7 +348,7 @@ def get_shipment_details(tracking_number):
 
 def invalidate_cache(tracking_number):
     """Invalidate Redis cache for a tracking number."""
-    db, _, sanitize_tracking_number, _, _, _, _ = get_app_modules()
+    db, _, sanitize_tracking_number, _, _, _ = get_app_modules()
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if redis_client and sanitized_tn:
         with redis_client.pipeline() as pipe:
@@ -278,7 +365,7 @@ def enqueue_notification(tracking_number: str, notification_type: str, data: Dic
             "type": notification_type,
             "data": data
         }))
-        console.print(f"[info]Enqueued notification for {tracking_number}[/info]")
+        console.print(f"[info]Enqueued {notification_type} notification for {tracking_number}[/info]")
     except Exception as e:
         console.print(Panel(f"[error]Failed to enqueue notification: {e}[/error]", title="Notification Error", border_style="red"))
 
@@ -302,6 +389,61 @@ def send_webhook_notification(tracking_number, status, checkpoints, delivery_loc
         console.print(Panel(f"[error]Webhook error for {tracking_number}: {e}[/error]", title="Webhook Error", border_style="red"))
         raise
 
+def send_email_notification(recipient: str, tracking_number: str, status: str, delivery_location: str, checkpoints: str):
+    """Send an email notification using HTML and plain text templates."""
+    max_retries = 3
+    retry_delay = 5
+    tracking_url = f"{config.websocket_server}/track?tracking_number={tracking_number}"
+    unsubscribe_url = f"{config.websocket_server}/unsubscribe?email={recipient}"
+    checkpoints_list = checkpoints.split(';') if checkpoints else []
+    checkpoints_html = "".join([f"<li style='color: #555555; font-size: 14px; line-height: 1.5;'>{cp}</li>" for cp in checkpoints_list])
+    checkpoints_text = "\n".join([f"- {cp}" for cp in checkpoints_list])
+
+    # Format templates
+    html_content = HTML_EMAIL_TEMPLATE.format(
+        tracking_number=tracking_number,
+        status=status,
+        delivery_location=delivery_location,
+        checkpoints_html=f"<ul style='padding-left: 20px;'>{checkpoints_html}</ul>" if checkpoints_html else "<p>No checkpoints available.</p>",
+        tracking_url=tracking_url,
+        unsubscribe_url=unsubscribe_url
+    )
+    text_content = PLAIN_TEXT_TEMPLATE.format(
+        tracking_number=tracking_number,
+        status=status,
+        delivery_location=delivery_location,
+        checkpoints_text=checkpoints_text if checkpoints_text else "No checkpoints available.",
+        tracking_url=tracking_url,
+        unsubscribe_url=unsubscribe_url
+    )
+
+    for attempt in range(max_retries):
+        try:
+            msg = MIMEMultipart('alternative')
+            msg['From'] = config.smtp_from
+            msg['To'] = recipient
+            msg['Subject'] = f"Shipment Update for {tracking_number}"
+            
+            # Attach plain text and HTML parts
+            msg.attach(MIMEText(text_content, 'plain'))
+            msg.attach(MIMEText(html_content, 'html'))
+            
+            with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=5) as server:
+                server.starttls()
+                server.login(config.smtp_user, config.smtp_pass)
+                server.send_message(msg)
+            console.print(f"[info]Email sent to {recipient} for {tracking_number}[/info]")
+            return True
+        except smtplib.SMTPException as e:
+            console.print(Panel(f"[error]Failed to send email to {recipient} for {tracking_number} (attempt {attempt + 1}): {e}[/error]", title="Email Error", border_style="red"))
+            if attempt < max_retries - 1:
+                eventlet.sleep(retry_delay * (2 ** attempt))
+            continue
+        except Exception as e:
+            console.print(Panel(f"[error]Unexpected error sending email to {recipient} for {tracking_number}: {e}[/error]", title="Email Error", border_style="red"))
+            break
+    return False
+
 def process_notification_queue():
     """Process notifications from Redis queue."""
     while True:
@@ -311,30 +453,45 @@ def process_notification_queue():
                 eventlet.sleep(1)
                 continue
             data = json.loads(notification)
-            if data["type"] == "webhook":
+            tracking_number = data["tracking_number"]
+            notification_type = data["type"]
+            notification_data = data["data"]
+            if notification_type == "webhook":
                 send_webhook_notification(
-                    data["tracking_number"], 
-                    data["data"]["status"], 
-                    data["data"]["checkpoints"], 
-                    data["data"]["delivery_location"], 
-                    data["data"]["webhook_url"]
+                    tracking_number,
+                    notification_data["status"],
+                    notification_data["checkpoints"],
+                    notification_data["delivery_location"],
+                    notification_data["webhook_url"]
                 )
-            elif data["type"] == "email":
-                db, _, _, _, _, _, send_email_notification = get_app_modules()
-                send_email_notification(
-                    data["tracking_number"], 
-                    data["data"]["status"], 
-                    data["data"]["checkpoints"], 
-                    data["data"]["delivery_location"], 
-                    data["data"]["recipient_email"]
-                )
+            elif notification_type == "email":
+                if not send_email_notification(
+                    recipient=notification_data["recipient_email"],
+                    tracking_number=tracking_number,
+                    status=notification_data["status"],
+                    delivery_location=notification_data["delivery_location"],
+                    checkpoints=notification_data["checkpoints"]
+                ):
+                    # Re-queue on failure
+                    safe_redis_operation(redis_client.lpush, "notification_queue", json.dumps(data))
+                    console.print(f"[warning]Re-queued failed email notification for {tracking_number}[/warning]")
         except Exception as e:
             console.print(Panel(f"[error]Notification processing failed: {e}[/error]", title="Notification Error", border_style="red"))
+            eventlet.sleep(5)
+
+# Start notification queue processing
+def start_notification_queue():
+    """Start the notification queue processor."""
+    try:
+        eventlet.spawn(process_notification_queue)
+        console.print("[info]Notification queue processor started[/info]")
+    except Exception as e:
+        console.print(Panel(f"[error]Failed to start notification queue processor: {e}[/error]", title="Queue Error", border_style="red"))
 
 # Shipment Management
 def save_shipment(tracking_number, status, checkpoints, delivery_location, recipient_email='', origin_location=None, webhook_url=None, email_notifications=True):
     """Save or update a shipment in the database and update Redis cache."""
-    db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, send_email_notification = get_app_modules()
+    db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url = get_app_modules()
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         raise ValueError("Invalid tracking number")
@@ -515,7 +672,7 @@ def delete_shipment(call, tracking_number, page):
 
 def confirm_delete_shipment(message, tracking_number, page):
     """Confirm and execute shipment deletion."""
-    db, Shipment, _, _, _, _, _ = get_app_modules()
+    db, Shipment, _, _, _, _ = get_app_modules()
     bot = get_bot()
     if message.text.lower() != "confirm":
         bot.reply_to(message, "Deletion cancelled.")
@@ -575,7 +732,7 @@ def batch_delete_shipments(call, page):
 
 def confirm_batch_delete(message, selected, page):
     """Confirm and execute batch deletion."""
-    db, Shipment, _, _, _, _, _ = get_app_modules()
+    db, Shipment, _, _, _, _ = get_app_modules()
     bot = get_bot()
     if message.text.lower() != "confirm":
         bot.reply_to(message, "Batch deletion cancelled.")
@@ -622,7 +779,7 @@ def trigger_broadcast(call, tracking_number):
 def toggle_email_notifications(call, tracking_number, page):
     """Toggle email notifications for a shipment."""
     bot = get_bot()
-    db, Shipment, _, _, _, _, _ = get_app_modules()
+    db, Shipment, _, _, _, _ = get_app_modules()
     try:
         shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
         if not shipment:
@@ -796,3 +953,6 @@ def send_manual_webhook(call, tracking_number):
     except Exception as e:
         bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
         console.print(Panel(f"[error]Error sending manual webhook for admin {call.from_user.id}: {e}[/error]", title="Telegram Error", border_style="red"))
+
+# Start notification queue on module import
+start_notification_queue()
