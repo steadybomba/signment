@@ -1,2 +1,2 @@
-web: gunicorn -w 2 -k eventlet --timeout 120 --log-level debug app:app
+web: gunicorn app:app --worker-class eventlet --workers 2
 bot: python bot.py
