@@ -1,6 +1,6 @@
-# Patch for gevent/gunicorn compatibility
+# app.py
 import eventlet
-eventlet.monkey_patch()
+eventlet.monkey_patch()  # Patch for gevent/gunicorn compatibility
 
 # Standard library imports
 import re
@@ -34,8 +34,24 @@ from utils import (
     BotConfig, redis_client, console, get_app_modules, enqueue_notification,
     get_cached_route_templates, sanitize_tracking_number, validate_email,
     validate_location, validate_webhook_url, send_email_notification,
-    check_bot_status, cache_route_templates
+    check_bot_status, cache_route_templates, get_bot, get_shipment_details
 )
+
+# Logging setup
+import logging
+bot_logger = logging.getLogger('telegram_bot')
+bot_logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+bot_logger.addHandler(handler)
+
+flask_logger = logging.getLogger('flask_app')
+flask_logger.setLevel(logging.INFO)
+flask_logger.addHandler(handler)
+
+sim_logger = logging.getLogger('simulator')
+sim_logger.setLevel(logging.INFO)
+sim_logger.addHandler(handler)
 
 # Initialize Flask app and core components
 app = Flask(__name__)
@@ -45,8 +61,8 @@ try:
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment.onrender.com"),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
         allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
         valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
         route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}'))
@@ -57,6 +73,9 @@ try:
         WEBSOCKET_SERVER=config.websocket_server,
         SECRET_KEY=os.getenv("SECRET_KEY", "default-secret-key"),
         SQLALCHEMY_DATABASE_URI=os.getenv("SQLALCHEMY_DATABASE_URI", "sqlite:///shipments.db"),
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        SQLALCHEMY_POOL_SIZE=5,
+        SQLALCHEMY_MAX_OVERFLOW=10,
         SMTP_HOST=os.getenv("SMTP_HOST", "smtp.gmail.com"),
         SMTP_PORT=int(os.getenv("SMTP_PORT", 587)),
         SMTP_USER=os.getenv("SMTP_USER", ""),
@@ -84,6 +103,7 @@ try:
     )
 except Exception as e:
     console.print(Panel(f"[error]Configuration validation failed: {e}[/error]", title="Config Error", border_style="red"))
+    flask_logger.error(f"Configuration validation failed: {e}")
     raise
 
 db = SQLAlchemy(app)
@@ -93,18 +113,7 @@ limiter = Limiter(
     default_limits=app.config['RATELIMIT_DEFAULTS'],
     storage_uri=app.config['RATELIMIT_STORAGE_URI']
 )
-socketio = SocketIO(app, cors_allowed_origins="*")
-
-# Logging setup
-flask_logger = logging.getLogger('flask_app')
-flask_logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-flask_logger.addHandler(handler)
-
-sim_logger = logging.getLogger('simulator')
-sim_logger.setLevel(logging.INFO)
-sim_logger.addHandler(handler)
+socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins="*")
 
 # In-memory caches
 geocode_cache = {}
@@ -142,11 +151,13 @@ class Shipment(db.Model):
             'delivery_location': self.delivery_location,
             'last_updated': self.last_updated.isoformat(),
             'recipient_email': self.recipient_email,
+            'created_at': self.created_at.isoformat(),
             'origin_location': self.origin_location,
             'webhook_url': self.webhook_url,
             'email_notifications': self.email_notifications
         }
 
+# Database initialization
 def init_db():
     """Initialize database with retries and table creation."""
     flask_logger.info("Starting database initialization")
@@ -202,6 +213,7 @@ def init_db():
     console.print(Panel("[critical]Failed to initialize database after max retries[/critical]", title="Database Error", border_style="red"))
     raise Exception("Database initialization failed")
 
+# reCAPTCHA verification
 def verify_recaptcha(response_token):
     """Verify reCAPTCHA response with Google API."""
     if not app.config['RECAPTCHA_SECRET_KEY'] or 'your-secret-key' in app.config['RECAPTCHA_SECRET_KEY']:
@@ -225,6 +237,7 @@ def verify_recaptcha(response_token):
         console.print(Panel(f"[error]reCAPTCHA error: {e}[/error]", title="reCAPTCHA Error", border_style="red"))
         return False
 
+# Geocoding
 def geocode_locations(checkpoints):
     """Geocode checkpoint locations using external API."""
     coords = []
@@ -281,6 +294,7 @@ def geocode_locations(checkpoints):
                 console.print(Panel(f"[warning]Geocoding failed for {location}: {e}[/warning]", title="Geocode Error", border_style="yellow"))
     return coords
 
+# WebSocket client management
 def add_client(tracking_number, sid):
     """Add WebSocket client to tracking number's client set."""
     if redis_client:
@@ -326,6 +340,7 @@ def get_clients(tracking_number):
         flask_logger.debug(f"Fetched clients from in-memory store: {clients}", extra={'tracking_number': tracking_number})
         return clients
 
+# Keep-alive mechanism
 def keep_alive():
     """Periodically ping WebSocket server to ensure it remains responsive."""
     max_retries = 3
@@ -351,6 +366,7 @@ def keep_alive():
                 console.print(Panel("[error]Max retries exceeded for keep-alive ping[/error]", title="Keep-Alive Error", border_style="red"))
         time.sleep(60)
 
+# Simulation logic
 def simulate_tracking(tracking_number):
     """Simulate shipment tracking with status updates and notifications."""
     sanitized_tn = sanitize_tracking_number(tracking_number)
@@ -484,6 +500,7 @@ def simulate_tracking(tracking_number):
                 console.print(Panel(f"[error]Unexpected simulation error for {sanitized_tn}: {e}[/error]", title="Simulation Error", border_style="red"))
                 break
 
+# Broadcast updates
 def broadcast_update(tracking_number):
     """Broadcast shipment updates to connected WebSocket clients."""
     sanitized_tn = sanitize_tracking_number(tracking_number)
@@ -559,81 +576,37 @@ def index():
 @app.route('/track', methods=['POST'])
 def track():
     """Handle tracking form submission and initiate simulation."""
-    try:
-        from forms import TrackForm
-    except ImportError as e:
-        flask_logger.error(f"forms.py not found: {e}")
-        console.print(Panel(f"[error]forms.py not found: {e}[/error]", title="Server Error", border_style="red"))
-        return jsonify({'error': 'Server error'}), 500
-    form = TrackForm()
-    if not form.validate_on_submit():
-        flask_logger.warning("Form validation failed", extra={'tracking_number': ''})
-        return jsonify({'error': 'Invalid form data'}), 400
-
-    recaptcha_response = request.form.get('g-recaptcha-response')
-    if app.config['RECAPTCHA_SITE_KEY'] and 'your-site-key' not in app.config['RECAPTCHA_SITE_KEY'] and not verify_recaptcha(recaptcha_response):
-        flask_logger.warning("reCAPTCHA verification failed", extra={'tracking_number': ''})
-        return jsonify({'error': 'reCAPTCHA verification failed'}), 400
-
-    tracking_number = form.tracking_number.data
-    email = form.email.data
-    sanitized_tn = sanitize_tracking_number(tracking_number)
+    tracking_number = request.form.get('tracking_number') or (request.get_json(silent=True).get('tracking_number') if request.is_json else None)
+    if not tracking_number:
+        flask_logger.warning("Missing tracking number in request", extra={'tracking_number': ''})
+        return jsonify({'success': False, 'error-codes': ['missing-input']}), 400
+    sanitized_tn = sanitize_tracking_number(sanitize_input(tracking_number))
     if not sanitized_tn:
-        flask_logger.warning(f"Invalid tracking number submitted: {tracking_number}", extra={'tracking_number': str(tracking_number)})
-        return render_template('tracking_result.html', 
-                             error='Invalid tracking number', 
-                             coords=[],
-                             tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
-                             tawk_widget_id=app.config['TAWK_WIDGET_ID'])
-
+        flask_logger.warning(f"Invalid tracking number: {tracking_number}", extra={'tracking_number': str(tracking_number)})
+        return jsonify({'success': False, 'error-codes': ['invalid-input-response']}), 400
     try:
-        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+        shipment = get_shipment_details(sanitized_tn)
         if not shipment:
             flask_logger.warning(f"Shipment not found: {sanitized_tn}", extra={'tracking_number': sanitized_tn})
-            return render_template('tracking_result.html', 
-                                 error='Shipment not found', 
-                                 coords=[],
-                                 tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
-                                 tawk_widget_id=app.config['TAWK_WIDGET_ID'])
-
-        if email and validate_email(email):
-            shipment.recipient_email = email
+            return jsonify({'success': False, 'error-codes': ['not-found']}), 404
+        if request.form.get('email') and validate_email(request.form.get('email')):
+            shipment_obj = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+            shipment_obj.recipient_email = request.form.get('email')
             db.session.commit()
-            flask_logger.info(f"Updated recipient email to {email}", extra={'tracking_number': sanitized_tn})
-            console.print(f"[info]Updated recipient email to {email} for {sanitized_tn}[/info]")
-
-        checkpoints_str = shipment.checkpoints or ''
-        checkpoints = checkpoints_str.split(';') if checkpoints_str else []
-        coords = geocode_locations(checkpoints)
-        coords_list = [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords]
-        
-        if shipment.status not in ['Delivered', 'Returned']:
+            flask_logger.info(f"Updated recipient email for {sanitized_tn}", extra={'tracking_number': sanitized_tn})
+        if shipment['status'] not in ['Delivered', 'Returned']:
             eventlet.spawn(simulate_tracking, sanitized_tn)
-        flask_logger.info(f"Started tracking simulation", extra={'tracking_number': sanitized_tn})
-        console.print(f"[info]Started tracking simulation for {sanitized_tn}[/info]")
-        return render_template('tracking_result.html', 
-                             shipment=shipment, 
-                             checkpoints=checkpoints, 
-                             coords=coords_list, 
-                             tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
-                             tawk_widget_id=app.config['TAWK_WIDGET_ID'])
+        flask_logger.info(f"Tracking request processed", extra={'tracking_number': sanitized_tn})
+        return jsonify({'success': True, 'data': shipment})
     except SQLAlchemyError as e:
         db.session.rollback()
         flask_logger.error(f"Database error: {e}", extra={'tracking_number': sanitized_tn})
         console.print(Panel(f"[error]Database error for {sanitized_tn}: {e}[/error]", title="Database Error", border_style="red"))
-        return render_template('tracking_result.html', 
-                             error='Database error occurred', 
-                             coords=[],
-                             tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
-                             tawk_widget_id=app.config['TAWK_WIDGET_ID'])
+        return jsonify({'success': False, 'error-codes': ['database-error']}), 500
     except Exception as e:
         flask_logger.error(f"Unexpected error in track: {e}", extra={'tracking_number': sanitized_tn})
         console.print(Panel(f"[error]Unexpected error in track: {e}[/error]", title="Track Error", border_style="red"))
-        return render_template('tracking_result.html', 
-                             error='Unexpected error', 
-                             coords=[],
-                             tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
-                             tawk_widget_id=app.config['TAWK_WIDGET_ID'])
+        return jsonify({'success': False, 'error-codes': ['server-error']}), 500
 
 @app.route('/broadcast/<tracking_number>')
 def trigger_broadcast(tracking_number):
@@ -641,7 +614,7 @@ def trigger_broadcast(tracking_number):
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         flask_logger.warning(f"Invalid tracking number for broadcast: {tracking_number}", extra={'tracking_number': str(tracking_number)})
-        return jsonify({'error': 'Invalid tracking number'}), 400
+        return jsonify({'success': False, 'error-codes': ['invalid-input-response']}), 400
     eventlet.spawn(broadcast_update, sanitized_tn)
     flask_logger.info(f"Triggered broadcast", extra={'tracking_number': sanitized_tn})
     return '', 204
@@ -672,7 +645,9 @@ def health_check():
     except smtplib.SMTPException as e:
         status['smtp'] = str(e)
     try:
-        status['telegram'] = 'ok' if check_bot_status() else 'unavailable'
+        bot = get_bot()
+        bot.get_me()
+        status['telegram'] = 'ok'
     except Exception as e:
         status['telegram'] = str(e)
     if status['status'] == 'healthy' and any(v != 'ok' for v in [status['database'], 'smtp']):
@@ -680,6 +655,22 @@ def health_check():
     flask_logger.info("Health check", extra=status)
     console.print(f"[info]Health check: {status}[/info]")
     return jsonify(status), 200 if status['status'] == 'healthy' else 500
+
+@app.route('/telegram/webhook', methods=['POST'])
+def telegram_webhook():
+    """Handle Telegram webhook updates."""
+    try:
+        update = request.get_json()
+        if not update:
+            bot_logger.error("Invalid webhook payload received")
+            return '', 400
+        bot = get_bot()
+        bot.process_update(update)
+        bot_logger.info("Processed Telegram webhook update")
+        return '', 204
+    except Exception as e:
+        bot_logger.error(f"Error processing webhook update: {e}")
+        return '', 500
 
 # SocketIO handlers
 @socketio.on('connect')
@@ -699,24 +690,24 @@ def handle_request_tracking(data):
     if not sanitized_tn:
         flask_logger.warning(f"Invalid tracking number in WebSocket request: {tracking_number}", extra={'tracking_number': str(tracking_number)})
         try:
-            emit('tracking_update', {'error': 'Invalid tracking number'}, room=request.sid)
+            emit('tracking_update', {'success': False, 'error-codes': ['invalid-input-response']}, room=request.sid)
         except Exception as e:
             flask_logger.error(f"Failed to emit error: {e}", extra={'tracking_number': str(tracking_number)})
         disconnect(request.sid)
         return
 
     try:
-        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+        shipment = get_shipment_details(sanitized_tn)
         update_data = {
             'tracking_number': sanitized_tn,
             'found': False,
-            'error': 'Tracking number not found.'
+            'error': 'Tracking number not found.',
+            'error-codes': ['not-found']
         }
         if shipment:
-            status = shipment.status
-            checkpoints_str = shipment.checkpoints
-            delivery_location = shipment.delivery_location
-            checkpoints = checkpoints_str.split(';') if checkpoints_str else []
+            status = shipment['status']
+            checkpoints = shipment.get('checkpoints', '').split(';') if shipment.get('checkpoints') else []
+            delivery_location = shipment['delivery_location']
             coords = geocode_locations(checkpoints)
             coords_list = [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords]
             add_client(sanitized_tn, request.sid)
@@ -728,7 +719,8 @@ def handle_request_tracking(data):
                 'coords': coords_list,
                 'found': True,
                 'paused': redis_client.hget("paused_simulations", sanitized_tn) == "true" if redis_client else False,
-                'speed_multiplier': float(redis_client.hget("sim_speed_multipliers", sanitized_tn) or 1.0) if redis_client else 1.0
+                'speed_multiplier': float(redis_client.hget("sim_speed_multipliers", sanitized_tn) or 1.0) if redis_client else 1.0,
+                'success': True
             }
         try:
             emit('tracking_update', update_data, room=request.sid)
@@ -742,17 +734,26 @@ def handle_request_tracking(data):
         flask_logger.error(f"Database error: {e}", extra={'tracking_number': sanitized_tn})
         console.print(Panel(f"[error]Database error for {sanitized_tn}: {e}[/error]", title="WebSocket Error", border_style="red"))
         try:
-            emit('tracking_update', {'error': 'Database error'}, room=request.sid)
+            emit('tracking_update', {'success': False, 'error-codes': ['database-error']}, room=request.sid)
         except Exception:
             pass
         disconnect(request.sid)
     except Exception as e:
         flask_logger.error(f"Unexpected WebSocket error: {e}", extra={'tracking_number': sanitized_tn})
         try:
-            emit('tracking_update', {'error': 'Server error'}, room=request.sid)
+            emit('tracking_update', {'success': False, 'error-codes': ['server-error']}, room=request.sid)
         except Exception:
             pass
         disconnect(request.sid)
+
+@socketio.on('unsubscribe')
+def handle_unsubscribe(data):
+    """Handle WebSocket client unsubscription."""
+    tracking_number = data.get('tracking_number')
+    sanitized_tn = sanitize_tracking_number(tracking_number)
+    if sanitized_tn:
+        remove_client(sanitized_tn, request.sid)
+        flask_logger.debug(f"Client unsubscribed from {sanitized_tn}", extra={'tracking_number': sanitized_tn})
 
 @socketio.on('disconnect')
 def handle_disconnect():
