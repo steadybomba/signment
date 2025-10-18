@@ -1,41 +1,19 @@
-# Core dependencies for Flask application
 Flask==2.3.3
 Flask-SQLAlchemy==3.1.1
 Flask-SocketIO==5.3.6
 Flask-WTF==1.2.1
 flask-limiter==3.11.0
-
-# WebSocket and async support
 python-socketio==5.11.4
 eventlet==0.36.1
-
-# Telegram bot
 pyTelegramBotAPI==4.22.1
-telebot
-
-# HTTP requests
 requests==2.32.3
-
-# Database driver (choose one based on your database)
-psycopg2-binary==2.9.9  # For PostgreSQL
-# mysqlclient==2.2.4    # Uncomment for MySQL
-
-# Environment variable management
+psycopg2-binary==2.9.9
 python-dotenv==1.0.1
-
-# Enhanced console output
 rich==13.9.2
-
-# Input validation
 validators==0.28.1
-email_validator
-
-# Geocoding for location validation
+email_validator==2.2.0
 geopy==2.4.1
-
-# Rate limiting
-flask-limiter==3.11.0
-upstash-redis==0.15.0  # Storage backend for Flask-Limiter
-
-# Production WSGI server
+upstash-redis==0.15.0
+pydantic==2.9.2
 gunicorn==22.0.0
+tenacity==8.2.3
