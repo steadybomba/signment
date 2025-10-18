@@ -1,49 +1,81 @@
 version: '3.8'
 
 services:
-  app:
+  web:
     build:
       context: .
       dockerfile: Dockerfile
+    command: gunicorn --worker-class eventlet -w 1 app:app
     ports:
       - "5000:5000"
-    volumes:
-      - .:/app
-    env_file:
-      - .env
+    environment:
+      - ALLOWED_ADMINS=1756017918
+      - FLASK_ENV=development
+      - GEOCODING_API_KEY=68f1e6c3d4d40066193802vuyb187e9
+      - GLOBAL_WEBHOOK_URL=https://your-webhook-url.com
+      - RATELIMIT_STORAGE_URI=redis://redis:6379
+      - RECAPTCHA_SECRET_KEY=6LellekrAAAAAPp3VzPaZZOwxwnkYqkpHlzq9ugf
+      - RECAPTCHA_SITE_KEY=6LellekrAAAAAIhzbEnkb9QgNiXl_6a1pqV5bAIq
+      - REDIS_TOKEN=ASJvAAImcDIzMjI1Mjg2YjRkYzA0MGVjYjYyYjkxZDY3Yzk0MzlhMHAyODgxNQ
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=fe25c3f6d1d47f98b837b4a2a94dcae8914cdef80b273b36c12449ed1d6ef8a7
+      - SMTP_FROM=hesabamn1@gmail.com
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PASS=prgzrnfkugwduuhh
+      - SMTP_PORT=587
+      - SMTP_USER=hesabamn1@gmail.com
+      - SQLALCHEMY_DATABASE_URI=postgresql://biggerboy_user:NgVyXnT7LI42pd9w6QA9FSAQeEYWN7Sb@postgres:5432/biggerboy
+      - TAWK_PROPERTY_ID=68ed7a5c3744141950704636
+      - TAWK_WIDGET_ID=1j7fqg720
+      - TELEGRAM_BOT_TOKEN=7263080325:AAGNBMkFEdfP2jN1kP6MK1RjZZxOc6jLnk8
+      - WEBSOCKET_SERVER=http://web:5000
     depends_on:
-      - db
+      - postgres
       - redis
     networks:
-      - tracking_network
-    command: gunicorn --bind 0.0.0.0:5000 app:app
+      - app-network
+    restart: unless-stopped
 
-  db:
-    image: postgres:16
+  telegram_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python3 telegram_bot.py
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_DATABASE}
-    volumes:
-      - db_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+      - ALLOWED_ADMINS=1756017918
+      - FLASK_ENV=development
+      - REDIS_TOKEN=ASJvAAImcDIzMjI1Mjg2YjRkYzA0MGVjYjYyYjkxZDY3Yzk0MzlhMHAyODgxNQ
+      - REDIS_URL=redis://redis:6379
+      - SQLALCHEMY_DATABASE_URI=postgresql://biggerboy_user:NgVyXnT7LI42pd9w6QA9FSAQeEYWN7Sb@postgres:5432/biggerboy
+      - TELEGRAM_BOT_TOKEN=7263080325:AAGNBMkFEdfP2jN1kP6MK1RjZZxOc6jLnk8
+    depends_on:
+      - postgres
+      - redis
     networks:
-      - tracking_network
+      - app-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=biggerboy_user
+      - POSTGRES_PASSWORD=NgVyXnT7LI42pd9w6QA9FSAQeEYWN7Sb
+      - POSTGRES_DB=biggerboy
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    restart: unless-stopped
 
   redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
+    image: redis:6
     networks:
-      - tracking_network
-
-networks:
-  tracking_network:
-    driver: bridge
+      - app-network
+    restart: unless-stopped
 
 volumes:
-  db_data:
-  redis_data:
+  postgres-data:
+
+networks:
+  app-network:
+    driver: bridge
