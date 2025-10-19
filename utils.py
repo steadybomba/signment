@@ -50,7 +50,7 @@ redis_client = None
 if Redis:
     try:
         redis_client = Redis(
-            url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+            url=os.getenv("REDIS_URL"),
             token=os.getenv("UPSTASH_REDIS_TOKEN", "")
         )
         redis_client.ping()
@@ -80,11 +80,33 @@ def safe_redis_operation(func, *args, **kwargs):
         console.print(Panel(f"[error]Redis operation failed: {e}[/error]", title="Redis Error", border_style="red"))
         return None
 
+def enqueue_notification(tracking_number: str, notification_type: str, data: dict):
+    """Enqueue a notification to be processed (e.g., email or webhook)."""
+    if redis_client is None:
+        logger.warning("Cannot enqueue notification: Redis unavailable")
+        return False
+    try:
+        notification = {
+            'tracking_number': tracking_number,
+            'type': notification_type,  # e.g., 'email', 'webhook'
+            'data': data,
+            'created_at': datetime.utcnow().isoformat()
+        }
+        queue_key = "notifications_queue"
+        safe_redis_operation(redis_client.lpush, queue_key, json.dumps(notification))
+        logger.info(f"Enqueued {notification_type} notification for {tracking_number}")
+        console.print(f"[info]Enqueued {notification_type} notification for {tracking_number}[/info]")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to enqueue notification for {tracking_number}: {e}")
+        console.print(Panel(f"[error]Failed to enqueue notification for {tracking_number}: {e}[/error]", title="Queue Error", border_style="red"))
+        return False
+
 def get_bot():
     """Initialize and return the Telegram bot instance."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_url=os.getenv("REDIS_URL"),
         redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
         webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
         websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
@@ -109,7 +131,7 @@ def is_admin(user_id: int) -> bool:
     """Check if the user is an admin."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_url=os.getenv("REDIS_URL"),
         redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
         webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
         websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
@@ -212,7 +234,7 @@ def save_shipment(tracking_number: str, status: str, checkpoints: str, delivery_
     db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, _ = get_app_modules()
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_url=os.getenv("REDIS_URL"),
         redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
         webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
         websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
@@ -507,7 +529,7 @@ def send_manual_email(call, tracking_number: str):
     """Send a manual email notification."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_url=os.getenv("REDIS_URL"),
         redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
         webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
         websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
@@ -552,7 +574,7 @@ def send_manual_webhook(call, tracking_number: str):
     """Send a manual webhook notification."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_url=os.getenv("REDIS_URL"),
         redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
         webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
         websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
@@ -689,7 +711,7 @@ def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int 
     from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_url=os.getenv("REDIS_URL"),
         redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
         webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
         websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
