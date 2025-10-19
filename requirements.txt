@@ -17,4 +17,3 @@ upstash-redis==0.15.0
 pydantic==2.9.2
 gunicorn==22.0.0
 tenacity==8.2.3
-redis==5.0.1
