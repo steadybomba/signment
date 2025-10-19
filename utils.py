@@ -1,7 +1,10 @@
 import os
 import re
 import json
-import redis
+try:
+    from upstash_redis import Redis
+except ImportError:
+    Redis = None
 import uuid
 import logging
 import smtplib
@@ -30,6 +33,7 @@ console = Console()
 class BotConfig:
     telegram_bot_token: str
     redis_url: str
+    redis_token: str
     webhook_url: str
     websocket_server: str
     allowed_admins: list
@@ -43,15 +47,22 @@ class BotConfig:
 
 # Redis client
 redis_client = None
-try:
-    redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
-    redis_client.ping()
-    logger.info("Connected to Redis")
-    console.print("[info]Connected to Redis[/info]")
-except redis.RedisError as e:
-    logger.error(f"Redis connection failed: {e}")
-    console.print(Panel(f"[error]Redis connection failed: {e}[/error]", title="Redis Error", border_style="red"))
-    redis_client = None
+if Redis:
+    try:
+        redis_client = Redis(
+            url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+            token=os.getenv("UPSTASH_REDIS_TOKEN", "")
+        )
+        redis_client.ping()
+        logger.info("Connected to Upstash Redis")
+        console.print("[info]Connected to Upstash Redis[/info]")
+    except Exception as e:
+        logger.error(f"Upstash Redis connection failed: {e}")
+        console.print(Panel(f"[error]Upstash Redis connection failed: {e}[/error]", title="Redis Error", border_style="red"))
+        redis_client = None
+else:
+    logger.warning("Upstash Redis module not installed; Redis operations will be disabled")
+    console.print(Panel("[warning]Upstash Redis module not installed; Redis operations will be disabled[/warning]", title="Redis Warning", border_style="yellow"))
 
 # Constants
 RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", 60))
@@ -60,10 +71,11 @@ RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", 100))
 def safe_redis_operation(func, *args, **kwargs):
     """Safely execute a Redis operation."""
     if redis_client is None:
+        logger.warning(f"Redis operation {func.__name__} skipped: Redis unavailable")
         return None
     try:
         return func(*args, **kwargs)
-    except redis.RedisError as e:
+    except Exception as e:
         logger.error(f"Redis operation failed: {e}")
         console.print(Panel(f"[error]Redis operation failed: {e}[/error]", title="Redis Error", border_style="red"))
         return None
@@ -72,9 +84,10 @@ def get_bot():
     """Initialize and return the Telegram bot instance."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment.onrender.com"),
+        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
         allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
         valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
         route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
@@ -96,9 +109,10 @@ def is_admin(user_id: int) -> bool:
     """Check if the user is an admin."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment.onrender.com"),
+        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
         allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
         valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
         route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
@@ -198,9 +212,10 @@ def save_shipment(tracking_number: str, status: str, checkpoints: str, delivery_
     db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, _ = get_app_modules()
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment.onrender.com"),
+        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
         allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
         valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
         route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
@@ -282,15 +297,15 @@ def delete_shipment(call, tracking_number: str, page: int):
 
 def confirm_delete_shipment(call, tracking_number: str, page: int):
     """Confirm deletion of a shipment."""
-    from telebot import types
+    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
     tracking_number = sanitize_tracking_number(tracking_number)
     if not tracking_number:
         bot.answer_callback_query(call.id, "Invalid tracking number.", show_alert=True)
         return
-    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("Confirm", callback_data=f"delete_{tracking_number}_{page}"),
-        types.InlineKeyboardButton("Cancel", callback_data=f"delete_menu_{page}")
+        InlineKeyboardButton("Confirm", callback_data=f"delete_{tracking_number}_{page}"),
+        InlineKeyboardButton("Cancel", callback_data=f"delete_menu_{page}")
     )
     bot.edit_message_text(f"Confirm deletion of shipment {tracking_number}?", chat_id=call.message.chat.id,
                          message_id=call.message.message_id, reply_markup=markup)
@@ -336,9 +351,10 @@ def batch_delete_shipments(call, page: int):
                              message_id=call.message.message_id)
         logger.info(f"Batch deleted {len(selected)} shipments")
         console.print(f"[info]Batch deleted {len(selected)} shipments[/info]")
+        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
         show_shipment_menu(call, page, prefix="batch_select", prompt="Select shipments to delete",
-                          extra_buttons=[types.InlineKeyboardButton("Confirm Delete", callback_data=f"batch_delete_confirm_{page}"),
-                                        types.InlineKeyboardButton("Home", callback_data="menu_page_1")])
+                          extra_buttons=[InlineKeyboardButton("Confirm Delete", callback_data=f"batch_delete_confirm_{page}"),
+                                        InlineKeyboardButton("Home", callback_data="menu_page_1")])
     except SQLAlchemyError as e:
         db.session.rollback()
         bot.answer_callback_query(call.id, f"Database error: {e}", show_alert=True)
@@ -347,23 +363,22 @@ def batch_delete_shipments(call, page: int):
 
 def confirm_batch_delete(call, page: int):
     """Confirm batch deletion of selected shipments."""
-    from telebot import types
+    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
     selected = safe_redis_operation(redis_client.smembers, "batch_selected") or set()
     if not selected:
         bot.edit_message_text("No shipments selected.", chat_id=call.message.chat.id,
                              message_id=call.message.message_id)
         return
-    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("Confirm", callback_data=f"batch_delete_confirm_{page}"),
-        types.InlineKeyboardButton("Cancel", callback_data=f"batch_delete_menu_{page}")
+        InlineKeyboardButton("Confirm", callback_data=f"batch_delete_confirm_{page}"),
+        InlineKeyboardButton("Cancel", callback_data=f"batch_delete_menu_{page}")
     )
     bot.edit_message_text(f"Confirm deletion of {len(selected)} shipments?", chat_id=call.message.chat.id,
                          message_id=call.message.message_id, reply_markup=markup)
 
 def trigger_broadcast(call, tracking_number: str):
     """Trigger a broadcast for a shipment."""
-    from telebot import types
     tracking_number = sanitize_tracking_number(tracking_number)
     if not tracking_number:
         bot.answer_callback_query(call.id, "Invalid tracking number.", show_alert=True)
@@ -492,9 +507,10 @@ def send_manual_email(call, tracking_number: str):
     """Send a manual email notification."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment.onrender.com"),
+        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
         allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
         valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
         route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
@@ -536,9 +552,10 @@ def send_manual_webhook(call, tracking_number: str):
     """Send a manual webhook notification."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment.onrender.com"),
+        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
         allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
         valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
         route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
@@ -599,9 +616,10 @@ def bulk_pause_shipments(call, page: int):
                              message_id=call.message.message_id)
         logger.info(f"Paused {count} shipments in bulk")
         console.print(f"[info]Paused {count} shipments in bulk[/info]")
+        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
         show_shipment_menu(call, page, prefix="bulk_pause", prompt="Select shipments to pause",
-                          extra_buttons=[types.InlineKeyboardButton("Confirm Pause", callback_data=f"bulk_pause_confirm_{page}"),
-                                        types.InlineKeyboardButton("Home", callback_data="menu_page_1")])
+                          extra_buttons=[InlineKeyboardButton("Confirm Pause", callback_data=f"bulk_pause_confirm_{page}"),
+                                        InlineKeyboardButton("Home", callback_data="menu_page_1")])
     except SQLAlchemyError as e:
         db.session.rollback()
         bot.answer_callback_query(call.id, f"Database error: {e}", show_alert=True)
@@ -630,9 +648,10 @@ def bulk_resume_shipments(call, page: int):
                              message_id=call.message.message_id)
         logger.info(f"Resumed {count} shipments in bulk")
         console.print(f"[info]Resumed {count} shipments in bulk[/info]")
+        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
         show_shipment_menu(call, page, prefix="bulk_resume", prompt="Select shipments to resume",
-                          extra_buttons=[types.InlineKeyboardButton("Confirm Resume", callback_data=f"bulk_resume_confirm_{page}"),
-                                        types.InlineKeyboardButton("Home", callback_data="menu_page_1")])
+                          extra_buttons=[InlineKeyboardButton("Confirm Resume", callback_data=f"bulk_resume_confirm_{page}"),
+                                        InlineKeyboardButton("Home", callback_data="menu_page_1")])
     except SQLAlchemyError as e:
         db.session.rollback()
         bot.answer_callback_query(call.id, f"Database error: {e}", show_alert=True)
@@ -667,12 +686,13 @@ def search_shipments(query: str, page: int = 1) -> Tuple[List[str], int]:
 
 def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
     """Send a dynamic menu to the admin."""
-    from telebot import types
+    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment.onrender.com"),
+        redis_url=os.getenv("REDIS_URL", "https://<your-upstash-endpoint>.upstash.io"),
+        redis_token=os.getenv("UPSTASH_REDIS_TOKEN", ""),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
         allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
         valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
         route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
@@ -682,18 +702,18 @@ def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int 
         smtp_pass=os.getenv("SMTP_PASS", ""),
         smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
     )
-    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("Add Shipment", callback_data="add"),
-        types.InlineKeyboardButton("Generate ID", callback_data="generate_id"),
-        types.InlineKeyboardButton("View Shipments", callback_data="list_1"),
-        types.InlineKeyboardButton("Delete Shipments", callback_data="delete_menu_1"),
-        types.InlineKeyboardButton("Toggle Email", callback_data="toggle_email_menu_1"),
-        types.InlineKeyboardButton("Broadcast", callback_data="broadcast_menu_1"),
-        types.InlineKeyboardButton("Set Speed", callback_data="setspeed_menu_1"),
-        types.InlineKeyboardButton("Get Speed", callback_data="getspeed_menu_1"),
-        types.InlineKeyboardButton("Settings", callback_data="settings"),
-        types.InlineKeyboardButton("Help", callback_data="help")
+        InlineKeyboardButton("Add Shipment", callback_data="add"),
+        InlineKeyboardButton("Generate ID", callback_data="generate_id"),
+        InlineKeyboardButton("View Shipments", callback_data="list_1"),
+        InlineKeyboardButton("Delete Shipments", callback_data="delete_menu_1"),
+        InlineKeyboardButton("Toggle Email", callback_data="toggle_email_menu_1"),
+        InlineKeyboardButton("Broadcast", callback_data="broadcast_menu_1"),
+        InlineKeyboardButton("Set Speed", callback_data="setspeed_menu_1"),
+        InlineKeyboardButton("Get Speed", callback_data="getspeed_menu_1"),
+        InlineKeyboardButton("Settings", callback_data="settings"),
+        InlineKeyboardButton("Help", callback_data="help")
     )
     text = f"*Admin Menu* (Page {page})"
     if message_id:
