@@ -2,19 +2,13 @@ import eventlet
 eventlet.monkey_patch()
 
 # Standard library imports
-import re
 import os
 import json
 import random
-import threading
-import time
 from datetime import datetime, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 # Third-party imports
 import requests
-import smtplib
 import logging
 from flask import Flask, render_template, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
@@ -27,8 +21,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 import validators
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy import inspect, text
-from time import sleep
-from telebot import TeleBot
 from wtforms import StringField, SubmitField
 from wtforms.validators import DataRequired
 from flask_wtf import FlaskForm
@@ -36,17 +28,13 @@ from flask_wtf import FlaskForm
 # Local imports from utils.py
 from utils import (
     get_config, redis_client, console, get_app_modules, enqueue_notification,
-    get_cached_route_templates, sanitize_tracking_number, validate_email,
-    validate_location, validate_webhook_url, send_email_notification,
+    get_cached_route_templates, sanitize_tracking_number, send_email_notification,
     check_bot_status, cache_route_templates, get_bot, get_shipment_list,
-    get_shipment_details, save_shipment, invalidate_cache
+    get_shipment_details, save_shipment, invalidate_cache, is_admin
 )
 
 # Initialize Flask app and core components
 app = Flask(__name__)
-
-# Initialize bot
-bot = get_bot()
 
 # Load configuration from utils.py
 try:
@@ -54,6 +42,7 @@ try:
     app.config.update(
         TELEGRAM_BOT_TOKEN=config.telegram_bot_token,
         REDIS_URL=config.redis_url,
+        REDIS_TOKEN=config.redis_token,
         WEBSOCKET_SERVER=config.websocket_server,
         SECRET_KEY=os.getenv("SECRET_KEY", "default-secret-key"),
         SQLALCHEMY_DATABASE_URI=os.getenv("SQLALCHEMY_DATABASE_URI", "sqlite:///shipments.db"),
@@ -69,7 +58,7 @@ try:
         TAWK_PROPERTY_ID=os.getenv("TAWK_PROPERTY_ID", ""),
         TAWK_WIDGET_ID=os.getenv("TAWK_WIDGET_ID", ""),
         RATELIMIT_DEFAULTS=['200 per day', '50 per hour'],
-        RATELIMIT_STORAGE_URI=os.getenv("RATELIMIT_STORAGE_URI", f"redis://{config.redis_url}" if config.redis_url else "memory://"),
+        RATELIMIT_STORAGE_URI=os.getenv("RATELIMIT_STORAGE_URI", f"redis://{config.redis_url}?password={config.redis_token}"),
         GLOBAL_WEBHOOK_URL=os.getenv("GLOBAL_WEBHOOK_URL", config.websocket_server),
         STATUS_TRANSITIONS=json.loads(os.getenv("STATUS_TRANSITIONS", '''
             {
@@ -194,7 +183,7 @@ def init_db():
             flask_logger.error(f"Database connection attempt {attempt + 1} failed: {e}")
             console.print(Panel(f"[error]Database connection attempt {attempt + 1} failed: {e}[/error]", title="Database Error", border_style="red"))
             if attempt < max_retries - 1:
-                sleep(retry_delay * (2 ** attempt))
+                eventlet.sleep(retry_delay * (2 ** attempt))
             continue
         except SQLAlchemyError as e:
             flask_logger.error(f"Database initialization failed: {e}")
@@ -248,7 +237,7 @@ def geocode_locations(checkpoints):
             try:
                 current_time = time.time()
                 if current_time - last_request_time[0] < 1:
-                    time.sleep(1 - (current_time - last_request_time[0]))
+                    eventlet.sleep(1 - (current_time - last_request_time[0]))
                 last_request_time[0] = time.time()
                 if redis_client:
                     try:
@@ -351,11 +340,11 @@ def keep_alive():
                 flask_logger.error(f"Keep-alive ping error: {e}")
                 console.print(Panel(f"[error]Keep-alive ping error: {e}[/error]", title="Keep-Alive Error", border_style="red"))
             if attempt < max_retries - 1:
-                time.sleep(retry_delay * (2 ** attempt))
+                eventlet.sleep(retry_delay * (2 ** attempt))
             else:
                 flask_logger.error("Max retries exceeded for keep-alive ping")
                 console.print(Panel("[error]Max retries exceeded for keep-alive ping[/error]", title="Keep-Alive Error", border_style="red"))
-        time.sleep(300)
+        eventlet.sleep(300)
 
 def process_notification_queue():
     """Process notifications from the Redis queue with batch email processing."""
@@ -364,7 +353,7 @@ def process_notification_queue():
         if not redis_client:
             flask_logger.error("Redis client not available for notification queue processing")
             console.print(Panel("[error]Redis client not available for notification queue[/error]", title="Queue Error", border_style="red"))
-            time.sleep(60)
+            eventlet.sleep(60)
             continue
         try:
             # Fetch up to batch_size notifications
@@ -376,7 +365,7 @@ def process_notification_queue():
                 notifications.append(json.loads(notification))
 
             if not notifications:
-                time.sleep(1)
+                eventlet.sleep(1)
                 continue
 
             for data in notifications:
@@ -441,14 +430,14 @@ def process_notification_queue():
                         except requests.RequestException as e:
                             flask_logger.error(f"Webhook notification attempt {attempt + 1} failed for {tracking_number}: {e}")
                             if attempt < max_retries - 1:
-                                time.sleep(retry_delay * (2 ** attempt))
+                                eventlet.sleep(retry_delay * (2 ** attempt))
                             else:
                                 flask_logger.error(f"Max retries exceeded for webhook notification {tracking_number}")
                                 console.print(Panel(f"[error]Max retries exceeded for webhook notification {tracking_number}[/error]", title="Notification Error", border_style="red"))
         except Exception as e:
             flask_logger.error(f"Unexpected error processing notification queue: {e}")
             console.print(Panel(f"[error]Unexpected error processing notification queue: {e}[/error]", title="Queue Error", border_style="red"))
-            time.sleep(5)
+            eventlet.sleep(5)
 
 def cleanup_websocket_clients():
     """Periodically clean up stale WebSocket clients."""
@@ -475,11 +464,11 @@ def cleanup_websocket_clients():
                             remove_client(tracking_number, sid)
                             flask_logger.debug(f"Removed stale client {sid} from in-memory store for {tracking_number}")
                             console.print(f"[info]Removed stale client {sid} for {tracking_number}[/info]")
-            time.sleep(cleanup_interval)
+            eventlet.sleep(cleanup_interval)
         except Exception as e:
             flask_logger.error(f"Error cleaning up WebSocket clients: {e}")
             console.print(Panel(f"[error]Error cleaning up WebSocket clients: {e}[/error]", title="WebSocket Error", border_style="red"))
-            time.sleep(cleanup_interval)
+            eventlet.sleep(cleanup_interval)
 
 def simulate_tracking(tracking_number):
     """Simulate shipment tracking with status updates and notifications."""
@@ -734,7 +723,7 @@ def track():
                                  tawk_property_id=app.config['TAWK_PROPERTY_ID'], 
                                  tawk_widget_id=app.config['TAWK_WIDGET_ID'])
 
-        if email and validate_email(email):
+        if email:
             shipment.recipient_email = email
             db.session.commit()
             invalidate_cache(sanitized_tn)
@@ -812,13 +801,14 @@ def health_check():
             status['redis'] = 'ok'
             status['notification_queue'] = f"length: {redis_client.llen('notifications')}"
     except Exception as e:
+        status['status'] = 'unhealthy'
         status['redis'] = str(e)
         status['notification_queue'] = str(e)
     try:
         status['telegram'] = 'ok' if check_bot_status() else 'unavailable'
     except Exception as e:
         status['telegram'] = str(e)
-    if status['status'] == 'healthy' and any(v != 'ok' for v in [status['database'], 'redis']):
+    if status['status'] == 'healthy' and any(v != 'ok' for v in [status['database'], status['redis'], status['telegram']]):
         status['status'] = 'unhealthy'
     flask_logger.info("Health check", extra=status)
     console.print(f"[info]Health check: {status}[/info]")
@@ -829,6 +819,7 @@ def webhook():
     """Handle Telegram webhook updates."""
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
+        bot = get_bot()
         update = bot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         flask_logger.info("Processed Telegram webhook update", extra={'tracking_number': ''})
@@ -840,7 +831,6 @@ def webhook():
 @limiter.limit("5 per minute")
 def create_shipment():
     """Create a new shipment (admin only)."""
-    from utils import is_admin
     auth_token = request.headers.get('Authorization')
     if not auth_token or not is_admin(int(auth_token.split()[-1]) if auth_token.startswith('Bearer ') else 0):
         flask_logger.warning("Unauthorized attempt to create shipment", extra={'tracking_number': ''})
@@ -881,7 +871,6 @@ def create_shipment():
 @limiter.limit("5 per minute")
 def update_shipment(tracking_number):
     """Update an existing shipment (admin only)."""
-    from utils import is_admin
     auth_token = request.headers.get('Authorization')
     if not auth_token or not is_admin(int(auth_token.split()[-1]) if auth_token.startswith('Bearer ') else 0):
         flask_logger.warning("Unauthorized attempt to update shipment", extra={'tracking_number': tracking_number})
@@ -935,7 +924,6 @@ def update_shipment(tracking_number):
 @limiter.limit("5 per minute")
 def delete_shipment(tracking_number):
     """Delete a shipment (admin only)."""
-    from utils import is_admin
     auth_token = request.headers.get('Authorization')
     if not auth_token or not is_admin(int(auth_token.split()[-1]) if auth_token.startswith('Bearer ') else 0):
         flask_logger.warning("Unauthorized attempt to delete shipment", extra={'tracking_number': tracking_number})
@@ -976,7 +964,6 @@ def delete_shipment(tracking_number):
 @limiter.limit("5 per minute")
 def bulk_action():
     """Perform bulk actions on shipments (pause/resume/delete, admin only)."""
-    from utils import is_admin
     auth_token = request.headers.get('Authorization')
     if not auth_token or not is_admin(int(auth_token.split()[-1]) if auth_token.startswith('Bearer ') else 0):
         flask_logger.warning("Unauthorized attempt to perform bulk action", extra={'tracking_number': ''})
@@ -1050,7 +1037,6 @@ def bulk_action():
 @limiter.limit("5 per minute")
 def send_notification(tracking_number):
     """Send manual notification for a shipment (admin only)."""
-    from utils import is_admin
     auth_token = request.headers.get('Authorization')
     if not auth_token or not is_admin(int(auth_token.split()[-1]) if auth_token.startswith('Bearer ') else 0):
         flask_logger.warning("Unauthorized attempt to send notification", extra={'tracking_number': tracking_number})
@@ -1118,7 +1104,6 @@ def send_notification(tracking_number):
 @limiter.limit("5 per minute")
 def set_simulation_speed(tracking_number):
     """Set simulation speed multiplier for a shipment (admin only)."""
-    from utils import is_admin
     auth_token = request.headers.get('Authorization')
     if not auth_token or not is_admin(int(auth_token.split()[-1]) if auth_token.startswith('Bearer ') else 0):
         flask_logger.warning("Unauthorized attempt to set simulation speed", extra={'tracking_number': tracking_number})
@@ -1297,13 +1282,10 @@ if __name__ == '__main__':
     except Exception as e:
         flask_logger.error(f"Failed to cache route templates: {e}")
         console.print(Panel(f"[error]Route templates cache failed: {e}[/error]", title="Cache Error", border_style="red"))
-    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
-    keep_alive_thread.start()
+    keep_alive_thread = eventlet.spawn(keep_alive)
     console.print("[info]Keep-alive thread started[/info]")
-    notification_thread = threading.Thread(target=process_notification_queue, daemon=True)
-    notification_thread.start()
+    notification_thread = eventlet.spawn(process_notification_queue)
     console.print("[info]Notification queue processing thread started[/info]")
-    cleanup_thread = threading.Thread(target=cleanup_websocket_clients, daemon=True)
-    cleanup_thread.start()
+    cleanup_thread = eventlet.spawn(cleanup_websocket_clients)
     console.print("[info]WebSocket cleanup thread started[/info]")
     socketio.run(app, host='0.0.0.0', port=10000, debug=app.config.get('FLASK_ENV') == 'development')
