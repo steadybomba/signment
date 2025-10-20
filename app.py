@@ -397,10 +397,32 @@ def process_notification_queue():
                 checkpoints = notification_data.get("checkpoints", "")
                 delivery_location = notification_data.get("delivery_location")
                 subject = f"Shipment Update: {tracking_number}"
-                body = f"Tracking Number: {tracking_number}\nStatus: {status}\nDelivery Location: {delivery_location}\nCheckpoints:\n{checkpoints}"
+                # Render HTML template
+                checkpoints_list = checkpoints.split(';') if checkpoints else []
+                html_body = render_template('email_notification.html',
+                                         tracking_number=tracking_number,
+                                         status=status,
+                                         delivery_location=delivery_location,
+                                         checkpoints=checkpoints_list)
+                # Create plain text fallback
+                plain_body = (
+                    f"Hello,\n\n"
+                    f"Your shipment with tracking number {tracking_number} has been updated.\n\n"
+                    f"Current Status: {status}\n"
+                    f"Delivery Location: {delivery_location}\n"
+                    f"Recent Checkpoints:\n"
+                )
+                if checkpoints_list:
+                    plain_body += "\n".join([f"- {checkpoint}" for checkpoint in checkpoints_list]) + "\n"
+                plain_body += (
+                    f"\nTrack your shipment: https://signment-9a96.onrender.com/track?tracking_number={tracking_number}\n\n"
+                    f"© 2025 Signment Tracking. All rights reserved.\n"
+                    f"Visit our website: https://signment-9a96.onrender.com\n"
+                    f"Contact Support: support@signment.com"
+                )
                 for attempt in range(max_retries):
                     try:
-                        if send_email_notification(recipient_email, subject, body):
+                        if send_email_notification(recipient_email, subject, plain_body, html_body):
                             flask_logger.info(f"Processed email notification for {tracking_number}")
                             console.print(f"[info]Processed email notification for {tracking_number}[/info]")
                             break
