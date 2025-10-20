@@ -17,12 +17,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install honcho to manage Procfile processes
-RUN pip install --no-cache-dir honcho
+RUN pip install --no-cache-dir honcho==2.0.0
 
 # Copy application files
 COPY app.py .
 COPY bot.py .
+COPY worker.py .
 COPY utils.py .
+COPY forms.py .
 COPY Procfile .
 COPY templates/ templates/
 COPY static/ static/
