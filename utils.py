@@ -15,6 +15,7 @@ from datetime import datetime
 import eventlet
 from threading import Lock
 from time import time
+import requests
 
 # Logging setup
 logger = logging.getLogger('utils')
@@ -360,6 +361,36 @@ def send_email_notification(recipient_email: str, subject: str, plain_body: str,
     console.print(f"[error]Max retries exceeded for email to {recipient_email}[/error]")
     return False
 
+def send_webhook_notification(webhook_url: str, tracking_number: str, data: Dict[str, Any]) -> bool:
+    """Send a webhook notification with shipment data."""
+    max_retries = 3
+    retry_delay = 5
+
+    def send_webhook() -> bool:
+        try:
+            headers = {"Content-Type": "application/json"}
+            response = requests.post(webhook_url, json=data, headers=headers, timeout=10)
+            response.raise_for_status()
+            logger.info(f"Sent webhook notification to {webhook_url} for {tracking_number}")
+            console.print(f"[info]Sent webhook notification to {webhook_url} for {tracking_number}[/info]")
+            return True
+        except requests.RequestException as e:
+            logger.error(f"Webhook request failed for {tracking_number} to {webhook_url}: {e}")
+            console.print(f"[error]Webhook request failed for {tracking_number} to {webhook_url}: {e}[/error]")
+            return False
+
+    for attempt in range(max_retries):
+        with eventlet.Timeout(10, False):
+            if send_webhook():
+                return True
+            logger.warning(f"Webhook attempt {attempt + 1} failed for {tracking_number} to {webhook_url}")
+            console.print(f"[warning]Webhook attempt {attempt + 1} failed for {tracking_number} to {webhook_url}[/warning]")
+            if attempt < max_retries - 1:
+                eventlet.sleep(retry_delay * (2 ** attempt))
+    logger.error(f"Max retries exceeded for webhook to {webhook_url} for {tracking_number}")
+    console.print(f"[error]Max retries exceeded for webhook to {webhook_url} for {tracking_number}[/error]")
+    return False
+
 def enqueue_notification(tracking_number: str, notification_type: str, data: Dict[str, Any]) -> bool:
     """Enqueue a notification in Redis."""
     if not redis_client:
@@ -476,6 +507,7 @@ def save_shipment(
     try:
         shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
         current_time = datetime.utcnow()
+        action = "updated" if shipment else "created"
         if shipment:
             shipment.status = status
             shipment.checkpoints = checkpoints
@@ -498,8 +530,24 @@ def save_shipment(
             )
             db.session.add(shipment)
         db.session.commit()
-        logger.info(f"Saved shipment {sanitized_tn}")
-        console.print(f"[info]Saved shipment {sanitized_tn}[/info]")
+        logger.info(f"Saved shipment {sanitized_tn} ({action})")
+        console.print(f"[info]Saved shipment {sanitized_tn} ({action})[/info]")
+
+        # Send webhook notification if webhook_url is provided
+        if webhook_url:
+            webhook_data = {
+                "tracking_number": sanitized_tn,
+                "status": status,
+                "checkpoints": checkpoints,
+                "delivery_location": delivery_location,
+                "recipient_email": recipient_email,
+                "origin_location": origin_location,
+                "webhook_url": webhook_url,
+                "action": action,
+                "timestamp": current_time.isoformat()
+            }
+            send_webhook_notification(webhook_url, sanitized_tn, webhook_data)
+
         return True
     except Exception as e:
         db.session.rollback()
@@ -544,6 +592,22 @@ def update_shipment(
         invalidate_cache(sanitized_tn)
         logger.info(f"Updated shipment {sanitized_tn}")
         console.print(f"[info]Updated shipment {sanitized_tn}[/info]")
+
+        # Send webhook notification if webhook_url is provided
+        if shipment.webhook_url:
+            webhook_data = {
+                "tracking_number": sanitized_tn,
+                "status": shipment.status,
+                "checkpoints": shipment.checkpoints or "",
+                "delivery_location": shipment.delivery_location,
+                "recipient_email": shipment.recipient_email,
+                "origin_location": shipment.origin_location,
+                "webhook_url": shipment.webhook_url,
+                "action": "updated",
+                "timestamp": shipment.last_updated.isoformat()
+            }
+            send_webhook_notification(shipment.webhook_url, sanitized_tn, webhook_data)
+
         return True
     except Exception as e:
         db.session.rollback()
