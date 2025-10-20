@@ -29,6 +29,9 @@ from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy import inspect, text
 from time import sleep
 from telebot import TeleBot
+from wtforms import StringField, SubmitField
+from wtforms.validators import DataRequired
+from flask_wtf import FlaskForm
 
 # Local imports from utils.py
 from utils import (
@@ -129,6 +132,12 @@ for var in required_vars:
         flask_logger.error(error_msg)
         console.print(Panel(f"[error]{error_msg}[/error]", title="Config Error", border_style="red"))
         raise ValueError(error_msg)
+
+# Fallback TrackForm definition
+class TrackForm(FlaskForm):
+    tracking_number = StringField('Tracking Number', validators=[DataRequired()])
+    email = StringField('Email (Optional)')
+    submit = SubmitField('Track')
 
 # Models
 class Shipment(db.Model):
@@ -362,6 +371,105 @@ def keep_alive():
                 console.print(Panel("[error]Max retries exceeded for keep-alive ping[/error]", title="Keep-Alive Error", border_style="red"))
         time.sleep(300)
 
+def process_notification_queue():
+    """Process notifications from the Redis queue."""
+    max_retries = 3
+    retry_delay = 5
+    while True:
+        if not redis_client:
+            flask_logger.error("Redis client not available for notification queue processing")
+            console.print(Panel("[error]Redis client not available for notification queue[/error]", title="Queue Error", border_style="red"))
+            time.sleep(60)
+            continue
+        try:
+            notification = safe_redis_operation(redis_client.lpop, "notifications")
+            if not notification:
+                time.sleep(1)
+                continue
+            data = json.loads(notification)
+            tracking_number = data.get("tracking_number")
+            notification_type = data.get("type")
+            notification_data = data.get("data", {})
+            
+            if notification_type == "email":
+                recipient_email = notification_data.get("recipient_email")
+                status = notification_data.get("status")
+                checkpoints = notification_data.get("checkpoints", "")
+                delivery_location = notification_data.get("delivery_location")
+                subject = f"Shipment Update: {tracking_number}"
+                body = f"Tracking Number: {tracking_number}\nStatus: {status}\nDelivery Location: {delivery_location}\nCheckpoints:\n{checkpoints}"
+                for attempt in range(max_retries):
+                    try:
+                        if send_email_notification(recipient_email, subject, body):
+                            flask_logger.info(f"Processed email notification for {tracking_number}")
+                            console.print(f"[info]Processed email notification for {tracking_number}[/info]")
+                            break
+                    except Exception as e:
+                        flask_logger.error(f"Email notification attempt {attempt + 1} failed for {tracking_number}: {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay * (2 ** attempt))
+                        else:
+                            flask_logger.error(f"Max retries exceeded for email notification {tracking_number}")
+                            console.print(Panel(f"[error]Max retries exceeded for email notification {tracking_number}[/error]", title="Notification Error", border_style="red"))
+            elif notification_type == "webhook":
+                webhook_url = notification_data.get("webhook_url")
+                payload = {
+                    "tracking_number": tracking_number,
+                    "status": notification_data.get("status"),
+                    "checkpoints": notification_data.get("checkpoints", []),
+                    "delivery_location": notification_data.get("delivery_location"),
+                    "timestamp": data.get("timestamp")
+                }
+                for attempt in range(max_retries):
+                    try:
+                        response = requests.post(webhook_url, json=payload, timeout=10)
+                        response.raise_for_status()
+                        flask_logger.info(f"Processed webhook notification for {tracking_number} to {webhook_url}")
+                        console.print(f"[info]Processed webhook notification for {tracking_number}[/info]")
+                        break
+                    except requests.RequestException as e:
+                        flask_logger.error(f"Webhook notification attempt {attempt + 1} failed for {tracking_number}: {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay * (2 ** attempt))
+                        else:
+                            flask_logger.error(f"Max retries exceeded for webhook notification {tracking_number}")
+                            console.print(Panel(f"[error]Max retries exceeded for webhook notification {tracking_number}[/error]", title="Notification Error", border_style="red"))
+        except Exception as e:
+            flask_logger.error(f"Unexpected error processing notification queue: {e}")
+            console.print(Panel(f"[error]Unexpected error processing notification queue: {e}[/error]", title="Queue Error", border_style="red"))
+            time.sleep(5)
+
+def cleanup_websocket_clients():
+    """Periodically clean up stale WebSocket clients."""
+    cleanup_interval = 3600  # 1 hour
+    while True:
+        try:
+            if redis_client:
+                for key in redis_client.scan_iter("clients:*"):
+                    tracking_number = key.split(":", 1)[1]
+                    clients = redis_client.smembers(key)
+                    for sid in clients:
+                        try:
+                            socketio.emit('ping', room=sid, callback=lambda: None)
+                        except Exception:
+                            remove_client(tracking_number, sid)
+                            flask_logger.debug(f"Removed stale client {sid} for {tracking_number}")
+                            console.print(f"[info]Removed stale client {sid} for {tracking_number}[/info]")
+            else:
+                for tracking_number in list(in_memory_clients.keys()):
+                    for sid in in_memory_clients[tracking_number].copy():
+                        try:
+                            socketio.emit('ping', room=sid, callback=lambda: None)
+                        except Exception:
+                            remove_client(tracking_number, sid)
+                            flask_logger.debug(f"Removed stale client {sid} from in-memory store for {tracking_number}")
+                            console.print(f"[info]Removed stale client {sid} for {tracking_number}[/info]")
+            time.sleep(cleanup_interval)
+        except Exception as e:
+            flask_logger.error(f"Error cleaning up WebSocket clients: {e}")
+            console.print(Panel(f"[error]Error cleaning up WebSocket clients: {e}[/error]", title="WebSocket Error", border_style="red"))
+            time.sleep(cleanup_interval)
+
 def simulate_tracking(tracking_number):
     """Simulate shipment tracking with status updates and notifications."""
     sanitized_tn = sanitize_tracking_number(tracking_number)
@@ -461,7 +569,7 @@ def simulate_tracking(tracking_number):
                 sim_logger.debug(f"Updated shipment: status={status}, checkpoints={len(checkpoints)}", extra={'tracking_number': sanitized_tn})
 
                 if send_notification and recipient_email and shipment.email_notifications:
-                    queue_length = redis_client.llen("notifications_queue") if redis_client else 0
+                    queue_length = redis_client.llen("notifications") if redis_client else 0
                     sim_logger.debug(f"Enqueuing notification, queue length: {queue_length}", extra={'tracking_number': sanitized_tn})
                     console.print(f"[info]Enqueuing notification for {sanitized_tn}, queue length: {queue_length}[/info]")
                     enqueue_notification(sanitized_tn, "email", {
@@ -472,7 +580,7 @@ def simulate_tracking(tracking_number):
                     })
 
                 if webhook_url:
-                    queue_length = redis_client.llen("notifications_queue") if redis_client else 0
+                    queue_length = redis_client.llen("notifications") if redis_client else 0
                     sim_logger.debug(f"Enqueuing webhook, queue_length: {queue_length}", extra={'tracking_number': sanitized_tn})
                     console.print(f"[info]Enqueuing webhook for {sanitized_tn}, queue length: {queue_length}[/info]")
                     enqueue_notification(sanitized_tn, "webhook", {
@@ -560,12 +668,12 @@ def index():
     if request.method == 'HEAD':
         return '', 200
     try:
-        from forms import TrackForm
+        from forms import TrackForm as ExternalTrackForm
+        form = ExternalTrackForm()
     except ImportError as e:
-        flask_logger.error(f"forms.py not found: {e}")
-        console.print(Panel(f"[error]forms.py not found: {e}[/error]", title="Server Error", border_style="red"))
-        return "Server configuration error", 500
-    form = TrackForm()
+        flask_logger.warning(f"forms.py not found, using fallback TrackForm: {e}")
+        console.print(Panel(f"[warning]forms.py not found, using fallback TrackForm: {e}[/warning]", title="Form Warning", border_style="yellow"))
+        form = TrackForm()
     flask_logger.info("Serving index page", extra={'tracking_number': ''})
     console.print("[info]Serving index page[/info]")
     return render_template('index.html', 
@@ -579,12 +687,12 @@ def index():
 def track():
     """Handle tracking form submission and initiate simulation."""
     try:
-        from forms import TrackForm
+        from forms import TrackForm as ExternalTrackForm
+        form = ExternalTrackForm()
     except ImportError as e:
-        flask_logger.error(f"forms.py not found: {e}")
-        console.print(Panel(f"[error]forms.py not found: {e}[/error]", title="Server Error", border_style="red"))
-        return jsonify({'error': 'Server error'}), 500
-    form = TrackForm()
+        flask_logger.warning(f"forms.py not found, using fallback TrackForm: {e}")
+        console.print(Panel(f"[warning]forms.py not found, using fallback TrackForm: {e}[/warning]", title="Form Warning", border_style="yellow"))
+        form = TrackForm()
     if not form.validate_on_submit():
         flask_logger.warning("Form validation failed", extra={'tracking_number': ''})
         return jsonify({'error': 'Invalid form data'}), 400
@@ -691,7 +799,7 @@ def health_check():
             redis_client.set("test", "ping")
             redis_client.delete("test")
             status['redis'] = 'ok'
-            status['notification_queue'] = f"length: {redis_client.llen('notifications_queue')}"
+            status['notification_queue'] = f"length: {redis_client.llen('notifications')}"
     except Exception as e:
         status['redis'] = str(e)
         status['notification_queue'] = str(e)
@@ -1057,7 +1165,7 @@ def get_stats():
         status_counts = db.session.query(Shipment.status, db.func.count(Shipment.id))\
                                 .group_by(Shipment.status).all()
         status_counts = {status: count for status, count in status_counts}
-        queue_length = redis_client.llen("notifications_queue") if redis_client else 0
+        queue_length = redis_client.llen("notifications") if redis_client else 0
         active_simulations = sum(1 for key in (redis_client.scan_iter("paused_simulations") if redis_client else []) 
                                 if redis_client.hget("paused_simulations", key.split(':')[-1]) != "true")
         stats = {
@@ -1188,4 +1296,10 @@ if __name__ == '__main__':
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
     console.print("[info]Keep-alive thread started[/info]")
+    notification_thread = threading.Thread(target=process_notification_queue, daemon=True)
+    notification_thread.start()
+    console.print("[info]Notification queue processing thread started[/info]")
+    cleanup_thread = threading.Thread(target=cleanup_websocket_clients, daemon=True)
+    cleanup_thread.start()
+    console.print("[info]WebSocket cleanup thread started[/info]")
     socketio.run(app, host='0.0.0.0', port=10000, debug=app.config.get('FLASK_ENV') == 'development')
