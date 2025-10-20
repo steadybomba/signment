@@ -171,7 +171,6 @@ def get_recent_logs(limit=5):
     """Retrieve recent bot logs (simulated, as actual log retrieval depends on logging setup)."""
     try:
         # Placeholder: In a real setup, this would query a log storage (e.g., file or database)
-        # For now, return a dummy log list
         return [
             f"{datetime.utcnow().isoformat()} - telegram_bot - INFO - Sample log entry {i}"
             for i in range(1, limit + 1)
@@ -1247,4 +1246,4 @@ if __name__ == "__main__":
         db.create_all()
         set_webhook()
         bot_logger.info("Bot started with webhook mode")
-        bot.infinity_polling()
+        # Do not start polling, as webhook is used
