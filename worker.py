@@ -12,10 +12,6 @@ from rich.console import Console
 from rich.panel import Panel
 from utils import BotConfig, safe_redis_operation
 
-# Initialize Flask app for template rendering
-app = Flask(__name__)
-app.config['TEMPLATES_AUTO_RELOAD'] = True
-
 # Logging setup
 logger = logging.getLogger('worker')
 logger.setLevel(logging.INFO)
@@ -60,6 +56,10 @@ except Exception as e:
     logger.error(f"Configuration validation failed: {e}")
     console.print(Panel(f"[error]Configuration validation failed: {e}[/error]", title="Config Error", border_style="red"))
     raise
+
+# Initialize Flask app for template rendering
+app = Flask(__name__)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 def send_email(tracking_number: str, status: str, checkpoints: str, delivery_location: str, recipient_email: str) -> bool:
     """Send an email notification using HTML template."""
@@ -131,13 +131,14 @@ def process_notifications():
 
     while True:
         try:
-            notification = safe_redis_operation(redis_client.blpop, "notifications_queue", timeout=5)
-            if not notification:
+            # Use non-blocking lpop instead of blpop
+            notification_data = safe_redis_operation(redis_client.lpop, "notifications_queue")
+            if not notification_data:
                 logger.debug("No notifications in queue, waiting...")
+                time.sleep(1)  # Avoid tight loop
                 continue
 
-            _, notification_str = notification
-            notification = json.loads(notification_str)
+            notification = json.loads(notification_data)
             tracking_number = notification.get('tracking_number')
             notification_type = notification.get('type')
             data = notification.get('data', {})
@@ -155,7 +156,7 @@ def process_notifications():
                 )
                 if not success:
                     logger.warning(f"Requeueing failed email notification for {tracking_number}")
-                    safe_redis_operation(redis_client.lpush, "notifications_queue", notification_str)
+                    safe_redis_operation(redis_client.lpush, "notifications_queue", notification_data)
 
             elif notification_type == "webhook":
                 checkpoints = data.get('checkpoints', [])
@@ -170,7 +171,7 @@ def process_notifications():
                 )
                 if not success:
                     logger.warning(f"Requeueing failed webhook notification for {tracking_number}")
-                    safe_redis_operation(redis_client.lpush, "notifications_queue", notification_str)
+                    safe_redis_operation(redis_client.lpush, "notifications_queue", notification_data)
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid notification format: {e}")
