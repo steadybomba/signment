@@ -16,6 +16,7 @@ import eventlet
 from threading import Lock
 from time import time
 import requests
+from flask_socketio import emit
 
 # Logging setup
 logger = logging.getLogger('utils')
@@ -391,6 +392,53 @@ def send_webhook_notification(webhook_url: str, tracking_number: str, data: Dict
     console.print(f"[error]Max retries exceeded for webhook to {webhook_url} for {tracking_number}[/error]")
     return False
 
+def send_websocket_notification(tracking_number: str, data: Dict[str, Any]) -> bool:
+    """Send a WebSocket notification with shipment data."""
+    config = get_config()
+    max_retries = 3
+    retry_delay = 5
+
+    def send_websocket() -> bool:
+        try:
+            # Try direct emission if running in the same process
+            try:
+                emit('shipment_update', data, namespace='/', broadcast=True)
+                logger.info(f"Sent WebSocket notification directly for {tracking_number}")
+                console.print(f"[info]Sent WebSocket notification directly for {tracking_number}[/info]")
+                return True
+            except Exception as e:
+                logger.debug(f"Direct WebSocket emission failed: {e}, falling back to HTTP")
+                console.print(f"[debug]Direct WebSocket emission failed: {e}, falling back to HTTP[/debug]")
+
+            # Fallback to HTTP POST to WEBSOCKET_SERVER/notify
+            notify_url = f"{config.websocket_server}/notify"
+            headers = {"Content-Type": "application/json"}
+            response = requests.post(notify_url, json=data, headers=headers, timeout=10)
+            response.raise_for_status()
+            logger.info(f"Sent WebSocket notification to {notify_url} for {tracking_number}")
+            console.print(f"[info]Sent WebSocket notification to {notify_url} for {tracking_number}[/info]")
+            return True
+        except requests.RequestException as e:
+            logger.error(f"WebSocket notification request failed for {tracking_number} to {notify_url}: {e}")
+            console.print(f"[error]WebSocket notification request failed for {tracking_number} to {notify_url}: {e}[/error]")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error sending WebSocket notification for {tracking_number}: {e}")
+            console.print(f"[error]Unexpected error sending WebSocket notification for {tracking_number}: {e}[/error]")
+            return False
+
+    for attempt in range(max_retries):
+        with eventlet.Timeout(10, False):
+            if send_websocket():
+                return True
+            logger.warning(f"WebSocket notification attempt {attempt + 1} failed for {tracking_number}")
+            console.print(f"[warning]WebSocket notification attempt {attempt + 1} failed for {tracking_number}[/warning]")
+            if attempt < max_retries - 1:
+                eventlet.sleep(retry_delay * (2 ** attempt))
+    logger.error(f"Max retries exceeded for WebSocket notification for {tracking_number}")
+    console.print(f"[error]Max retries exceeded for WebSocket notification for {tracking_number}[/error]")
+    return False
+
 def enqueue_notification(tracking_number: str, notification_type: str, data: Dict[str, Any]) -> bool:
     """Enqueue a notification in Redis."""
     if not redis_client:
@@ -548,6 +596,20 @@ def save_shipment(
             }
             send_webhook_notification(webhook_url, sanitized_tn, webhook_data)
 
+        # Send WebSocket notification
+        websocket_data = {
+            "tracking_number": sanitized_tn,
+            "status": status,
+            "checkpoints": checkpoints,
+            "delivery_location": delivery_location,
+            "recipient_email": recipient_email,
+            "origin_location": origin_location,
+            "webhook_url": webhook_url,
+            "action": action,
+            "timestamp": current_time.isoformat()
+        }
+        send_websocket_notification(sanitized_tn, websocket_data)
+
         return True
     except Exception as e:
         db.session.rollback()
@@ -607,6 +669,20 @@ def update_shipment(
                 "timestamp": shipment.last_updated.isoformat()
             }
             send_webhook_notification(shipment.webhook_url, sanitized_tn, webhook_data)
+
+        # Send WebSocket notification
+        websocket_data = {
+            "tracking_number": sanitized_tn,
+            "status": shipment.status,
+            "checkpoints": shipment.checkpoints or "",
+            "delivery_location": shipment.delivery_location,
+            "recipient_email": shipment.recipient_email,
+            "origin_location": shipment.origin_location,
+            "webhook_url": shipment.webhook_url,
+            "action": "updated",
+            "timestamp": shipment.last_updated.isoformat()
+        }
+        send_websocket_notification(sanitized_tn, websocket_data)
 
         return True
     except Exception as e:
