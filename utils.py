@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 from rich.console import Console
 from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 import requests
 
@@ -257,8 +258,8 @@ def enqueue_notification(tracking_number: str, notification_type: str, data: dic
         logger.error(f"Failed to enqueue {notification_type} notification: {e}")
         return False
 
-def send_email_notification(recipient_email: str, subject: str, body: str) -> bool:
-    """Send an email notification using SMTP."""
+def send_email_notification(recipient_email: str, subject: str, plain_body: str, html_body: Optional[str] = None) -> bool:
+    """Send an email notification using SMTP with plain text and optional HTML content."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         redis_url=os.getenv("REDIS_URL"),
@@ -275,11 +276,17 @@ def send_email_notification(recipient_email: str, subject: str, body: str) -> bo
         smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
     )
     try:
-        msg = MIMEMultipart()
+        msg = MIMEMultipart('alternative')
         msg['From'] = config.smtp_from
         msg['To'] = recipient_email
         msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
+        
+        # Attach plain text part
+        msg.attach(MIMEText(plain_body, 'plain'))
+        
+        # Attach HTML part if provided
+        if html_body:
+            msg.attach(MIMEText(html_body, 'html'))
         
         with smtplib.SMTP(config.smtp_host, config.smtp_port) as server:
             server.starttls()
