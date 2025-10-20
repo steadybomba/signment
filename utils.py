@@ -16,6 +16,10 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 import requests
+from queue import Queue
+from threading import Lock
+import eventlet
+from time import time, sleep
 
 # Logging setup
 logger = logging.getLogger('app')
@@ -53,6 +57,121 @@ class BotConfig:
             raise ValueError("ALLOWED_ADMINS is required")
         if not self.valid_statuses:
             raise ValueError("VALID_STATUSES is required")
+
+# Global configuration cache
+_config = None
+def get_config() -> BotConfig:
+    """Retrieve or initialize the global BotConfig."""
+    global _config
+    if _config is None:
+        _config = BotConfig(
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            redis_url=os.getenv("REDIS_URL"),
+            redis_token=os.getenv("REDIS_TOKEN", ""),
+            webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+            websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
+            allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
+            valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
+            route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
+            smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+            smtp_port=int(os.getenv("SMTP_PORT", 587)),
+            smtp_user=os.getenv("SMTP_USER", ""),
+            smtp_pass=os.getenv("SMTP_PASS", ""),
+            smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
+        )
+    return _config
+
+# SMTP connection manager
+class SMTPConnectionPool:
+    def __init__(self, host: str, port: int, user: str, password: str, max_connections: int = 5, timeout: int = 10, keep_alive: int = 30):
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.max_connections = max_connections
+        self.timeout = timeout
+        self.keep_alive = keep_alive
+        self.pool = Queue(maxsize=max_connections)
+        self.lock = Lock()
+        self.connection_timestamps = {}
+
+    def get_connection(self) -> smtplib.SMTP:
+        """Retrieve or create an SMTP connection."""
+        with self.lock:
+            try:
+                while not self.pool.empty():
+                    conn = self.pool.get_nowait()
+                    last_used = self.connection_timestamps.get(id(conn), 0)
+                    if time() - last_used < self.keep_alive and self._is_connection_alive(conn):
+                        return conn
+                    conn.quit()
+            except smtplib.SMTPException:
+                pass
+            except Exception as e:
+                logger.error(f"Error retrieving connection from pool: {e}")
+
+            if self.pool.qsize() < self.max_connections:
+                try:
+                    conn = smtplib.SMTP(self.host, self.port, timeout=self.timeout)
+                    conn.starttls()
+                    conn.login(self.user, self.password)
+                    self.connection_timestamps[id(conn)] = time()
+                    return conn
+                except smtplib.SMTPException as e:
+                    logger.error(f"Failed to create SMTP connection: {e}")
+                    raise
+            else:
+                logger.warning("Max SMTP connections reached, waiting for available connection")
+                return self.pool.get(block=True, timeout=self.timeout)
+
+    def release_connection(self, conn: smtplib.SMTP):
+        """Release an SMTP connection back to the pool."""
+        with self.lock:
+            if self._is_connection_alive(conn):
+                self.connection_timestamps[id(conn)] = time()
+                self.pool.put_nowait(conn)
+            else:
+                try:
+                    conn.quit()
+                except smtplib.SMTPException:
+                    pass
+
+    def _is_connection_alive(self, conn: smtplib.SMTP) -> bool:
+        """Check if an SMTP connection is still alive."""
+        try:
+            status = conn.noop()[0]
+            return status == 250
+        except smtplib.SMTPException:
+            return False
+
+    def close_all(self):
+        """Close all connections in the pool."""
+        with self.lock:
+            while not self.pool.empty():
+                try:
+                    conn = self.pool.get_nowait()
+                    conn.quit()
+                except smtplib.SMTPException:
+                    pass
+            self.connection_timestamps.clear()
+
+# Global SMTP connection pool
+_smtp_pool = None
+def get_smtp_pool() -> SMTPConnectionPool:
+    """Retrieve or initialize the global SMTP connection pool."""
+    global _smtp_pool
+    if _smtp_pool is None:
+        config = get_config()
+        _smtp_pool = SMTPConnectionPool(
+            host=config.smtp_host,
+            port=config.smtp_port,
+            user=config.smtp_user,
+            password=config.smtp_pass,
+            max_connections=5,
+            timeout=10,
+            keep_alive=30
+        )
+    return _smtp_pool
 
 # Redis client
 redis_client = None
@@ -122,41 +241,13 @@ def validate_webhook_url(url: Optional[str]) -> bool:
 
 def get_bot() -> TeleBot:
     """Initialize and return the Telegram bot instance."""
-    config = BotConfig(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL"),
-        redis_token=os.getenv("REDIS_TOKEN", ""),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
-        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.getenv("SMTP_PORT", 587)),
-        smtp_user=os.getenv("SMTP_USER", ""),
-        smtp_pass=os.getenv("SMTP_PASS", ""),
-        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-    )
+    config = get_config()
     bot = TeleBot(config.telegram_bot_token)
     return bot
 
 def is_admin(user_id: int) -> bool:
     """Check if a user is an admin."""
-    config = BotConfig(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL"),
-        redis_token=os.getenv("REDIS_TOKEN", ""),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
-        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.getenv("SMTP_PORT", 587)),
-        smtp_user=os.getenv("SMTP_USER", ""),
-        smtp_pass=os.getenv("SMTP_PASS", ""),
-        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-    )
+    config = get_config()
     return user_id in config.allowed_admins
 
 def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
@@ -260,43 +351,52 @@ def enqueue_notification(tracking_number: str, notification_type: str, data: dic
 
 def send_email_notification(recipient_email: str, subject: str, plain_body: str, html_body: Optional[str] = None) -> bool:
     """Send an email notification using SMTP with plain text and optional HTML content."""
-    config = BotConfig(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL"),
-        redis_token=os.getenv("REDIS_TOKEN", ""),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
-        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.getenv("SMTP_PORT", 587)),
-        smtp_user=os.getenv("SMTP_USER", ""),
-        smtp_pass=os.getenv("SMTP_PASS", ""),
-        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-    )
-    try:
-        msg = MIMEMultipart('alternative')
-        msg['From'] = config.smtp_from
-        msg['To'] = recipient_email
-        msg['Subject'] = subject
-        
-        # Attach plain text part
-        msg.attach(MIMEText(plain_body, 'plain'))
-        
-        # Attach HTML part if provided
-        if html_body:
-            msg.attach(MIMEText(html_body, 'html'))
-        
-        with smtplib.SMTP(config.smtp_host, config.smtp_port) as server:
-            server.starttls()
-            server.login(config.smtp_user, config.smtp_pass)
-            server.send_message(msg)
-        logger.info(f"Sent email to {recipient_email}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send email to {recipient_email}: {e}")
-        return False
+    config = get_config()
+    smtp_pool = get_smtp_pool()
+    max_retries = 3
+    retry_delay = 5
+
+    def send_email() -> bool:
+        conn = None
+        try:
+            conn = smtp_pool.get_connection()
+            msg = MIMEMultipart('alternative')
+            msg['From'] = config.smtp_from
+            msg['To'] = recipient_email
+            msg['Subject'] = subject
+
+            # Attach plain text part
+            msg.attach(MIMEText(plain_body, 'plain'))
+
+            # Attach HTML part if provided
+            if html_body:
+                msg.attach(MIMEText(html_body, 'html'))
+
+            conn.send_message(msg)
+            smtp_pool.release_connection(conn)
+            logger.info(f"Sent email to {recipient_email}")
+            return True
+        except smtplib.SMTPException as e:
+            logger.error(f"SMTP error sending email to {recipient_email}: {e}")
+            if conn:
+                smtp_pool.release_connection(conn)
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error sending email to {recipient_email}: {e}")
+            if conn:
+                smtp_pool.release_connection(conn)
+            return False
+
+    # Wrap email sending in eventlet for non-blocking execution
+    for attempt in range(max_retries):
+        with eventlet.Timeout(10, False):
+            if send_email():
+                return True
+            logger.warning(f"Email attempt {attempt + 1} failed for {recipient_email}")
+            if attempt < max_retries - 1:
+                sleep(retry_delay * (2 ** attempt))
+    logger.error(f"Max retries exceeded for email to {recipient_email}")
+    return False
 
 def validate_email(email: Optional[str]) -> bool:
     """Validate an email address."""
@@ -357,21 +457,7 @@ def update_shipment(tracking_number: str, status: Optional[str] = None,
         shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
         if not shipment:
             return False
-        config = BotConfig(
-            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-            redis_url=os.getenv("REDIS_URL"),
-            redis_token=os.getenv("REDIS_TOKEN", ""),
-            webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-            websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
-            allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-            valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-            route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-            smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-            smtp_port=int(os.getenv("SMTP_PORT", 587)),
-            smtp_user=os.getenv("SMTP_USER", ""),
-            smtp_pass=os.getenv("SMTP_PASS", ""),
-            smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-        )
+        config = get_config()
         if status and status in config.valid_statuses:
             shipment.status = status
         if delivery_location:
@@ -427,21 +513,7 @@ def get_app_modules():
 def cache_route_templates():
     """Cache route templates in Redis or in-memory."""
     global route_templates_cache
-    config = BotConfig(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL"),
-        redis_token=os.getenv("REDIS_TOKEN", ""),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
-        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.getenv("SMTP_PORT", 587)),
-        smtp_user=os.getenv("SMTP_USER", ""),
-        smtp_pass=os.getenv("SMTP_PASS", ""),
-        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-    )
+    config = get_config()
     route_templates_cache = config.route_templates
     if redis_client:
         try:
@@ -466,21 +538,7 @@ def get_cached_route_templates() -> dict:
                 return route_templates_cache
         except Exception as e:
             logger.error(f"Failed to retrieve route templates from Redis: {e}")
-    config = BotConfig(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL"),
-        redis_token=os.getenv("REDIS_TOKEN", ""),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
-        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.getenv("SMTP_PORT", 587)),
-        smtp_user=os.getenv("SMTP_USER", ""),
-        smtp_pass=os.getenv("SMTP_PASS", ""),
-        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-    )
+    config = get_config()
     route_templates_cache = config.route_templates
     logger.info("Retrieved route templates from config")
     return route_templates_cache
