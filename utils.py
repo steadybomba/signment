@@ -2,8 +2,7 @@ import os
 import json
 import re
 import logging
-import redis
-import uuid
+from upstash_redis import Redis
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -12,11 +11,6 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from rich.console import Console
 from telebot import TeleBot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-import requests
-from queue import Queue
 from threading import Lock
 import eventlet
 from time import time, sleep
@@ -66,8 +60,8 @@ def get_config() -> BotConfig:
     if _config is None:
         _config = BotConfig(
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-            redis_url=os.getenv("REDIS_URL"),
-            redis_token=os.getenv("REDIS_TOKEN", ""),
+            redis_url=os.getenv("REDIS_URL", "https://equal-sparrow-8815.upstash.io"),
+            redis_token=os.getenv("REDIS_TOKEN", "ASJvAAImcDIzMjI1Mjg2YjRkYzA0MGVjYjYyYjkxZDY3Yzk0MzlhMHAyODgxNQ"),
             webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
             websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
             allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
@@ -176,17 +170,17 @@ def get_smtp_pool() -> SMTPConnectionPool:
 # Redis client
 redis_client = None
 try:
-    redis_client = redis.Redis.from_url(
-        os.getenv("REDIS_URL"),
-        password=os.getenv("REDIS_TOKEN"),
-        decode_responses=True
-    )
-    redis_client.ping()
+    redis_url = os.getenv("REDIS_URL", "https://equal-sparrow-8815.upstash.io")
+    redis_token = os.getenv("REDIS_TOKEN", "ASJvAAImcDIzMjI1Mjg2YjRkYzA0MGVjYjYyYjkxZDY3Yzk0MzlhMHAyODgxNQ")
+    redis_client = Redis(url=redis_url, token=redis_token)
+    # Test connection
+    redis_client.set("test", "ping")
+    redis_client.delete("test")
     logger.info("Connected to Upstash Redis")
     console.print("[info]Connected to Upstash Redis[/info]")
 except Exception as e:
-    logger.error(f"Failed to connect to Redis: {e}")
-    console.print(f"[error]Failed to connect to Redis: {e}[/error]")
+    logger.error(f"Failed to connect to Upstash Redis: {e}")
+    console.print(f"[error]Failed to connect to Upstash Redis: {e}[/error]")
     redis_client = None
 
 # Constants
@@ -398,22 +392,6 @@ def send_email_notification(recipient_email: str, subject: str, plain_body: str,
     logger.error(f"Max retries exceeded for email to {recipient_email}")
     return False
 
-def validate_email(email: Optional[str]) -> bool:
-    """Validate an email address."""
-    if not email:
-        return True
-    return bool(re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email))
-
-def validate_location(location: Optional[str]) -> bool:
-    """Validate a location string."""
-    return bool(location and isinstance(location, str) and len(location) <= 100)
-
-def validate_webhook_url(url: Optional[str]) -> bool:
-    """Validate a webhook URL."""
-    if not url:
-        return True
-    return bool(re.match(r'^https?://[^\s/$.?#].[^\s]*$', url))
-
 def get_shipment_list(page: int = 1, per_page: int = 5) -> Tuple[List[str], int]:
     """Retrieve a paginated list of shipment tracking numbers."""
     try:
@@ -494,7 +472,7 @@ def get_app_modules():
         modules = {
             'flask': pkg_resources.get_distribution('flask').version,
             'flask_sqlalchemy': pkg_resources.get_distribution('flask-sqlalchemy').version,
-            'redis': pkg_resources.get_distribution('redis').version,
+            'upstash-redis': pkg_resources.get_distribution('upstash-redis').version,
             'python-telegram-bot': pkg_resources.get_distribution('python-telegram-bot').version,
             'requests': pkg_resources.get_distribution('requests').version,
             'smtplib': 'stdlib',
