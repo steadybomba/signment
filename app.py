@@ -35,7 +35,7 @@ from flask_wtf import FlaskForm
 
 # Local imports from utils.py
 from utils import (
-    BotConfig, redis_client, console, get_app_modules, enqueue_notification,
+    get_config, redis_client, console, get_app_modules, enqueue_notification,
     get_cached_route_templates, sanitize_tracking_number, validate_email,
     validate_location, validate_webhook_url, send_email_notification,
     check_bot_status, cache_route_templates, get_bot, get_shipment_list,
@@ -50,21 +50,7 @@ bot = get_bot()
 
 # Load configuration from utils.py
 try:
-    config = BotConfig(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL"),
-        redis_token=os.getenv("REDIS_TOKEN", ""),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
-        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.getenv("SMTP_PORT", 587)),
-        smtp_user=os.getenv("SMTP_USER", ""),
-        smtp_pass=os.getenv("SMTP_PASS", ""),
-        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-    )
+    config = get_config()
     app.config.update(
         TELEGRAM_BOT_TOKEN=config.telegram_bot_token,
         REDIS_URL=config.redis_url,
@@ -372,9 +358,8 @@ def keep_alive():
         time.sleep(300)
 
 def process_notification_queue():
-    """Process notifications from the Redis queue."""
-    max_retries = 3
-    retry_delay = 5
+    """Process notifications from the Redis queue with batch email processing."""
+    batch_size = 10
     while True:
         if not redis_client:
             flask_logger.error("Redis client not available for notification queue processing")
@@ -382,80 +367,84 @@ def process_notification_queue():
             time.sleep(60)
             continue
         try:
-            notification = safe_redis_operation(redis_client.lpop, "notifications")
-            if not notification:
+            # Fetch up to batch_size notifications
+            notifications = []
+            for _ in range(batch_size):
+                notification = redis_client.lpop("notifications")
+                if not notification:
+                    break
+                notifications.append(json.loads(notification))
+
+            if not notifications:
                 time.sleep(1)
                 continue
-            data = json.loads(notification)
-            tracking_number = data.get("tracking_number")
-            notification_type = data.get("type")
-            notification_data = data.get("data", {})
-            
-            if notification_type == "email":
-                recipient_email = notification_data.get("recipient_email")
-                status = notification_data.get("status")
-                checkpoints = notification_data.get("checkpoints", "")
-                delivery_location = notification_data.get("delivery_location")
-                subject = f"Shipment Update: {tracking_number}"
-                # Render HTML template
-                checkpoints_list = checkpoints.split(';') if checkpoints else []
-                html_body = render_template('email_notification.html',
-                                         tracking_number=tracking_number,
-                                         status=status,
-                                         delivery_location=delivery_location,
-                                         checkpoints=checkpoints_list)
-                # Create plain text fallback
-                plain_body = (
-                    f"Hello,\n\n"
-                    f"Your shipment with tracking number {tracking_number} has been updated.\n\n"
-                    f"Current Status: {status}\n"
-                    f"Delivery Location: {delivery_location}\n"
-                    f"Recent Checkpoints:\n"
-                )
-                if checkpoints_list:
-                    plain_body += "\n".join([f"- {checkpoint}" for checkpoint in checkpoints_list]) + "\n"
-                plain_body += (
-                    f"\nTrack your shipment: https://signment-9a96.onrender.com/track?tracking_number={tracking_number}\n\n"
-                    f"© 2025 Signment Tracking. All rights reserved.\n"
-                    f"Visit our website: https://signment-9a96.onrender.com\n"
-                    f"Contact Support: support@signment.com"
-                )
-                for attempt in range(max_retries):
-                    try:
-                        if send_email_notification(recipient_email, subject, plain_body, html_body):
-                            flask_logger.info(f"Processed email notification for {tracking_number}")
-                            console.print(f"[info]Processed email notification for {tracking_number}[/info]")
+
+            for data in notifications:
+                tracking_number = data.get("tracking_number")
+                notification_type = data.get("type")
+                notification_data = data.get("data", {})
+
+                if notification_type == "email":
+                    recipient_email = notification_data.get("recipient_email")
+                    status = notification_data.get("status")
+                    checkpoints = notification_data.get("checkpoints", "")
+                    delivery_location = notification_data.get("delivery_location")
+                    subject = f"Shipment Update: {tracking_number}"
+                    # Render HTML template
+                    checkpoints_list = checkpoints.split(';') if checkpoints else []
+                    html_body = render_template('email_notification.html',
+                                             tracking_number=tracking_number,
+                                             status=status,
+                                             delivery_location=delivery_location,
+                                             checkpoints=checkpoints_list)
+                    # Create plain text fallback
+                    plain_body = (
+                        f"Hello,\n\n"
+                        f"Your shipment with tracking number {tracking_number} has been updated.\n\n"
+                        f"Current Status: {status}\n"
+                        f"Delivery Location: {delivery_location}\n"
+                        f"Recent Checkpoints:\n"
+                    )
+                    if checkpoints_list:
+                        plain_body += "\n".join([f"- {checkpoint}" for checkpoint in checkpoints_list]) + "\n"
+                    plain_body += (
+                        f"\nTrack your shipment: https://signment-9a96.onrender.com/track?tracking_number={tracking_number}\n\n"
+                        f"© 2025 Signment Tracking. All rights reserved.\n"
+                        f"Visit our website: https://signment-9a96.onrender.com\n"
+                        f"Contact Support: support@signment.com"
+                    )
+                    # Send email using optimized send_email_notification
+                    if send_email_notification(recipient_email, subject, plain_body, html_body):
+                        flask_logger.info(f"Processed email notification for {tracking_number}")
+                        console.print(f"[info]Processed email notification for {tracking_number}[/info]")
+                    else:
+                        flask_logger.error(f"Failed to send email notification for {tracking_number}")
+                        console.print(Panel(f"[error]Failed to send email notification for {tracking_number}[/error]", title="Notification Error", border_style="red"))
+                elif notification_type == "webhook":
+                    webhook_url = notification_data.get("webhook_url")
+                    payload = {
+                        "tracking_number": tracking_number,
+                        "status": notification_data.get("status"),
+                        "checkpoints": notification_data.get("checkpoints", []),
+                        "delivery_location": notification_data.get("delivery_location"),
+                        "timestamp": data.get("timestamp")
+                    }
+                    max_retries = 3
+                    retry_delay = 5
+                    for attempt in range(max_retries):
+                        try:
+                            response = requests.post(webhook_url, json=payload, timeout=10)
+                            response.raise_for_status()
+                            flask_logger.info(f"Processed webhook notification for {tracking_number} to {webhook_url}")
+                            console.print(f"[info]Processed webhook notification for {tracking_number}[/info]")
                             break
-                    except Exception as e:
-                        flask_logger.error(f"Email notification attempt {attempt + 1} failed for {tracking_number}: {e}")
-                        if attempt < max_retries - 1:
-                            time.sleep(retry_delay * (2 ** attempt))
-                        else:
-                            flask_logger.error(f"Max retries exceeded for email notification {tracking_number}")
-                            console.print(Panel(f"[error]Max retries exceeded for email notification {tracking_number}[/error]", title="Notification Error", border_style="red"))
-            elif notification_type == "webhook":
-                webhook_url = notification_data.get("webhook_url")
-                payload = {
-                    "tracking_number": tracking_number,
-                    "status": notification_data.get("status"),
-                    "checkpoints": notification_data.get("checkpoints", []),
-                    "delivery_location": notification_data.get("delivery_location"),
-                    "timestamp": data.get("timestamp")
-                }
-                for attempt in range(max_retries):
-                    try:
-                        response = requests.post(webhook_url, json=payload, timeout=10)
-                        response.raise_for_status()
-                        flask_logger.info(f"Processed webhook notification for {tracking_number} to {webhook_url}")
-                        console.print(f"[info]Processed webhook notification for {tracking_number}[/info]")
-                        break
-                    except requests.RequestException as e:
-                        flask_logger.error(f"Webhook notification attempt {attempt + 1} failed for {tracking_number}: {e}")
-                        if attempt < max_retries - 1:
-                            time.sleep(retry_delay * (2 ** attempt))
-                        else:
-                            flask_logger.error(f"Max retries exceeded for webhook notification {tracking_number}")
-                            console.print(Panel(f"[error]Max retries exceeded for webhook notification {tracking_number}[/error]", title="Notification Error", border_style="red"))
+                        except requests.RequestException as e:
+                            flask_logger.error(f"Webhook notification attempt {attempt + 1} failed for {tracking_number}: {e}")
+                            if attempt < max_retries - 1:
+                                time.sleep(retry_delay * (2 ** attempt))
+                            else:
+                                flask_logger.error(f"Max retries exceeded for webhook notification {tracking_number}")
+                                console.print(Panel(f"[error]Max retries exceeded for webhook notification {tracking_number}[/error]", title="Notification Error", border_style="red"))
         except Exception as e:
             flask_logger.error(f"Unexpected error processing notification queue: {e}")
             console.print(Panel(f"[error]Unexpected error processing notification queue: {e}[/error]", title="Queue Error", border_style="red"))
@@ -826,17 +815,10 @@ def health_check():
         status['redis'] = str(e)
         status['notification_queue'] = str(e)
     try:
-        with smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT'], timeout=5) as server:
-            server.starttls()
-            server.login(app.config['SMTP_USER'], app.config['SMTP_PASS'])
-        status['smtp'] = 'ok'
-    except smtplib.SMTPException as e:
-        status['smtp'] = str(e)
-    try:
         status['telegram'] = 'ok' if check_bot_status() else 'unavailable'
     except Exception as e:
         status['telegram'] = str(e)
-    if status['status'] == 'healthy' and any(v != 'ok' for v in [status['database'], 'smtp', 'redis']):
+    if status['status'] == 'healthy' and any(v != 'ok' for v in [status['database'], 'redis']):
         status['status'] = 'unhealthy'
     flask_logger.info("Health check", extra=status)
     console.print(f"[info]Health check: {status}[/info]")
