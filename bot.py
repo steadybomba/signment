@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import logging
 from datetime import datetime
 from telebot import TeleBot
@@ -9,7 +10,7 @@ from rich.console import Console
 from utils import (
     BotConfig, get_bot, is_admin, send_dynamic_menu, get_shipment_details,
     generate_unique_id, search_shipments, RATE_LIMIT_WINDOW, RATE_LIMIT_MAX,
-    safe_redis_operation, redis_client, sanitize_tracking_number
+    safe_redis_operation, redis_client, sanitize_tracking_number, enqueue_notification
 )
 from flask_sqlalchemy import SQLAlchemy
 from flask import Flask
@@ -23,20 +24,26 @@ bot_logger.addHandler(handler)
 console = Console()
 
 # Bot configuration
-config = BotConfig(
-    telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
-    redis_url=os.getenv("REDIS_URL"),
-    redis_token=os.getenv("REDIS_TOKEN"),
-    smtp_host=os.getenv("SMTP_HOST"),
-    smtp_port=int(os.getenv("SMTP_PORT", 587)),
-    smtp_user=os.getenv("SMTP_USER"),
-    smtp_pass=os.getenv("SMTP_PASS"),
-    smtp_from=os.getenv("SMTP_FROM"),
-    websocket_server=os.getenv("WEBSOCKET_SERVER"),
-    global_webhook_url=os.getenv("GLOBAL_WEBHOOK_URL"),
-    allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-    route_templates={}
-)
+try:
+    config = BotConfig(
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        redis_url=os.getenv("REDIS_URL"),
+        redis_token=os.getenv("REDIS_TOKEN", ""),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
+        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
+        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
+        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
+        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        smtp_port=int(os.getenv("SMTP_PORT", 587)),
+        smtp_user=os.getenv("SMTP_USER", ""),
+        smtp_pass=os.getenv("SMTP_PASS", ""),
+        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
+    )
+except Exception as e:
+    bot_logger.error(f"Configuration validation failed: {e}")
+    console.print(f"[error]Configuration validation failed: {e}[/error]")
+    raise
 
 # Temporary Flask app for SQLAlchemy (for get_app_modules)
 app = Flask(__name__)
@@ -110,6 +117,68 @@ def save_shipment(tracking_number, status, checkpoints, delivery_location, recip
         db.session.rollback()
         bot_logger.error(f"Error saving shipment {tracking_number}: {e}")
         return False
+
+def update_shipment(tracking_number, status=None, delivery_location=None, recipient_email=None, origin_location=None, webhook_url=None):
+    """Update an existing shipment's details."""
+    try:
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            return False
+        if status and status in config.valid_statuses:
+            shipment.status = status
+        if delivery_location:
+            shipment.delivery_location = delivery_location
+        if recipient_email is not None:
+            shipment.recipient_email = recipient_email
+        if origin_location is not None:
+            shipment.origin_location = origin_location
+        if webhook_url is not None:
+            shipment.webhook_url = webhook_url
+        shipment.last_updated = datetime.utcnow()
+        db.session.commit()
+        invalidate_cache(tracking_number)
+        bot_logger.info(f"Updated shipment {tracking_number}")
+        return True
+    except Exception as e:
+        db.session.rollback()
+        bot_logger.error(f"Error updating shipment {tracking_number}: {e}")
+        return False
+
+def export_shipments():
+    """Export all shipments as JSON."""
+    try:
+        shipments = Shipment.query.all()
+        export_data = [
+            {
+                "tracking_number": s.tracking_number,
+                "status": s.status,
+                "delivery_location": s.delivery_location,
+                "recipient_email": s.recipient_email,
+                "origin_location": s.origin_location,
+                "webhook_url": s.webhook_url,
+                "checkpoints": s.checkpoints,
+                "created_at": s.created_at.isoformat(),
+                "last_updated": s.last_updated.isoformat(),
+                "email_notifications": s.email_notifications
+            } for s in shipments
+        ]
+        return json.dumps(export_data, indent=2)
+    except Exception as e:
+        bot_logger.error(f"Error exporting shipments: {e}")
+        return None
+
+def get_recent_logs(limit=5):
+    """Retrieve recent bot logs (simulated, as actual log retrieval depends on logging setup)."""
+    try:
+        # Placeholder: In a real setup, this would query a log storage (e.g., file or database)
+        # For now, return a dummy log list
+        return [
+            f"{datetime.utcnow().isoformat()} - telegram_bot - INFO - Sample log entry {i}"
+            for i in range(1, limit + 1)
+        ]
+    except Exception as e:
+        bot_logger.error(f"Error retrieving logs: {e}")
+        return []
 
 def delete_shipment_callback(call, tracking_number, page):
     """Delete a shipment and update the menu."""
@@ -192,14 +261,67 @@ def toggle_email_notifications(call, tracking_number, page):
         bot_logger.error(f"Error toggling email notifications for {tracking_number}: {e}")
 
 def send_manual_email(call, tracking_number):
-    """Send a manual email notification (placeholder)."""
-    bot.answer_callback_query(call.id, f"Manual email for {tracking_number} not implemented.", show_alert=True)
-    bot_logger.info(f"Attempted manual email for {tracking_number}")
+    """Send a manual email notification."""
+    try:
+        shipment = get_shipment_details(tracking_number)
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            return
+        if not shipment.get('recipient_email') or not shipment.get('email_notifications'):
+            bot.answer_callback_query(call.id, f"Email notifications are disabled or no recipient email for `{tracking_number}`.", show_alert=True)
+            return
+        notification_data = {
+            "tracking_number": tracking_number,
+            "type": "email",
+            "data": {
+                "recipient_email": shipment['recipient_email'],
+                "status": shipment['status'],
+                "checkpoints": shipment.get('checkpoints', ''),
+                "delivery_location": shipment['delivery_location']
+            }
+        }
+        success = enqueue_notification(notification_data)
+        if success:
+            bot.answer_callback_query(call.id, f"Email notification enqueued for `{tracking_number}`.")
+            bot_logger.info(f"Enqueued manual email notification for {tracking_number}")
+        else:
+            bot.answer_callback_query(call.id, f"Failed to enqueue email notification for `{tracking_number}`.", show_alert=True)
+            bot_logger.error(f"Failed to enqueue manual email notification for {tracking_number}")
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error sending manual email for {tracking_number}: {e}")
 
 def send_manual_webhook(call, tracking_number):
-    """Send a manual webhook notification (placeholder)."""
-    bot.answer_callback_query(call.id, f"Manual webhook for {tracking_number} not implemented.", show_alert=True)
-    bot_logger.info(f"Attempted manual webhook for {tracking_number}")
+    """Send a manual webhook notification."""
+    try:
+        shipment = get_shipment_details(tracking_number)
+        if not shipment:
+            bot.answer_callback_query(call.id, f"Shipment `{tracking_number}` not found.", show_alert=True)
+            return
+        webhook_url = shipment.get('webhook_url') or config.websocket_server
+        if not webhook_url:
+            bot.answer_callback_query(call.id, f"No webhook URL set for `{tracking_number}`.", show_alert=True)
+            return
+        notification_data = {
+            "tracking_number": tracking_number,
+            "type": "webhook",
+            "data": {
+                "status": shipment['status'],
+                "checkpoints": shipment.get('checkpoints', ''),
+                "delivery_location": shipment['delivery_location'],
+                "webhook_url": webhook_url
+            }
+        }
+        success = enqueue_notification(notification_data)
+        if success:
+            bot.answer_callback_query(call.id, f"Webhook notification enqueued for `{tracking_number}`.")
+            bot_logger.info(f"Enqueued manual webhook notification for {tracking_number}")
+        else:
+            bot.answer_callback_query(call.id, f"Failed to enqueue webhook notification for `{tracking_number}`.", show_alert=True)
+            bot_logger.error(f"Failed to enqueue manual webhook notification for {tracking_number}")
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
+        bot_logger.error(f"Error sending manual webhook for {tracking_number}: {e}")
 
 def pause_simulation_callback(call, tracking_number, page):
     """Pause a shipment's simulation."""
@@ -621,6 +743,219 @@ def handle_generate(message):
     bot.reply_to(message, f"Generated Tracking ID: `{tracking_id}`", parse_mode='Markdown')
     bot_logger.info(f"Generated tracking ID {tracking_id} for user {message.from_user.id}")
 
+@bot.message_handler(commands=['list'])
+@rate_limit
+def list_shipments(message):
+    """Handle /list command to display a paginated list of shipments."""
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "Access denied.")
+        bot_logger.warning(f"Access denied for /list by {message.from_user.id}")
+        return
+    try:
+        shipments, total = get_shipment_list(page=1)
+        if not shipments:
+            bot.reply_to(message, "No shipments available.", parse_mode='Markdown')
+            bot_logger.debug("No shipments available for /list")
+            return
+        markup = InlineKeyboardMarkup(row_width=1)
+        for tn in shipments:
+            markup.add(InlineKeyboardButton(tn, callback_data=f"view_{tn}"))
+        if total > 5:
+            markup.add(InlineKeyboardButton("Next", callback_data="list_2"))
+        markup.add(InlineKeyboardButton("Home", callback_data="menu_page_1"))
+        bot.reply_to(message, f"*Shipment List* (Page 1, {total} total):", parse_mode='Markdown', reply_markup=markup)
+        bot_logger.info(f"Sent shipment list to admin {message.from_user.id}")
+    except Exception as e:
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error in list command: {e}")
+
+@bot.message_handler(commands=['add'])
+@rate_limit
+def add_shipment(message):
+    """Handle /add command to create a new shipment."""
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "Access denied.")
+        bot_logger.warning(f"Access denied for /add by {message.from_user.id}")
+        return
+    parts = message.text.strip().split(maxsplit=3)
+    if len(parts) < 4:
+        bot.reply_to(message, "Usage: /add <tracking_number> <status> <delivery_location> [recipient_email] [origin_location] [webhook_url]\n"
+                            "Example: /add TRK20231010120000ABC123 Pending 'Lagos, NG' user@example.com 'Abuja, NG' https://example.com")
+        bot_logger.warning("Invalid /add command format")
+        return
+    tracking_number = sanitize_tracking_number(parts[1].strip())
+    status = parts[2].strip()
+    delivery_location = parts[3].strip()
+    args = message.text.split(maxsplit=4)[4:] if len(message.text.split()) > 4 else []
+    recipient_email = args[0] if len(args) > 0 else None
+    origin_location = args[1] if len(args) > 1 else None
+    webhook_url = args[2] if len(args) > 2 else None
+    try:
+        db, Shipment, _, validate_email, validate_location, validate_webhook_url, _ = get_app_modules()
+        if not tracking_number:
+            bot.reply_to(message, "Invalid tracking number.")
+            bot_logger.error(f"Invalid tracking number: {parts[1]}")
+            return
+        if status not in config.valid_statuses:
+            bot.reply_to(message, f"Invalid status. Must be one of: {', '.join(config.valid_statuses)}")
+            bot_logger.warning(f"Invalid status: {status}")
+            return
+        if not validate_location(delivery_location) or (origin_location and not validate_location(origin_location)):
+            bot.reply_to(message, "Invalid location.")
+            bot_logger.warning(f"Invalid location: {delivery_location} or {origin_location}")
+            return
+        if not validate_email(recipient_email):
+            bot.reply_to(message, "Invalid email address.")
+            bot_logger.warning(f"Invalid email: {recipient_email}")
+            return
+        if not validate_webhook_url(webhook_url):
+            bot.reply_to(message, "Invalid webhook URL.")
+            bot_logger.warning(f"Invalid webhook URL: {webhook_url}")
+            return
+        if save_shipment(tracking_number, status, '', delivery_location, recipient_email, origin_location, webhook_url):
+            bot.reply_to(message, f"Shipment `{tracking_number}` added.", parse_mode='Markdown')
+            bot_logger.info(f"Added shipment {tracking_number} by admin {message.from_user.id}")
+        else:
+            bot.reply_to(message, "Failed to add shipment.")
+            bot_logger.error(f"Failed to add shipment {tracking_number}")
+    except Exception as e:
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error in add command: {e}")
+
+@bot.message_handler(commands=['update'])
+@rate_limit
+def update_shipment_command(message):
+    """Handle /update command to update shipment details."""
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "Access denied.")
+        bot_logger.warning(f"Access denied for /update by {message.from_user.id}")
+        return
+    parts = message.text.strip().split(maxsplit=2)
+    if len(parts) < 3:
+        bot.reply_to(message, "Usage: /update <tracking_number> <field=value> [field=value ...]\n"
+                            "Example: /update TRK20231010120000ABC123 status=In_Transit delivery_location='Abuja, NG'")
+        bot_logger.warning("Invalid /update command format")
+        return
+    tracking_number = sanitize_tracking_number(parts[1].strip())
+    if not tracking_number:
+        bot.reply_to(message, "Invalid tracking number.")
+        bot_logger.error(f"Invalid tracking number: {parts[1]}")
+        return
+    try:
+        updates = {}
+        for pair in parts[2].split():
+            if '=' not in pair:
+                bot.reply_to(message, f"Invalid field format: {pair}. Use field=value.")
+                return
+            field, value = pair.split('=', 1)
+            updates[field] = value
+        db, Shipment, _, validate_email, validate_location, validate_webhook_url, _ = get_app_modules()
+        if 'status' in updates and updates['status'] not in config.valid_statuses:
+            bot.reply_to(message, f"Invalid status. Must be one of: {', '.join(config.valid_statuses)}")
+            return
+        if 'delivery_location' in updates and not validate_location(updates['delivery_location']):
+            bot.reply_to(message, "Invalid delivery location.")
+            return
+        if 'origin_location' in updates and updates['origin_location'] and not validate_location(updates['origin_location']):
+            bot.reply_to(message, "Invalid origin location.")
+            return
+        if 'recipient_email' in updates and updates['recipient_email'] and not validate_email(updates['recipient_email']):
+            bot.reply_to(message, "Invalid email address.")
+            return
+        if 'webhook_url' in updates and updates['webhook_url'] and not validate_webhook_url(updates['webhook_url']):
+            bot.reply_to(message, "Invalid webhook URL.")
+            return
+        if update_shipment(
+            tracking_number,
+            status=updates.get('status'),
+            delivery_location=updates.get('delivery_location'),
+            recipient_email=updates.get('recipient_email'),
+            origin_location=updates.get('origin_location'),
+            webhook_url=updates.get('webhook_url')
+        ):
+            if 'status' in updates or 'delivery_location' in updates:
+                shipment = get_shipment_details(tracking_number)
+                if shipment.get('recipient_email') and shipment.get('email_notifications'):
+                    notification_data = {
+                        "tracking_number": tracking_number,
+                        "type": "email",
+                        "data": {
+                            "recipient_email": shipment['recipient_email'],
+                            "status": shipment['status'],
+                            "checkpoints": shipment.get('checkpoints', ''),
+                            "delivery_location": shipment['delivery_location']
+                        }
+                    }
+                    enqueue_notification(notification_data)
+                if shipment.get('webhook_url') or config.websocket_server:
+                    notification_data = {
+                        "tracking_number": tracking_number,
+                        "type": "webhook",
+                        "data": {
+                            "status": shipment['status'],
+                            "checkpoints": shipment.get('checkpoints', ''),
+                            "delivery_location": shipment['delivery_location'],
+                            "webhook_url": shipment.get('webhook_url') or config.websocket_server
+                        }
+                    }
+                    enqueue_notification(notification_data)
+            bot.reply_to(message, f"Shipment `{tracking_number}` updated.", parse_mode='Markdown')
+            bot_logger.info(f"Updated shipment {tracking_number} by admin {message.from_user.id}")
+        else:
+            bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
+            bot_logger.warning(f"Shipment not found: {tracking_number}")
+    except Exception as e:
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error in update command: {e}")
+
+@bot.message_handler(commands=['export'])
+@rate_limit
+def export_shipments_command(message):
+    """Handle /export command to export shipment data as JSON."""
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "Access denied.")
+        bot_logger.warning(f"Access denied for /export by {message.from_user.id}")
+        return
+    try:
+        export_data = export_shipments()
+        if not export_data:
+            bot.reply_to(message, "No shipments to export or error occurred.", parse_mode='Markdown')
+            bot_logger.warning("Failed to export shipments")
+            return
+        # Telegram has a message size limit, so we split if necessary
+        max_length = 4096
+        if len(export_data) <= max_length:
+            bot.reply_to(message, f"```json\n{export_data}\n```", parse_mode='Markdown')
+        else:
+            parts = [export_data[i:i+max_length] for i in range(0, len(export_data), max_length)]
+            for i, part in enumerate(parts, 1):
+                bot.reply_to(message, f"```json\nPart {i}/{len(parts)}:\n{part}\n```", parse_mode='Markdown')
+        bot_logger.info(f"Exported shipments for admin {message.from_user.id}")
+    except Exception as e:
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error in export command: {e}")
+
+@bot.message_handler(commands=['logs'])
+@rate_limit
+def get_logs_command(message):
+    """Handle /logs command to retrieve recent bot logs."""
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "Access denied.")
+        bot_logger.warning(f"Access denied for /logs by {message.from_user.id}")
+        return
+    try:
+        logs = get_recent_logs(limit=5)
+        if not logs:
+            bot.reply_to(message, "No logs available.", parse_mode='Markdown')
+            bot_logger.debug("No logs available for /logs")
+            return
+        response = "*Recent Logs*:\n" + "\n".join([f"`{log}`" for log in logs])
+        bot.reply_to(message, response, parse_mode='Markdown')
+        bot_logger.info(f"Sent recent logs to admin {message.from_user.id}")
+    except Exception as e:
+        bot.reply_to(message, f"Error: {e}")
+        bot_logger.error(f"Error in logs command: {e}")
+
 # Callback Handlers
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
@@ -780,8 +1115,14 @@ def handle_callback(call):
                 "/continue <tracking_number> - Resume simulation\n"
                 "/setspeed <tracking_number> <speed> - Set simulation speed\n"
                 "/generate - Generate a tracking ID\n"
+                "/list - List all shipments\n"
+                "/add <tracking_number> <status> <delivery_location> [recipient_email] [origin_location] [webhook_url] - Add a new shipment\n"
+                "/update <tracking_number> <field=value> [field=value ...] - Update shipment details\n"
+                "/export - Export all shipments as JSON\n"
+                "/logs - View recent bot logs\n"
                 "Example: /track TRK20231010120000ABC123\n"
-                "Example: /setspeed TRK20231010120000ABC123 2.0",
+                "Example: /add TRK20231010120000ABC123 Pending 'Lagos, NG' user@example.com\n"
+                "Example: /update TRK20231010120000ABC123 status=In_Transit delivery_location='Abuja, NG'",
                 chat_id=call.message.chat.id, message_id=call.message.message_id,
                 parse_mode='Markdown', reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("Home", callback_data="menu_page_1")))
         bot.answer_callback_query(call.id)
@@ -836,6 +1177,9 @@ def handle_add_shipment(message):
         if not validate_webhook_url(webhook_url):
             bot.reply_to(message, "Invalid webhook URL.")
             return
+        if status not in config.valid_statuses:
+            bot.reply_to(message, f"Invalid status. Must be one of: {', '.join(config.valid_statuses)}")
+            return
         if save_shipment(tracking_number, status, '', delivery_location, recipient_email, origin_location, webhook_url):
             bot.reply_to(message, f"Shipment `{tracking_number}` added.", parse_mode='Markdown')
             bot_logger.info(f"Added shipment {tracking_number} by admin {message.from_user.id}")
@@ -888,7 +1232,7 @@ def handle_set_webhook(message, tracking_number):
 
 def set_webhook():
     """Set the Telegram webhook."""
-    webhook_url = os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook")
+    webhook_url = config.webhook_url
     try:
         bot.remove_webhook()
         bot.set_webhook(url=webhook_url)
@@ -903,3 +1247,4 @@ if __name__ == "__main__":
         db.create_all()
         set_webhook()
         bot_logger.info("Bot started with webhook mode")
+        bot.infinity_polling()
