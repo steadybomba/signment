@@ -192,4 +192,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Worker crashed: {e}")
         console.print(Panel(f"[critical]Worker crashed: {e}[/critical]", title="Worker Error", border_style="red"))
-        raise
+        raise               
