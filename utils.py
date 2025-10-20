@@ -1,22 +1,20 @@
 import os
-import re
 import json
-from datetime import datetime
-import time
-import random
-try:
-    from upstash_redis import Redis
-except ImportError:
-    Redis = None
-import uuid
+import re
 import logging
-from typing import Optional, Tuple, List
-from urllib.parse import urlparse
-from rich.console import Console
-from rich.panel import Panel
-from flask_sqlalchemy import SQLAlchemy
-from flask import Flask
+import redis
+import uuid
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
 from dataclasses import dataclass
+from typing import List, Optional, Tuple
+from rich.console import Console
+from telebot import TeleBot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask_sqlalchemy import SQLAlchemy
+import requests
 
 # Logging setup
 logger = logging.getLogger('app')
@@ -26,7 +24,7 @@ handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s -
 logger.addHandler(handler)
 console = Console()
 
-# Configuration
+# Configuration dataclass
 @dataclass
 class BotConfig:
     telegram_bot_token: str
@@ -34,8 +32,8 @@ class BotConfig:
     redis_token: str
     webhook_url: str
     websocket_server: str
-    allowed_admins: list
-    valid_statuses: list
+    allowed_admins: List[int]
+    valid_statuses: List[str]
     route_templates: dict
     smtp_host: str
     smtp_port: int
@@ -43,103 +41,86 @@ class BotConfig:
     smtp_pass: str
     smtp_from: str
 
+    def __post_init__(self):
+        if not self.telegram_bot_token:
+            raise ValueError("TELEGRAM_BOT_TOKEN is required")
+        if not self.redis_url:
+            raise ValueError("REDIS_URL is required")
+        if not self.webhook_url:
+            raise ValueError("WEBHOOK_URL is required")
+        if not self.allowed_admins:
+            raise ValueError("ALLOWED_ADMINS is required")
+        if not self.valid_statuses:
+            raise ValueError("VALID_STATUSES is required")
+
 # Redis client
 redis_client = None
-if Redis:
-    try:
-        redis_client = Redis(
-            url=os.getenv("REDIS_URL"),
-            token=os.getenv("REDIS_TOKEN", "")
-        )
-        redis_client.ping()
-        logger.info("Connected to Upstash Redis")
-        console.print("[info]Connected to Upstash Redis[/info]")
-    except Exception as e:
-        logger.error(f"Upstash Redis connection failed: {e}")
-        console.print(Panel(f"[error]Upstash Redis connection failed: {e}[/error]", title="Redis Error", border_style="red"))
-        redis_client = None
-else:
-    logger.warning("Upstash Redis module not installed; Redis operations will be disabled")
-    console.print(Panel("[warning]Upstash Redis module not installed; Redis operations will be disabled[/warning]", title="Redis Warning", border_style="yellow"))
+try:
+    redis_client = redis.Redis.from_url(
+        os.getenv("REDIS_URL"),
+        password=os.getenv("REDIS_TOKEN"),
+        decode_responses=True
+    )
+    redis_client.ping()
+    logger.info("Connected to Upstash Redis")
+    console.print("[info]Connected to Upstash Redis[/info]")
+except Exception as e:
+    logger.error(f"Failed to connect to Redis: {e}")
+    console.print(f"[error]Failed to connect to Redis: {e}[/error]")
+    redis_client = None
 
 # Constants
-RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", 60))
-RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", 100))
+RATE_LIMIT_WINDOW = 60  # 60 seconds
+RATE_LIMIT_MAX = 30     # Max requests per window
 
-# Temporary Flask app for SQLAlchemy
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+# In-memory cache for route templates
+route_templates_cache = None
 
-# Shipment model
-class Shipment(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    tracking_number = db.Column(db.String(20), unique=True, nullable=False)
-    status = db.Column(db.String(50), nullable=False)
-    checkpoints = db.Column(db.Text, nullable=True)
-    delivery_location = db.Column(db.String(100), nullable=False)
-    last_updated = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    recipient_email = db.Column(db.String(120), nullable=True)
-    origin_location = db.Column(db.String(100), nullable=True)
-    webhook_url = db.Column(db.String(200), nullable=True)
-    email_notifications = db.Column(db.Boolean, default=True)
-
-def generate_unique_id() -> str:
-    """Generate a unique tracking number (e.g., TRKYYYYMMDDHHMMSSXXXXXX)."""
-    timestamp = time.strftime("%Y%m%d%H%M%S")
-    random_suffix = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=6))
-    return f"TRK{timestamp}{random_suffix}"
-
-def get_cached_route_templates() -> dict:
-    """Retrieve route templates from environment or Redis cache."""
-    if redis_client:
-        cached_templates = safe_redis_operation(redis_client.get, 'route_templates')
-        if cached_templates:
-            return json.loads(cached_templates)
-    route_templates = json.loads(os.getenv('ROUTE_TEMPLATES', '{"Lagos, NG": ["Lagos, NG"]}'))
-    if redis_client:
-        safe_redis_operation(redis_client.set, 'route_templates', json.dumps(route_templates))
-    return route_templates
-
+# Utility functions
 def safe_redis_operation(func, *args, **kwargs):
-    """Safely execute a Redis operation."""
-    if redis_client is None:
-        logger.warning(f"Redis operation {func.__name__} skipped: Redis unavailable")
+    """Safely execute a Redis operation with error handling."""
+    if not redis_client:
+        logger.warning("Redis client not available")
         return None
     try:
         return func(*args, **kwargs)
     except Exception as e:
         logger.error(f"Redis operation failed: {e}")
-        console.print(Panel(f"[error]Redis operation failed: {e}[/error]", title="Redis Error", border_style="red"))
         return None
 
-def enqueue_notification(tracking_number: str, notification_type: str, data: dict):
-    """Enqueue a notification to be processed (e.g., email or webhook)."""
-    if redis_client is None:
-        logger.warning("Cannot enqueue notification: Redis unavailable")
-        return False
-    try:
-        notification = {
-            'tracking_number': tracking_number,
-            'type': notification_type,  # e.g., 'email', 'webhook'
-            'data': data,
-            'created_at': datetime.utcnow().isoformat()
-        }
-        queue_key = "notifications_queue"
-        safe_redis_operation(redis_client.lpush, queue_key, json.dumps(notification))
-        logger.info(f"Enqueued {notification_type} notification for {tracking_number}")
-        console.print(f"[info]Enqueued {notification_type} notification for {tracking_number}[/info]")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to enqueue notification for {tracking_number}: {e}")
-        console.print(Panel(f"[error]Failed to enqueue notification for {tracking_number}: {e}[/error]", title="Queue Error", border_style="red"))
-        return False
+def generate_unique_id() -> str:
+    """Generate a unique tracking ID."""
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    unique_id = str(uuid.uuid4()).replace("-", "")[:6].upper()
+    return f"TRK{timestamp}{unique_id}"
 
-def get_bot():
+def sanitize_tracking_number(tracking_number: str) -> Optional[str]:
+    """Sanitize and validate a tracking number."""
+    if not tracking_number:
+        return None
+    tracking_number = tracking_number.strip().upper()
+    if not tracking_number.startswith("TRK") or len(tracking_number) < 10:
+        return None
+    return tracking_number
+
+def validate_email(email: Optional[str]) -> bool:
+    """Validate an email address."""
+    if not email:
+        return True
+    return bool(re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email))
+
+def validate_location(location: Optional[str]) -> bool:
+    """Validate a location string."""
+    return bool(location and isinstance(location, str) and len(location) <= 100)
+
+def validate_webhook_url(url: Optional[str]) -> bool:
+    """Validate a webhook URL."""
+    if not url:
+        return True
+    return bool(re.match(r'^https?://[^\s/$.?#].[^\s]*$', url))
+
+def get_bot() -> TeleBot:
     """Initialize and return the Telegram bot instance."""
-    from telebot import TeleBot
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         redis_url=os.getenv("REDIS_URL"),
@@ -158,18 +139,8 @@ def get_bot():
     bot = TeleBot(config.telegram_bot_token)
     return bot
 
-def get_app_modules():
-    """Return Flask app modules."""
-    def validate_email(email):
-        return re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email) if email else True
-    def validate_location(location):
-        return bool(location and isinstance(location, str) and len(location) <= 100)
-    def validate_webhook_url(url):
-        return re.match(r'^https?://[^\s/$.?#].[^\s]*$', url) if url else True
-    return db, Shipment, sanitize_tracking_number, validate_email, validate_location, validate_webhook_url, get_shipment_list
-
 def is_admin(user_id: int) -> bool:
-    """Check if the user is an admin."""
+    """Check if a user is an admin."""
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         redis_url=os.getenv("REDIS_URL"),
@@ -187,40 +158,231 @@ def is_admin(user_id: int) -> bool:
     )
     return user_id in config.allowed_admins
 
-def sanitize_input(text: str) -> str:
-    """Sanitize input to prevent injection attacks."""
-    if not text:
-        return ""
-    text = re.sub(r'[^\w\s,.-@:/]', '', text)
-    return text.strip()
+def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
+    """Send or update the dynamic admin menu."""
+    bot = get_bot()
+    markup = InlineKeyboardMarkup(row_width=2)
+    buttons = [
+        InlineKeyboardButton("List Shipments", callback_data=f"list_{page}"),
+        InlineKeyboardButton("Generate ID", callback_data="generate_id"),
+        InlineKeyboardButton("Add Shipment", callback_data="add"),
+        InlineKeyboardButton("Delete Shipment", callback_data=f"delete_menu_{page}"),
+        InlineKeyboardButton("Toggle Email", callback_data=f"toggle_email_menu_{page}"),
+        InlineKeyboardButton("Bulk Actions", callback_data="bulk_action"),
+        InlineKeyboardButton("Stats", callback_data="stats"),
+        InlineKeyboardButton("Settings", callback_data="settings"),
+        InlineKeyboardButton("Help", callback_data="help")
+    ]
+    markup.add(*buttons)
+    if page > 1:
+        markup.add(InlineKeyboardButton("Previous", callback_data=f"menu_page_{page-1}"))
+    markup.add(InlineKeyboardButton("Next", callback_data=f"menu_page_{page+1}"))
+    text = f"*Admin Menu* (Page {page})"
+    try:
+        if message_id:
+            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
+        else:
+            bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
+        logger.info(f"Sent dynamic menu to chat {chat_id}, page {page}")
+    except Exception as e:
+        logger.error(f"Failed to send dynamic menu: {e}")
 
-def sanitize_tracking_number(tracking_number: str) -> Optional[str]:
-    """Sanitize and validate tracking number."""
-    tracking_number = sanitize_input(tracking_number)
-    if not re.match(r'^[A-Z0-9]{10,20}$', tracking_number):
+def get_shipment_details(tracking_number: str) -> Optional[dict]:
+    """Retrieve shipment details from Redis cache or database."""
+    try:
+        cached = safe_redis_operation(redis_client.get, f"shipment:{tracking_number}") if redis_client else None
+        if cached:
+            logger.info(f"Cache hit for shipment {tracking_number}")
+            return json.loads(cached)
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            return None
+        data = {
+            "tracking_number": shipment.tracking_number,
+            "status": shipment.status,
+            "checkpoints": shipment.checkpoints or "",
+            "delivery_location": shipment.delivery_location,
+            "recipient_email": shipment.recipient_email,
+            "origin_location": shipment.origin_location,
+            "webhook_url": shipment.webhook_url,
+            "email_notifications": shipment.email_notifications,
+            "last_updated": shipment.last_updated.isoformat(),
+            "created_at": shipment.created_at.isoformat()
+        }
+        if redis_client:
+            safe_redis_operation(redis_client.set, f"shipment:{tracking_number}", json.dumps(data), ex=3600)
+        logger.info(f"Retrieved shipment {tracking_number} from database")
+        return data
+    except Exception as e:
+        logger.error(f"Error retrieving shipment {tracking_number}: {e}")
         return None
-    return tracking_number
 
-def validate_email(email: str) -> bool:
-    """Validate email address format."""
+def search_shipments(query: str, page: int = 1, per_page: int = 5) -> Tuple[List[str], int]:
+    """Search shipments by tracking number, status, or location."""
+    try:
+        query = query.lower()
+        shipments = Shipment.query.filter(
+            (Shipment.tracking_number.ilike(f"%{query}%")) |
+            (Shipment.status.ilike(f"%{query}%")) |
+            (Shipment.delivery_location.ilike(f"%{query}%")) |
+            (Shipment.origin_location.ilike(f"%{query}%"))
+        ).order_by(Shipment.created_at.desc()).offset((page-1)*per_page).limit(per_page).all()
+        total = Shipment.query.filter(
+            (Shipment.tracking_number.ilike(f"%{query}%")) |
+            (Shipment.status.ilike(f"%{query}%")) |
+            (Shipment.delivery_location.ilike(f"%{query}%")) |
+            (Shipment.origin_location.ilike(f"%{query}%"))
+        ).count()
+        return [s.tracking_number for s in shipments], total
+    except Exception as e:
+        logger.error(f"Error searching shipments: {e}")
+        return [], 0
+
+def enqueue_notification(tracking_number: str, notification_type: str, data: dict) -> bool:
+    """Enqueue a notification to Redis."""
+    if not redis_client:
+        logger.error("Cannot enqueue notification: Redis client not available")
+        return False
+    try:
+        notification_data = {
+            "tracking_number": tracking_number,
+            "type": notification_type,
+            "data": data,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        safe_redis_operation(redis_client.rpush, "notifications", json.dumps(notification_data))
+        logger.info(f"Enqueued {notification_type} notification for {tracking_number}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to enqueue {notification_type} notification: {e}")
+        return False
+
+def send_email_notification(recipient_email: str, subject: str, body: str) -> bool:
+    """Send an email notification using SMTP."""
+    config = BotConfig(
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        redis_url=os.getenv("REDIS_URL"),
+        redis_token=os.getenv("REDIS_TOKEN", ""),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
+        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
+        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
+        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
+        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        smtp_port=int(os.getenv("SMTP_PORT", 587)),
+        smtp_user=os.getenv("SMTP_USER", ""),
+        smtp_pass=os.getenv("SMTP_PASS", ""),
+        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
+    )
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = config.smtp_from
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+        
+        with smtplib.SMTP(config.smtp_host, config.smtp_port) as server:
+            server.starttls()
+            server.login(config.smtp_user, config.smtp_pass)
+            server.send_message(msg)
+        logger.info(f"Sent email to {recipient_email}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email to {recipient_email}: {e}")
+        return False
+
+def validate_email(email: Optional[str]) -> bool:
+    """Validate an email address."""
     if not email:
         return True
-    return bool(re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email))
+    return bool(re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email))
 
-def validate_location(location: str) -> bool:
-    """Validate location format."""
-    if not location:
-        return True
-    return bool(re.match(r'^[a-zA-Z\s,]+$', location))
+def validate_location(location: Optional[str]) -> bool:
+    """Validate a location string."""
+    return bool(location and isinstance(location, str) and len(location) <= 100)
 
-def validate_webhook_url(url: str) -> bool:
-    """Validate webhook URL."""
+def validate_webhook_url(url: Optional[str]) -> bool:
+    """Validate a webhook URL."""
     if not url:
         return True
+    return bool(re.match(r'^https?://[^\s/$.?#].[^\s]*$', url))
+
+def get_shipment_list(page: int = 1, per_page: int = 5) -> Tuple[List[str], int]:
+    """Retrieve a paginated list of shipment tracking numbers."""
     try:
-        result = urlparse(url)
-        return all([result.scheme in ['http', 'https'], result.netloc])
-    except Exception:
+        shipments = Shipment.query.order_by(Shipment.created_at.desc()).offset((page-1)*per_page).limit(per_page).all()
+        total = Shipment.query.count()
+        return [s.tracking_number for s in shipments], total
+    except Exception as e:
+        logger.error(f"Error retrieving shipment list: {e}")
+        return [], 0
+
+def save_shipment(tracking_number: str, status: str, checkpoints: str, delivery_location: str, 
+                 recipient_email: Optional[str] = None, origin_location: Optional[str] = None, 
+                 webhook_url: Optional[str] = None) -> bool:
+    """Save a new shipment to the database."""
+    try:
+        shipment = Shipment(
+            tracking_number=tracking_number,
+            status=status,
+            checkpoints=checkpoints,
+            delivery_location=delivery_location,
+            recipient_email=recipient_email,
+            origin_location=origin_location,
+            webhook_url=webhook_url,
+            last_updated=datetime.utcnow(),
+            created_at=datetime.utcnow()
+        )
+        db.session.add(shipment)
+        db.session.commit()
+        logger.info(f"Saved shipment {tracking_number}")
+        return True
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error saving shipment {tracking_number}: {e}")
+        return False
+
+def update_shipment(tracking_number: str, status: Optional[str] = None, 
+                   delivery_location: Optional[str] = None, recipient_email: Optional[str] = None,
+                   origin_location: Optional[str] = None, webhook_url: Optional[str] = None) -> bool:
+    """Update an existing shipment's details."""
+    try:
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            return False
+        config = BotConfig(
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            redis_url=os.getenv("REDIS_URL"),
+            redis_token=os.getenv("REDIS_TOKEN", ""),
+            webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+            websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
+            allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
+            valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
+            route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
+            smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+            smtp_port=int(os.getenv("SMTP_PORT", 587)),
+            smtp_user=os.getenv("SMTP_USER", ""),
+            smtp_pass=os.getenv("SMTP_PASS", ""),
+            smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
+        )
+        if status and status in config.valid_statuses:
+            shipment.status = status
+        if delivery_location:
+            shipment.delivery_location = delivery_location
+        if recipient_email is not None:
+            shipment.recipient_email = recipient_email
+        if origin_location is not None:
+            shipment.origin_location = origin_location
+        if webhook_url is not None:
+            shipment.webhook_url = webhook_url
+        shipment.last_updated = datetime.utcnow()
+        db.session.commit()
+        invalidate_cache(tracking_number)
+        logger.info(f"Updated shipment {tracking_number}")
+        return True
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error updating shipment {tracking_number}: {e}")
         return False
 
 def invalidate_cache(tracking_number: str):
@@ -229,60 +391,35 @@ def invalidate_cache(tracking_number: str):
         try:
             safe_redis_operation(redis_client.delete, f"shipment:{tracking_number}")
             logger.info(f"Invalidated cache for {tracking_number}")
-            console.print(f"[info]Invalidated cache for {tracking_number}[/info]")
         except Exception as e:
             logger.error(f"Failed to invalidate cache for {tracking_number}: {e}")
-            console.print(Panel(f"[error]Failed to invalidate cache for {tracking_number}: {e}[/error]", title="Cache Error", border_style="red"))
 
-def get_shipment_list(page: int = 1) -> Tuple[List[str], int]:
-    """Get a paginated list of shipment tracking numbers."""
-    per_page = 5
+def get_app_modules():
+    """Return a dictionary of application modules and their versions."""
     try:
-        with app.app_context():
-            shipments = Shipment.query.order_by(Shipment.created_at.desc()).offset((page-1)*per_page).limit(per_page).all()
-            total = Shipment.query.count()
-        return [s.tracking_number for s in shipments], total
-    except Exception as e:
-        logger.error(f"Database error fetching shipment list: {e}")
-        console.print(Panel(f"[error]Database error fetching shipment list: {e}[/error]", title="Database Error", border_style="red"))
-        return [], 0
-
-def get_shipment_details(tracking_number: str) -> Optional[dict]:
-    """Get shipment details with caching."""
-    tracking_number = sanitize_tracking_number(tracking_number)
-    if not tracking_number:
-        return None
-    cache_key = f"shipment:{tracking_number}"
-    cached = safe_redis_operation(redis_client.get, cache_key) if redis_client else None
-    if cached:
-        return json.loads(cached)
-    try:
-        with app.app_context():
-            shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
-        if not shipment:
-            return None
-        data = {
-            'tracking_number': shipment.tracking_number,
-            'status': shipment.status,
-            'checkpoints': shipment.checkpoints or 'None',
-            'delivery_location': shipment.delivery_location,
-            'recipient_email': shipment.recipient_email,
-            'email_notifications': shipment.email_notifications,
-            'webhook_url': shipment.webhook_url,
-            'paused': safe_redis_operation(redis_client.hget, "paused_simulations", tracking_number) == "true" if redis_client else False,
-            'speed_multiplier': float(safe_redis_operation(redis_client.hget, "sim_speed_multipliers", tracking_number) or 1.0) if redis_client else 1.0
+        import pkg_resources
+        modules = {
+            'flask': pkg_resources.get_distribution('flask').version,
+            'flask_sqlalchemy': pkg_resources.get_distribution('flask-sqlalchemy').version,
+            'redis': pkg_resources.get_distribution('redis').version,
+            'python-telegram-bot': pkg_resources.get_distribution('python-telegram-bot').version,
+            'requests': pkg_resources.get_distribution('requests').version,
+            'smtplib': 'stdlib',
+            'eventlet': pkg_resources.get_distribution('eventlet').version,
+            'flask_socketio': pkg_resources.get_distribution('flask-socketio').version,
+            'flask_limiter': pkg_resources.get_distribution('flask-limiter').version,
+            'rich': pkg_resources.get_distribution('rich').version,
+            'validators': pkg_resources.get_distribution('validators').version
         }
-        if redis_client:
-            safe_redis_operation(redis_client.setex, cache_key, 3600, json.dumps(data))
-        return data
+        logger.info("Retrieved application modules")
+        return modules
     except Exception as e:
-        logger.error(f"Database error fetching shipment {tracking_number}: {e}")
-        console.print(Panel(f"[error]Database error fetching shipment {tracking_number}: {e}[/error]", title="Database Error", border_style="red"))
-        return None
+        logger.error(f"Error retrieving application modules: {e}")
+        return {}
 
-def save_shipment(tracking_number: str, status: str, checkpoints: str, delivery_location: str,
-                 recipient_email: str = '', origin_location: str = None, webhook_url: str = None) -> bool:
-    """Save a shipment to the database."""
+def cache_route_templates():
+    """Cache route templates in Redis or in-memory."""
+    global route_templates_cache
     config = BotConfig(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         redis_url=os.getenv("REDIS_URL"),
@@ -298,110 +435,76 @@ def save_shipment(tracking_number: str, status: str, checkpoints: str, delivery_
         smtp_pass=os.getenv("SMTP_PASS", ""),
         smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
     )
-    tracking_number = sanitize_tracking_number(tracking_number)
-    if not tracking_number:
-        raise ValueError("Invalid tracking number")
-    if status not in config.valid_statuses:
-        raise ValueError(f"Invalid status. Must be one of {', '.join(config.valid_statuses)}")
-    if not validate_location(delivery_location):
-        raise ValueError("Invalid delivery location")
-    if not validate_email(recipient_email):
-        raise ValueError("Invalid recipient email")
-    if origin_location and not validate_location(origin_location):
-        raise ValueError("Invalid origin location")
-    if webhook_url and not validate_webhook_url(webhook_url):
-        raise ValueError("Invalid webhook URL")
+    route_templates_cache = config.route_templates
+    if redis_client:
+        try:
+            safe_redis_operation(redis_client.set, "route_templates", json.dumps(config.route_templates), ex=86400)
+            logger.info("Cached route templates in Redis")
+        except Exception as e:
+            logger.error(f"Failed to cache route templates in Redis: {e}")
+    logger.info("Cached route templates in memory")
+    return route_templates_cache
+
+def get_cached_route_templates() -> dict:
+    """Retrieve cached route templates from Redis or in-memory."""
+    global route_templates_cache
+    if route_templates_cache is not None:
+        return route_templates_cache
+    if redis_client:
+        try:
+            cached = safe_redis_operation(redis_client.get, "route_templates")
+            if cached:
+                route_templates_cache = json.loads(cached)
+                logger.info("Retrieved route templates from Redis cache")
+                return route_templates_cache
+        except Exception as e:
+            logger.error(f"Failed to retrieve route templates from Redis: {e}")
+    config = BotConfig(
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        redis_url=os.getenv("REDIS_URL"),
+        redis_token=os.getenv("REDIS_TOKEN", ""),
+        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
+        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
+        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
+        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
+        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
+        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        smtp_port=int(os.getenv("SMTP_PORT", 587)),
+        smtp_user=os.getenv("SMTP_USER", ""),
+        smtp_pass=os.getenv("SMTP_PASS", ""),
+        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
+    )
+    route_templates_cache = config.route_templates
+    logger.info("Retrieved route templates from config")
+    return route_templates_cache
+
+def check_bot_status() -> bool:
+    """Check if the Telegram bot is responsive."""
+    bot = get_bot()
     try:
-        with app.app_context():
-            shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
-            if shipment:
-                shipment.status = status
-                shipment.checkpoints = checkpoints
-                shipment.delivery_location = delivery_location
-                shipment.recipient_email = recipient_email
-                shipment.origin_location = origin_location
-                shipment.webhook_url = webhook_url
-                shipment.last_updated = datetime.utcnow()
-            else:
-                shipment = Shipment(
-                    tracking_number=tracking_number,
-                    status=status,
-                    checkpoints=checkpoints,
-                    delivery_location=delivery_location,
-                    recipient_email=recipient_email,
-                    origin_location=origin_location,
-                    webhook_url=webhook_url
-                )
-                db.session.add(shipment)
-            db.session.commit()
-            invalidate_cache(tracking_number)
-        logger.info(f"Saved shipment {tracking_number}")
-        console.print(f"[info]Saved shipment {tracking_number}[/info]")
+        bot.get_me()
+        logger.info("Telegram bot status check: OK")
         return True
     except Exception as e:
-        db.session.rollback()
-        logger.error(f"Database error saving shipment {tracking_number}: {e}")
-        console.print(Panel(f"[error]Database error saving shipment {tracking_number}: {e}[/error]", title="Database Error", border_style="red"))
+        logger.error(f"Telegram bot status check failed: {e}")
         return False
 
-def search_shipments(query: str, page: int = 1) -> Tuple[List[str], int]:
-    """Search shipments by tracking number or location."""
-    query = sanitize_input(query)
-    per_page = 5
-    try:
-        with app.app_context():
-            shipments = Shipment.query.filter(
-                (Shipment.tracking_number.ilike(f"%{query}%")) |
-                (Shipment.delivery_location.ilike(f"%{query}%")) |
-                (Shipment.origin_location.ilike(f"%{query}%"))
-            ).order_by(Shipment.created_at.desc()).offset((page-1)*per_page).limit(per_page).all()
-            total = Shipment.query.filter(
-                (Shipment.tracking_number.ilike(f"%{query}%")) |
-                (Shipment.delivery_location.ilike(f"%{query}%")) |
-                (Shipment.origin_location.ilike(f"%{query}%"))
-            ).count()
-        return [s.tracking_number for s in shipments], total
-    except Exception as e:
-        logger.error(f"Database error searching shipments: {e}")
-        console.print(Panel(f"[error]Database error searching shipments: {e}[/error]", title="Database Error", border_style="red"))
-        return [], 0
+# Temporary Flask app for SQLAlchemy (for Shipment model)
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
-def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
-    """Send a dynamic menu to the admin."""
-    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-    config = BotConfig(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        redis_url=os.getenv("REDIS_URL"),
-        redis_token=os.getenv("REDIS_TOKEN", ""),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
-        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.getenv("SMTP_PORT", 587)),
-        smtp_user=os.getenv("SMTP_USER", ""),
-        smtp_pass=os.getenv("SMTP_PASS", ""),
-        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-    )
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("Add Shipment", callback_data="add"),
-        InlineKeyboardButton("Generate ID", callback_data="generate_id"),
-        InlineKeyboardButton("View Shipments", callback_data="list_1"),
-        InlineKeyboardButton("Delete Shipments", callback_data="delete_menu_1"),
-        InlineKeyboardButton("Toggle Email", callback_data="toggle_email_menu_1"),
-        InlineKeyboardButton("Broadcast", callback_data="broadcast_menu_1"),
-        InlineKeyboardButton("Set Speed", callback_data="setspeed_menu_1"),
-        InlineKeyboardButton("Get Speed", callback_data="getspeed_menu_1"),
-        InlineKeyboardButton("Settings", callback_data="settings"),
-        InlineKeyboardButton("Help", callback_data="help")
-    )
-    text = f"*Admin Menu* (Page {page})"
-    bot = get_bot()
-    if message_id:
-        bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
-    else:
-        bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
-    logger.info(f"Sent dynamic menu to chat {chat_id}")
-    console.print(f"[info]Sent dynamic menu to chat {chat_id}[/info]")
+# Shipment model
+class Shipment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    tracking_number = db.Column(db.String(20), unique=True, nullable=False)
+    status = db.Column(db.String(50), nullable=False)
+    checkpoints = db.Column(db.Text, nullable=True)
+    delivery_location = db.Column(db.String(100), nullable=False)
+    last_updated = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    recipient_email = db.Column(db.String(120), nullable=True)
+    origin_location = db.Column(db.String(100), nullable=True)
+    webhook_url = db.Column(db.String(200), nullable=True)
+    email_notifications = db.Column(db.Boolean, default=True)
