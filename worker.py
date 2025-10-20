@@ -4,11 +4,17 @@ import time
 import logging
 import smtplib
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from flask import Flask, render_template
 from upstash_redis import Redis
 import requests
 from rich.console import Console
 from rich.panel import Panel
 from utils import BotConfig, safe_redis_operation
+
+# Initialize Flask app for template rendering
+app = Flask(__name__)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # Logging setup
 logger = logging.getLogger('worker')
@@ -56,22 +62,44 @@ except Exception as e:
     raise
 
 def send_email(tracking_number: str, status: str, checkpoints: str, delivery_location: str, recipient_email: str) -> bool:
-    """Send an email notification."""
+    """Send an email notification using HTML template."""
     try:
-        msg = MIMEText(f"Shipment Update: {tracking_number} is now {status} at {delivery_location}\n\nCheckpoints:\n{checkpoints or 'None'}")
+        # Prepare checkpoints as a list for template
+        checkpoints_list = checkpoints.split(';') if checkpoints else []
+        
+        # Render HTML template
+        with app.app_context():
+            html_content = render_template('email_notification.html',
+                                        tracking_number=tracking_number,
+                                        status=status,
+                                        checkpoints=checkpoints_list,
+                                        delivery_location=delivery_location)
+        
+        # Create MIME message
+        msg = MIMEMultipart('alternative')
         msg['Subject'] = f"Shipment Update: {tracking_number}"
         msg['From'] = config.smtp_from
         msg['To'] = recipient_email
+        
+        # Attach HTML content
+        html_part = MIMEText(html_content, 'html')
+        msg.attach(html_part)
+        
+        # Send email
         with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=5) as server:
             server.starttls()
             server.login(config.smtp_user, config.smtp_pass)
             server.send_message(msg)
-        logger.info(f"Sent email notification for {tracking_number} to {recipient_email}")
-        console.print(f"[info]Sent email notification for {tracking_number} to {recipient_email}[/info]")
+        logger.info(f"Sent HTML email notification for {tracking_number} to {recipient_email}")
+        console.print(f"[info]Sent HTML email notification for {tracking_number} to {recipient_email}[/info]")
         return True
     except smtplib.SMTPException as e:
-        logger.error(f"Failed to send email notification for {tracking_number}: {e}")
-        console.print(Panel(f"[error]Failed to send email notification for {tracking_number}: {e}[/error]", title="Email Error", border_style="red"))
+        logger.error(f"Failed to send HTML email notification for {tracking_number}: {e}")
+        console.print(Panel(f"[error]Failed to send HTML email notification for {tracking_number}: {e}[/error]", title="Email Error", border_style="red"))
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error sending HTML email for {tracking_number}: {e}")
+        console.print(Panel(f"[error]Unexpected error sending HTML email for {tracking_number}: {e}[/error]", title="Email Error", border_style="red"))
         return False
 
 def send_webhook(tracking_number: str, status: str, checkpoints: list, delivery_location: str, webhook_url: str) -> bool:
