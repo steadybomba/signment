@@ -2,6 +2,8 @@ import os
 import re
 import json
 from datetime import datetime
+import time
+import random
 try:
     from upstash_redis import Redis
 except ImportError:
@@ -83,6 +85,23 @@ class Shipment(db.Model):
     origin_location = db.Column(db.String(100), nullable=True)
     webhook_url = db.Column(db.String(200), nullable=True)
     email_notifications = db.Column(db.Boolean, default=True)
+
+def generate_unique_id() -> str:
+    """Generate a unique tracking number (e.g., TRKYYYYMMDDHHMMSSXXXXXX)."""
+    timestamp = time.strftime("%Y%m%d%H%M%S")
+    random_suffix = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=6))
+    return f"TRK{timestamp}{random_suffix}"
+
+def get_cached_route_templates() -> dict:
+    """Retrieve route templates from environment or Redis cache."""
+    if redis_client:
+        cached_templates = safe_redis_operation(redis_client.get, 'route_templates')
+        if cached_templates:
+            return json.loads(cached_templates)
+    route_templates = json.loads(os.getenv('ROUTE_TEMPLATES', '{"Lagos, NG": ["Lagos, NG"]}'))
+    if redis_client:
+        safe_redis_operation(redis_client.set, 'route_templates', json.dumps(route_templates))
+    return route_templates
 
 def safe_redis_operation(func, *args, **kwargs):
     """Safely execute a Redis operation."""
