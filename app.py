@@ -6,6 +6,7 @@ import os
 import json
 import random
 from datetime import datetime, timedelta
+import time
 
 # Third-party imports
 import requests
@@ -82,7 +83,7 @@ limiter = Limiter(
     default_limits=app.config['RATELIMIT_DEFAULTS'],
     storage_uri=app.config['RATELIMIT_STORAGE_URI']
 )
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins="*")
 
 # Logging setup
 flask_logger = logging.getLogger('flask_app')
@@ -661,7 +662,6 @@ def broadcast_update(tracking_number):
         flask_logger.error(f"Unexpected broadcast error: {e}", extra={'tracking_number': sanitized_tn})
         console.print(Panel(f"[error]Unexpected broadcast error: {e}[/error]", title="Broadcast Error", border_style="red"))
 
-# Flask routes
 @app.route('/')
 def index():
     """Serve the main index page with tracking form."""
@@ -1175,6 +1175,23 @@ def get_stats():
         flask_logger.error(f"Unexpected error retrieving stats: {e}", extra={'tracking_number': ''})
         console.print(Panel(f"[error]Unexpected error retrieving stats: {e}[/error]", title="Server Error", border_style="red"))
         return jsonify({'error': 'Server error'}), 500
+
+@app.route('/notify', methods=['POST'])
+def notify():
+    """Handle external WebSocket notification requests."""
+    try:
+        data = request.get_json()
+        if not data or 'tracking_number' not in data:
+            flask_logger.warning("Invalid JSON payload for notify endpoint", extra={'tracking_number': ''})
+            return jsonify({'error': 'Invalid request body'}), 400
+        socketio.emit('shipment_update', data, namespace='/', broadcast=True)
+        flask_logger.info(f"Received and broadcasted WebSocket notification for {data['tracking_number']}")
+        console.print(f"[info]Received and broadcasted WebSocket notification for {data['tracking_number']}[/info]")
+        return jsonify({'message': 'Notification broadcasted'}), 200
+    except Exception as e:
+        flask_logger.error(f"Failed to process notification: {e}", extra={'tracking_number': ''})
+        console.print(Panel(f"[error]Failed to process notification: {e}[/error]", title="Notification Error", border_style="red"))
+        return jsonify({'error': 'Internal server error'}), 500
 
 # SocketIO handlers
 @socketio.on('connect')
