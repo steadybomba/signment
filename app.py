@@ -1149,7 +1149,7 @@ def set_simulation_speed(tracking_number):
     try:
         speed_multiplier = float(data['speed_multiplier'])
         if not (0.1 <= speed_multiplier <= 10.0):
-            flask_logger.warning(f"Invalid speed multiplier: {speed_multiplier}", extra={'tracking_number": sanitized_tn})
+            flask_logger.warning(f"Invalid speed multiplier: {speed_multiplier}", extra={'tracking_number': sanitized_tn})
             return jsonify({'error': 'Speed multiplier must be between 0.1 and 10.0'}), 400
 
         shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
