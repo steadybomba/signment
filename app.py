@@ -996,7 +996,6 @@ def handle_callback(callback_query):
             bot.answer_callback_query(callback_query.id, message, show_alert=True)
         elif data.startswith("send_webhook_"):
             tracking_number = data.split("_", 2)[2]
-            # send_manual_webhook not implemented in utils.py
             logger.warning("send_manual_webhook not implemented")
             console.print("[warning]send_manual_webhook not implemented[/warning]")
             bot.answer_callback_query(callback_query.id, "Webhook sending not implemented.", show_alert=True)
@@ -1045,43 +1044,36 @@ def handle_callback(callback_query):
             bot.register_next_step_handler(callback_query.message, lambda m: handle_set_webhook(m, tracking_number))
         elif data.startswith("test_webhook_"):
             tracking_number = data.split("_", 2)[2]
-            # send_manual_webhook not implemented in utils.py
             logger.warning("send_manual_webhook not implemented")
             console.print("[warning]send_manual_webhook not implemented[/warning]")
             bot.answer_callback_query(callback_query.id, "Webhook testing not implemented.", show_alert=True)
         elif data.startswith("list_"):
             page = int(data.split("_")[-1])
-            # show_shipment_menu not implemented in utils.py
             logger.warning("show_shipment_menu not implemented")
             console.print("[warning]show_shipment_menu not implemented[/warning]")
             bot.answer_callback_query(callback_query.id, "Function not implemented: show_shipment_menu missing.", show_alert=True)
         elif data.startswith("delete_menu_"):
             page = int(data.split("_")[-1])
-            # show_shipment_menu not implemented in utils.py
             logger.warning("show_shipment_menu not implemented")
             console.print("[warning]show_shipment_menu not implemented[/warning]")
             bot.answer_callback_query(callback_query.id, "Function not implemented: show_shipment_menu missing.", show_alert=True)
         elif data.startswith("batch_delete_menu_"):
             page = int(data.split("_")[-1])
-            # show_shipment_menu not implemented in utils.py
             logger.warning("show_shipment_menu not implemented")
             console.print("[warning]show_shipment_menu not implemented[/warning]")
             bot.answer_callback_query(callback_query.id, "Function not implemented: show_shipment_menu missing.", show_alert=True)
         elif data.startswith("broadcast_menu_"):
             page = int(data.split("_")[-1])
-            # show_shipment_menu not implemented in utils.py
             logger.warning("show_shipment_menu not implemented")
             console.print("[warning]show_shipment_menu not implemented[/warning]")
             bot.answer_callback_query(callback_query.id, "Function not implemented: show_shipment_menu missing.", show_alert=True)
         elif data.startswith("setspeed_menu_"):
             page = int(data.split("_")[-1])
-            # show_shipment_menu not implemented in utils.py
             logger.warning("show_shipment_menu not implemented")
             console.print("[warning]show_shipment_menu not implemented[/warning]")
             bot.answer_callback_query(callback_query.id, "Function not implemented: show_shipment_menu missing.", show_alert=True)
         elif data.startswith("getspeed_menu_"):
             page = int(data.split("_")[-1])
-            # show_shipment_menu not implemented in utils.py
             logger.warning("show_shipment_menu not implemented")
             console.print("[warning]show_shipment_menu not implemented[/warning]")
             bot.answer_callback_query(callback_query.id, "Function not implemented: show_shipment_menu missing.", show_alert=True)
