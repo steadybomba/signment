@@ -17,6 +17,7 @@ from threading import Lock
 from time import time
 import requests
 from flask_socketio import emit
+import uuid
 
 # Logging setup
 logger = logging.getLogger('utils')
@@ -195,6 +196,10 @@ except Exception as e:
     console.print(f"[error]Failed to connect to Upstash Redis: {e}[/error]")
     redis_client = None
 
+# Constants
+RATE_LIMIT_WINDOW = 60  # 60 seconds
+RATE_LIMIT_MAX = 30     # Max requests per window
+
 # In-memory cache for route templates
 route_templates_cache = None
 
@@ -211,14 +216,20 @@ def safe_redis_operation(func, *args, **kwargs):
         console.print(f"[error]Redis operation failed: {e}[/error]")
         return None
 
+def generate_unique_id() -> str:
+    """Generate a unique tracking ID."""
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    unique_id = str(uuid.uuid4()).replace("-", "")[:6].upper()
+    return f"TRK{timestamp}{unique_id}"
+
 def sanitize_tracking_number(tracking_number: str) -> Optional[str]:
     """Sanitize and validate a tracking number."""
     if not tracking_number:
         return None
     tracking_number = re.sub(r'[^a-zA-Z0-9]', '', tracking_number).strip().upper()
-    if len(tracking_number) < 6 or len(tracking_number) > 50:
-        logger.warning(f"Invalid tracking number length: {tracking_number}")
-        console.print(f"[warning]Invalid tracking number length: {tracking_number}[/warning]")
+    if not tracking_number.startswith("TRK") or len(tracking_number) < 10 or len(tracking_number) > 50:
+        logger.warning(f"Invalid tracking number: {tracking_number}")
+        console.print(f"[warning]Invalid tracking number: {tracking_number}[/warning]")
         return None
     return tracking_number
 
@@ -237,6 +248,11 @@ def validate_webhook_url(url: Optional[str]) -> bool:
     if not url:
         return True
     return validators.url(url)
+
+def is_admin(user_id: int) -> bool:
+    """Check if a user is an admin."""
+    config = get_config()
+    return user_id in config.allowed_admins
 
 def get_bot() -> Application:
     """Initialize and return the Telegram bot application."""
@@ -300,6 +316,38 @@ async def handle_message(update, context):
         logger.error(f"Error handling message for {sanitized_tn}: {e}")
         console.print(f"[error]Error handling message for {sanitized_tn}: {e}[/error]")
         await update.message.reply_text("An error occurred while fetching shipment details.")
+
+def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
+    """Send or update the dynamic admin menu."""
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    bot = get_bot().bot
+    markup = InlineKeyboardMarkup(row_width=2)
+    buttons = [
+        InlineKeyboardButton("List Shipments", callback_data=f"list_{page}"),
+        InlineKeyboardButton("Generate ID", callback_data="generate_id"),
+        InlineKeyboardButton("Add Shipment", callback_data="add"),
+        InlineKeyboardButton("Delete Shipment", callback_data=f"delete_menu_{page}"),
+        InlineKeyboardButton("Toggle Email", callback_data=f"toggle_email_menu_{page}"),
+        InlineKeyboardButton("Bulk Actions", callback_data="bulk_action"),
+        InlineKeyboardButton("Stats", callback_data="stats"),
+        InlineKeyboardButton("Settings", callback_data="settings"),
+        InlineKeyboardButton("Help", callback_data="help")
+    ]
+    markup.add(*buttons)
+    if page > 1:
+        markup.add(InlineKeyboardButton("Previous", callback_data=f"menu_page_{page-1}"))
+    markup.add(InlineKeyboardButton("Next", callback_data=f"menu_page_{page+1}"))
+    text = f"*Admin Menu* (Page {page})"
+    try:
+        if message_id:
+            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
+        else:
+            bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
+        logger.info(f"Sent dynamic menu to chat {chat_id}, page {page}")
+        console.print(f"[info]Sent dynamic menu to chat {chat_id}, page {page}[/info]")
+    except Exception as e:
+        logger.error(f"Failed to send dynamic menu: {e}")
+        console.print(f"[error]Failed to send dynamic menu: {e}[/error]")
 
 def check_bot_status() -> bool:
     """Check if the Telegram bot is responsive."""
@@ -473,6 +521,29 @@ def get_shipment_list(page: int = 1, per_page: int = 5) -> Tuple[List[str], int]
         console.print(f"[error]Error retrieving shipment list: {e}[/error]")
         return [], 0
 
+def search_shipments(query: str, page: int = 1, per_page: int = 5) -> Tuple[List[str], int]:
+    """Search shipments by tracking number, status, or location."""
+    from app import Shipment  # Import here to avoid circular imports
+    try:
+        query = query.lower()
+        shipments = Shipment.query.filter(
+            (Shipment.tracking_number.ilike(f"%{query}%")) |
+            (Shipment.status.ilike(f"%{query}%")) |
+            (Shipment.delivery_location.ilike(f"%{query}%")) |
+            (Shipment.origin_location.ilike(f"%{query}%"))
+        ).order_by(Shipment.created_at.desc()).offset((page-1)*per_page).limit(per_page).all()
+        total = Shipment.query.filter(
+            (Shipment.tracking_number.ilike(f"%{query}%")) |
+            (Shipment.status.ilike(f"%{query}%")) |
+            (Shipment.delivery_location.ilike(f"%{query}%")) |
+            (Shipment.origin_location.ilike(f"%{query}%"))
+        ).count()
+        return [s.tracking_number for s in shipments], total
+    except Exception as e:
+        logger.error(f"Error searching shipments: {e}")
+        console.print(f"[error]Error searching shipments: {e}[/error]")
+        return [], 0
+
 def get_shipment_details(tracking_number: str) -> Optional[Dict[str, Any]]:
     """Retrieve details for a specific shipment."""
     from app import Shipment  # Import here to avoid circular imports
@@ -578,6 +649,7 @@ def save_shipment(
             )
             db.session.add(shipment)
         db.session.commit()
+        invalidate_cache(sanitized_tn)
         logger.info(f"Saved shipment {sanitized_tn} ({action})")
         console.print(f"[info]Saved shipment {sanitized_tn} ({action})[/info]")
 
@@ -764,5 +836,5 @@ def get_cached_route_templates() -> Dict[str, List[str]]:
     config = get_config()
     route_templates_cache = config.route_templates
     logger.info("Retrieved route templates from config")
-    console.print("[info]Retrieved route templates from config[/info]")
+    console.print(f"[info]Retrieved route templates from config[/info]")
     return route_templates_cache
