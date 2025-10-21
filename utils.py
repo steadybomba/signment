@@ -5,8 +5,7 @@ import logging
 from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass
 from upstash_redis import Redis
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telebot import TeleBot
 from rich.console import Console
 import smtplib
 from email.mime.text import MIMEText
@@ -293,100 +292,66 @@ def is_admin(user_id: int) -> bool:
     config = get_config()
     return user_id in config.allowed_admins
 
-def get_bot() -> Application:
-    """Initialize and return the Telegram bot application."""
+def get_bot() -> TeleBot:
+    """Initialize and return the Telegram bot."""
     try:
         config = get_config()
-        app = Application.builder().token(config.telegram_bot_token).build()
-        app.add_handler(CommandHandler("start", start_command))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_handler(CommandHandler("myid", myid_command))
+        bot = TeleBot(config.telegram_bot_token)
         logger.info("Telegram bot initialized with handlers")
         console.print("[info]Telegram bot initialized with handlers[/info]")
-        return app
+        return bot
     except Exception as e:
         logger.error(f"Failed to initialize Telegram bot: {e}")
         console.print(f"[error]Failed to initialize Telegram bot: {e}[/error]")
         raise
 
-async def start_command(update, context):
-    """Handle /start command for Telegram bot."""
+def send_manual_email(tracking_number: str) -> Tuple[bool, str]:
+    """Send a manual email notification for a shipment."""
+    from app import Shipment  # Import here to avoid circular imports
     try:
-        user_id = update.effective_user.id
-        if not check_rate_limit(str(user_id)):
-            await update.message.reply_text("Rate limit exceeded. Please try again later.")
-            return
-        await update.message.reply_text("Welcome to Signment Tracking! Send a tracking number to get shipment details.")
-        logger.info(f"Processed /start command for user {user_id}")
-        console.print(f"[info]Processed /start command for user {user_id}[/info]")
-    except Exception as e:
-        logger.error(f"Error in start_command: {e}")
-        console.print(f"[error]Error in start_command: {e}[/error]")
-
-async def myid_command(update, context):
-    """Handle /myid command to return user's Telegram ID."""
-    try:
-        user_id = update.effective_user.id
-        if not check_rate_limit(str(user_id)):
-            await update.message.reply_text("Rate limit exceeded. Please try again later.")
-            return
-        await update.message.reply_text(f"Your Telegram ID is: {user_id}")
-        logger.info(f"Processed /myid command for user {user_id}")
-        console.print(f"[info]Processed /myid command for user {user_id}[/info]")
-    except Exception as e:
-        logger.error(f"Error in myid_command: {e}")
-        console.print(f"[error]Error in myid_command: {e}[/error]")
-
-async def handle_message(update, context):
-    """Handle text messages with tracking numbers."""
-    from app import Shipment, db, geocode_locations, broadcast_update  # Import here to avoid circular imports
-    user_id = update.effective_user.id
-    if not check_rate_limit(str(user_id)):
-        await update.message.reply_text("Rate limit exceeded. Please try again later.")
-        return
-    tracking_number = update.message.text.strip()
-    sanitized_tn = sanitize_tracking_number(tracking_number)
-    if not sanitized_tn:
-        await update.message.reply_text("Invalid tracking number. Please provide a valid tracking number.")
-        logger.warning(f"Invalid tracking number: {tracking_number} from user {user_id}")
-        console.print(f"[warning]Invalid tracking number: {tracking_number} from user {user_id}[/warning]")
-        return
-
-    try:
-        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+        shipment = get_shipment_details(tracking_number)
         if not shipment:
-            await update.message.reply_text(f"No shipment found for tracking number {sanitized_tn}.")
-            logger.warning(f"Shipment not found: {sanitized_tn} for user {user_id}")
-            console.print(f"[warning]Shipment not found: {sanitized_tn} for user {user_id}[/warning]")
-            return
-
-        checkpoints = shipment.checkpoints.split(';') if shipment.checkpoints else []
-        coords = geocode_locations(checkpoints)
-        coords_list = [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords]
-        response = (
-            f"Tracking Number: {sanitized_tn}\n"
-            f"Status: {shipment.status}\n"
-            f"Delivery Location: {shipment.delivery_location}\n"
-            f"Checkpoints:\n" + "\n".join([f"- {cp}" for cp in checkpoints]) + "\n"
-            f"Coordinates: {coords_list}"
+            return False, f"Shipment `{tracking_number}` not found."
+        if not shipment.get('recipient_email') or not shipment.get('email_notifications'):
+            return False, f"Email notifications are disabled or no recipient email for `{tracking_number}`."
+        subject = f"Shipment Update: {tracking_number}"
+        plain_body = (
+            f"Tracking Number: {tracking_number}\n"
+            f"Status: {shipment['status']}\n"
+            f"Delivery Location: {shipment['delivery_location']}\n"
+            f"Checkpoints: {shipment.get('checkpoints', 'None')}\n"
+            f"Last Updated: {shipment['last_updated']}"
         )
-        await update.message.reply_text(response)
-        logger.info(f"Sent shipment details for {sanitized_tn} to user {user_id}")
-        console.print(f"[info]Sent shipment details for {sanitized_tn} to user {user_id}[/info]")
-        broadcast_update(sanitized_tn)
+        html_body = (
+            f"<h3>Shipment Update: {tracking_number}</h3>"
+            f"<p><strong>Status:</strong> {shipment['status']}</p>"
+            f"<p><strong>Delivery Location:</strong> {shipment['delivery_location']}</p>"
+            f"<p><strong>Checkpoints:</strong> {shipment.get('checkpoints', 'None')}</p>"
+            f"<p><strong>Last Updated:</strong> {shipment['last_updated']}</p>"
+        )
+        success = send_email_notification(shipment['recipient_email'], subject, plain_body, html_body)
+        if success:
+            logger.info(f"Enqueued manual email notification for {tracking_number}")
+            console.print(f"[info]Enqueued manual email notification for {tracking_number}[/info]")
+            return True, f"Email notification enqueued for `{tracking_number}`."
+        else:
+            logger.error(f"Failed to enqueue manual email notification for {tracking_number}")
+            console.print(f"[error]Failed to enqueue manual email notification for {tracking_number}[/error]")
+            return False, f"Failed to enqueue email notification for `{tracking_number}`."
     except Exception as e:
-        logger.error(f"Error handling message for {sanitized_tn} by user {user_id}: {e}")
-        console.print(f"[error]Error handling message for {sanitized_tn} by user {user_id}: {e}[/error]")
-        await update.message.reply_text("An error occurred while fetching shipment details.")
+        logger.error(f"Error sending manual email for {tracking_number}: {e}")
+        console.print(f"[error]Error sending manual email for {tracking_number}: {e}[/error]")
+        return False, f"Error: {e}"
 
 def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
     """Send or update the dynamic admin menu."""
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     try:
         if not check_rate_limit(str(chat_id)):
             logger.warning(f"Rate limit exceeded for dynamic menu, chat {chat_id}")
             console.print(f"[warning]Rate limit exceeded for dynamic menu, chat {chat_id}[/warning]")
             return
-        bot = get_bot().bot
+        bot = get_bot()
         markup = InlineKeyboardMarkup(row_width=2)
         buttons = [
             InlineKeyboardButton("List Shipments", callback_data=f"list_{page}"),
@@ -417,7 +382,7 @@ def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int 
 def check_bot_status() -> bool:
     """Check if the Telegram bot is responsive."""
     try:
-        bot = get_bot().bot
+        bot = get_bot()
         bot.get_me()
         logger.info("Telegram bot is responsive")
         console.print("[info]Telegram bot is responsive[/info]")
@@ -552,7 +517,7 @@ def send_websocket_notification(tracking_number: str, data: Dict[str, Any]) -> b
     console.print(f"[error]Max retries exceeded for WebSocket notification for {tracking_number}[/error]")
     return False
 
-def enqueue_notification(tracking_number: str, notification_type: str, data: Dict[str, Any]) -> bool:
+def enqueue_notification(notification_data: Dict[str, Any]) -> bool:
     """Enqueue a notification in Redis."""
     if not redis_client:
         logger.error("Redis client not available for enqueuing notification")
@@ -560,18 +525,18 @@ def enqueue_notification(tracking_number: str, notification_type: str, data: Dic
         return False
     try:
         notification = {
-            "tracking_number": tracking_number,
-            "type": notification_type,
-            "data": data,
+            "tracking_number": notification_data["tracking_number"],
+            "type": notification_data["type"],
+            "data": notification_data["data"],
             "timestamp": datetime.utcnow().isoformat()
         }
         safe_redis_operation(redis_client.lpush, "notifications", json.dumps(notification))
-        logger.info(f"Enqueued {notification_type} notification for {tracking_number}")
-        console.print(f"[info]Enqueued {notification_type} notification for {tracking_number}[/info]")
+        logger.info(f"Enqueued {notification_data['type']} notification for {notification_data['tracking_number']}")
+        console.print(f"[info]Enqueued {notification_data['type']} notification for {notification_data['tracking_number']}[/info]")
         return True
     except Exception as e:
-        logger.error(f"Failed to enqueue {notification_type} notification for {tracking_number}: {e}")
-        console.print(f"[error]Failed to enqueue {notification_type} notification for {tracking_number}: {e}[/error]")
+        logger.error(f"Failed to enqueue {notification_data['type']} notification for {notification_data['tracking_number']}: {e}")
+        console.print(f"[error]Failed to enqueue {notification_data['type']} notification for {notification_data['tracking_number']}: {e}[/error]")
         return False
 
 def get_shipment_list(page: int = 1, per_page: int = 5) -> Tuple[List[str], int]:
