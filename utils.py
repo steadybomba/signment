@@ -5,6 +5,7 @@ import logging
 from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass
 from upstash_redis import Redis
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from rich.console import Console
 import smtplib
@@ -216,9 +217,27 @@ def safe_redis_operation(func, *args, **kwargs):
         console.print(f"[error]Redis operation failed: {e}[/error]")
         return None
 
+def cleanup_resources():
+    """Clean up resources (Redis, SMTP) on shutdown."""
+    global redis_client, _smtp_pool
+    try:
+        if redis_client:
+            redis_client.close()
+            logger.info("Closed Redis connection")
+            console.print("[info]Closed Redis connection[/info]")
+            redis_client = None
+        if _smtp_pool:
+            _smtp_pool.close_all()
+            logger.info("Closed all SMTP connections")
+            console.print("[info]Closed all SMTP connections[/info]")
+            _smtp_pool = None
+    except Exception as e:
+        logger.error(f"Error during resource cleanup: {e}")
+        console.print(f"[error]Error during resource cleanup: {e}[/error]")
+
 def generate_unique_id() -> str:
     """Generate a unique tracking ID."""
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     unique_id = str(uuid.uuid4()).replace("-", "")[:6].upper()
     return f"TRK{timestamp}{unique_id}"
 
@@ -228,10 +247,30 @@ def sanitize_tracking_number(tracking_number: str) -> Optional[str]:
         return None
     tracking_number = re.sub(r'[^a-zA-Z0-9]', '', tracking_number).strip().upper()
     if not tracking_number.startswith("TRK") or len(tracking_number) < 10 or len(tracking_number) > 50:
-        logger.warning(f"Invalid tracking number: {tracking_number}")
-        console.print(f"[warning]Invalid tracking number: {tracking_number}[/warning]")
+        logger.warning(f"Invalid tracking number format: {tracking_number}")
+        console.print(f"[warning]Invalid tracking number format: {tracking_number}[/warning]")
         return None
     return tracking_number
+
+def check_rate_limit(user_id: str) -> bool:
+    """Check if user has exceeded rate limit using Redis."""
+    if not redis_client:
+        return True
+    key = f"rate_limit:{user_id}"
+    try:
+        count = safe_redis_operation(redis_client.get, key)
+        count = int(count) if count else 0
+        if count >= RATE_LIMIT_MAX:
+            logger.warning(f"Rate limit exceeded for user {user_id}")
+            console.print(f"[warning]Rate limit exceeded for user {user_id}[/warning]")
+            return False
+        safe_redis_operation(redis_client.incr, key)
+        safe_redis_operation(redis_client.expire, key, RATE_LIMIT_WINDOW)
+        return True
+    except Exception as e:
+        logger.error(f"Rate limit check failed for {user_id}: {e}")
+        console.print(f"[error]Rate limit check failed for {user_id}: {e}[/error]")
+        return True  # Allow request if rate limiting fails
 
 def validate_email(email: Optional[str]) -> bool:
     """Validate an email address."""
@@ -261,8 +300,9 @@ def get_bot() -> Application:
         app = Application.builder().token(config.telegram_bot_token).build()
         app.add_handler(CommandHandler("start", start_command))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        logger.info("Telegram bot initialized")
-        console.print("[info]Telegram bot initialized[/info]")
+        app.add_handler(CommandHandler("myid", myid_command))
+        logger.info("Telegram bot initialized with handlers")
+        console.print("[info]Telegram bot initialized with handlers[/info]")
         return app
     except Exception as e:
         logger.error(f"Failed to initialize Telegram bot: {e}")
@@ -272,30 +312,52 @@ def get_bot() -> Application:
 async def start_command(update, context):
     """Handle /start command for Telegram bot."""
     try:
+        user_id = update.effective_user.id
+        if not check_rate_limit(str(user_id)):
+            await update.message.reply_text("Rate limit exceeded. Please try again later.")
+            return
         await update.message.reply_text("Welcome to Signment Tracking! Send a tracking number to get shipment details.")
-        logger.info("Processed /start command")
-        console.print("[info]Processed /start command[/info]")
+        logger.info(f"Processed /start command for user {user_id}")
+        console.print(f"[info]Processed /start command for user {user_id}[/info]")
     except Exception as e:
         logger.error(f"Error in start_command: {e}")
         console.print(f"[error]Error in start_command: {e}[/error]")
 
+async def myid_command(update, context):
+    """Handle /myid command to return user's Telegram ID."""
+    try:
+        user_id = update.effective_user.id
+        if not check_rate_limit(str(user_id)):
+            await update.message.reply_text("Rate limit exceeded. Please try again later.")
+            return
+        await update.message.reply_text(f"Your Telegram ID is: {user_id}")
+        logger.info(f"Processed /myid command for user {user_id}")
+        console.print(f"[info]Processed /myid command for user {user_id}[/info]")
+    except Exception as e:
+        logger.error(f"Error in myid_command: {e}")
+        console.print(f"[error]Error in myid_command: {e}[/error]")
+
 async def handle_message(update, context):
     """Handle text messages with tracking numbers."""
     from app import Shipment, db, geocode_locations, broadcast_update  # Import here to avoid circular imports
+    user_id = update.effective_user.id
+    if not check_rate_limit(str(user_id)):
+        await update.message.reply_text("Rate limit exceeded. Please try again later.")
+        return
     tracking_number = update.message.text.strip()
     sanitized_tn = sanitize_tracking_number(tracking_number)
     if not sanitized_tn:
         await update.message.reply_text("Invalid tracking number. Please provide a valid tracking number.")
-        logger.warning(f"Invalid tracking number: {tracking_number}")
-        console.print(f"[warning]Invalid tracking number: {tracking_number}[/warning]")
+        logger.warning(f"Invalid tracking number: {tracking_number} from user {user_id}")
+        console.print(f"[warning]Invalid tracking number: {tracking_number} from user {user_id}[/warning]")
         return
 
     try:
         shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
         if not shipment:
             await update.message.reply_text(f"No shipment found for tracking number {sanitized_tn}.")
-            logger.warning(f"Shipment not found: {sanitized_tn}")
-            console.print(f"[warning]Shipment not found: {sanitized_tn}[/warning]")
+            logger.warning(f"Shipment not found: {sanitized_tn} for user {user_id}")
+            console.print(f"[warning]Shipment not found: {sanitized_tn} for user {user_id}[/warning]")
             return
 
         checkpoints = shipment.checkpoints.split(';') if shipment.checkpoints else []
@@ -309,36 +371,39 @@ async def handle_message(update, context):
             f"Coordinates: {coords_list}"
         )
         await update.message.reply_text(response)
-        logger.info(f"Sent shipment details for {sanitized_tn}")
-        console.print(f"[info]Sent shipment details for {sanitized_tn}[/info]")
+        logger.info(f"Sent shipment details for {sanitized_tn} to user {user_id}")
+        console.print(f"[info]Sent shipment details for {sanitized_tn} to user {user_id}[/info]")
         broadcast_update(sanitized_tn)
     except Exception as e:
-        logger.error(f"Error handling message for {sanitized_tn}: {e}")
-        console.print(f"[error]Error handling message for {sanitized_tn}: {e}[/error]")
+        logger.error(f"Error handling message for {sanitized_tn} by user {user_id}: {e}")
+        console.print(f"[error]Error handling message for {sanitized_tn} by user {user_id}: {e}[/error]")
         await update.message.reply_text("An error occurred while fetching shipment details.")
 
 def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
     """Send or update the dynamic admin menu."""
-    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    bot = get_bot().bot
-    markup = InlineKeyboardMarkup(row_width=2)
-    buttons = [
-        InlineKeyboardButton("List Shipments", callback_data=f"list_{page}"),
-        InlineKeyboardButton("Generate ID", callback_data="generate_id"),
-        InlineKeyboardButton("Add Shipment", callback_data="add"),
-        InlineKeyboardButton("Delete Shipment", callback_data=f"delete_menu_{page}"),
-        InlineKeyboardButton("Toggle Email", callback_data=f"toggle_email_menu_{page}"),
-        InlineKeyboardButton("Bulk Actions", callback_data="bulk_action"),
-        InlineKeyboardButton("Stats", callback_data="stats"),
-        InlineKeyboardButton("Settings", callback_data="settings"),
-        InlineKeyboardButton("Help", callback_data="help")
-    ]
-    markup.add(*buttons)
-    if page > 1:
-        markup.add(InlineKeyboardButton("Previous", callback_data=f"menu_page_{page-1}"))
-    markup.add(InlineKeyboardButton("Next", callback_data=f"menu_page_{page+1}"))
-    text = f"*Admin Menu* (Page {page})"
     try:
+        if not check_rate_limit(str(chat_id)):
+            logger.warning(f"Rate limit exceeded for dynamic menu, chat {chat_id}")
+            console.print(f"[warning]Rate limit exceeded for dynamic menu, chat {chat_id}[/warning]")
+            return
+        bot = get_bot().bot
+        markup = InlineKeyboardMarkup(row_width=2)
+        buttons = [
+            InlineKeyboardButton("List Shipments", callback_data=f"list_{page}"),
+            InlineKeyboardButton("Generate ID", callback_data="generate_id"),
+            InlineKeyboardButton("Add Shipment", callback_data="add"),
+            InlineKeyboardButton("Delete Shipment", callback_data=f"delete_menu_{page}"),
+            InlineKeyboardButton("Toggle Email", callback_data=f"toggle_email_menu_{page}"),
+            InlineKeyboardButton("Bulk Actions", callback_data="bulk_action"),
+            InlineKeyboardButton("Stats", callback_data="stats"),
+            InlineKeyboardButton("Settings", callback_data="settings"),
+            InlineKeyboardButton("Help", callback_data="help")
+        ]
+        markup.add(*buttons)
+        if page > 1:
+            markup.add(InlineKeyboardButton("Previous", callback_data=f"menu_page_{page-1}"))
+        markup.add(InlineKeyboardButton("Next", callback_data=f"menu_page_{page+1}"))
+        text = f"*Admin Menu* (Page {page})"
         if message_id:
             bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
         else:
@@ -346,8 +411,8 @@ def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int 
         logger.info(f"Sent dynamic menu to chat {chat_id}, page {page}")
         console.print(f"[info]Sent dynamic menu to chat {chat_id}, page {page}[/info]")
     except Exception as e:
-        logger.error(f"Failed to send dynamic menu: {e}")
-        console.print(f"[error]Failed to send dynamic menu: {e}[/error]")
+        logger.error(f"Failed to send dynamic menu to chat {chat_id}: {e}")
+        console.print(f"[error]Failed to send dynamic menu to chat {chat_id}: {e}[/error]")
 
 def check_bot_status() -> bool:
     """Check if the Telegram bot is responsive."""
