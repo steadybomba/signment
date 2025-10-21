@@ -2,6 +2,7 @@ import os
 import re
 import json
 import logging
+import time
 from datetime import datetime
 from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -1241,9 +1242,31 @@ def set_webhook():
         bot_logger.error(f"Failed to set webhook: {e}")
         console.print(f"[error]Failed to set webhook: {e}[/error]")
 
+def keep_alive():
+    """Keep the process alive with a heartbeat loop."""
+    bot_logger.info("Starting keep-alive loop")
+    console.print("[info]Starting keep-alive loop[/info]")
+    while True:
+        try:
+            # Periodically check webhook status (every 5 minutes)
+            webhook_info = bot.get_webhook_info()
+            if webhook_info.url != config.webhook_url:
+                bot_logger.warning("Webhook URL mismatch, resetting...")
+                console.print("[warning]Webhook URL mismatch, resetting...[/warning]")
+                set_webhook()
+            else:
+                bot_logger.info("Webhook status: OK")
+                console.print("[info]Webhook status: OK[/info]")
+            time.sleep(300)  # Sleep for 5 minutes
+        except Exception as e:
+            bot_logger.error(f"Error in keep-alive loop: {e}")
+            console.print(f"[error]Error in keep-alive loop: {e}[/error]")
+            time.sleep(60)  # Retry after 1 minute on error
+
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
         set_webhook()
         bot_logger.info("Bot started with webhook mode")
-        # Do not start polling, as webhook is used
+        console.print("[info]Bot started with webhook mode[/info]")
+        keep_alive()  # Start the keep-alive loop
