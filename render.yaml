@@ -1,21 +1,27 @@
 services:
   - type: web
-    name: sipment-web
+    name: web
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -k eventlet -w 4 app:app
+    startCommand: gunicorn -w 1 -k gthread --threads 2 app:app
     envVars:
-      - key: FLASK_ENV
-        value: production
-      - key: SECRET_KEY
-        sync: false
       - key: SQLALCHEMY_DATABASE_URI
         sync: false
       - key: REDIS_URL
         sync: false
-      - key: TELEGRAM_BOT_TOKEN
+      - key: TELEGRAM_TOKEN
         sync: false
+      - key: WEBHOOK_URL
+        value: https://signment-9a96.onrender.com/telegram/webhook
+      - key: WEBSOCKET_SERVER
+        value: https://signment-9a96.onrender.com
+      - key: ALLOWED_ADMINS
+        sync: false
+      - key: VALID_STATUSES
+        value: Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed
+      - key: ROUTE_TEMPLATES
+        value: '{"Lagos, NG": ["Lagos, NG"]}'
       - key: SMTP_HOST
         value: smtp.gmail.com
       - key: SMTP_PORT
@@ -25,33 +31,50 @@ services:
       - key: SMTP_PASS
         sync: false
       - key: SMTP_FROM
-        sync: false
-      - key: RECAPTCHA_SECRET_KEY
-        sync: false
-      - key: RECAPTCHA_SITE_KEY
-        sync: false
-      - key: GEOCODING_API_KEY
-        sync: false
-      - key: TAWK_PROPERTY_ID
-        sync: false
-      - key: TAWK_WIDGET_ID
-        sync: false
-      - key: ADMIN_IDS
-        sync: false
-      - key: WEBSOCKET_SERVER
-        value: https://signment.onrender.com
-      - key: GLOBAL_WEBHOOK_URL
-        sync: false
+        value: no-reply@example.com
+      - key: PORT
+        value: 10000
   - type: worker
-    name: sipment-bot
+    name: bot
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
-      - key: TELEGRAM_BOT_TOKEN
+      - key: SQLALCHEMY_DATABASE_URI
         sync: false
       - key: REDIS_URL
         sync: false
-      - key: ADMIN_IDS
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        value: https://signment-9a96.onrender.com/telegram/webhook
+      - key: WEBSOCKET_SERVER
+        value: https://signment-9a96.onrender.com
+      - key: ALLOWED_ADMINS
+        sync: false
+      - key: VALID_STATUSES
+        value: Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed
+      - key: ROUTE_TEMPLATES
+        value: '{"Lagos, NG": ["Lagos, NG"]}'
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        value: no-reply@example.com
+  - type: worker
+    name: worker
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker.py
+    envVars:
+      - key: REDIS_URL
+        sync: false
+      - key: TELEGRAM_TOKEN
         sync: false
