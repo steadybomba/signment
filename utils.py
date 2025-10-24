@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass
 from upstash_redis import Redis
 from telebot import TeleBot
+from telebot.types import Update  # Critical for webhook
 from rich.console import Console
 import smtplib
 from email.mime.text import MIMEText
@@ -16,7 +17,6 @@ import eventlet
 from threading import Lock
 from time import time
 import requests
-from flask_socketio import emit
 import uuid
 
 # Logging setup
@@ -101,7 +101,6 @@ class SMTPConnectionPool:
         self.connection_timestamps = {}
 
     def get_connection(self) -> smtplib.SMTP:
-        """Retrieve or create an SMTP connection."""
         with self.lock:
             try:
                 while self.pool:
@@ -135,7 +134,6 @@ class SMTPConnectionPool:
                 return self.get_connection()
 
     def release_connection(self, conn: smtplib.SMTP):
-        """Release an SMTP connection back to the pool."""
         with self.lock:
             if self._is_connection_alive(conn) and len(self.pool) < self.max_connections:
                 self.connection_timestamps[id(conn)] = time()
@@ -147,14 +145,12 @@ class SMTPConnectionPool:
                     pass
 
     def _is_connection_alive(self, conn: smtplib.SMTP) -> bool:
-        """Check if an SMTP connection is still alive."""
         try:
             return conn.noop()[0] == 250
         except smtplib.SMTPException:
             return False
 
     def close_all(self):
-        """Close all connections in the pool."""
         with self.lock:
             while self.pool:
                 try:
@@ -167,7 +163,6 @@ class SMTPConnectionPool:
 # Global SMTP connection pool
 _smtp_pool = None
 def get_smtp_pool() -> SMTPConnectionPool:
-    """Retrieve or initialize the global SMTP connection pool."""
     global _smtp_pool
     if _smtp_pool is None:
         config = get_config()
@@ -197,14 +192,11 @@ except Exception as e:
     redis_client = None
 
 # Constants
-RATE_LIMIT_WINDOW = 60  # 60 seconds
-RATE_LIMIT_MAX = 30     # Max requests per window
-
-# In-memory cache for route templates
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX = 30
 route_templates_cache = None
 
 def safe_redis_operation(func, *args, **kwargs):
-    """Safely execute a Redis operation with error handling."""
     if not redis_client:
         logger.warning("Redis client not available")
         console.print("[warning]Redis client not available[/warning]")
@@ -217,7 +209,6 @@ def safe_redis_operation(func, *args, **kwargs):
         return None
 
 def cleanup_resources():
-    """Clean up resources (Redis, SMTP) on shutdown."""
     global redis_client, _smtp_pool
     try:
         if redis_client:
@@ -235,13 +226,11 @@ def cleanup_resources():
         console.print(f"[error]Error during resource cleanup: {e}[/error]")
 
 def generate_unique_id() -> str:
-    """Generate a unique tracking ID."""
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     unique_id = str(uuid.uuid4()).replace("-", "")[:6].upper()
     return f"TRK{timestamp}{unique_id}"
 
 def sanitize_tracking_number(tracking_number: str) -> Optional[str]:
-    """Sanitize and validate a tracking number."""
     if not tracking_number:
         return None
     tracking_number = re.sub(r'[^a-zA-Z0-9]', '', tracking_number).strip().upper()
@@ -252,7 +241,6 @@ def sanitize_tracking_number(tracking_number: str) -> Optional[str]:
     return tracking_number
 
 def check_rate_limit(user_id: str) -> bool:
-    """Check if user has exceeded rate limit using Redis."""
     if not redis_client:
         return True
     key = f"rate_limit:{user_id}"
@@ -269,31 +257,26 @@ def check_rate_limit(user_id: str) -> bool:
     except Exception as e:
         logger.error(f"Rate limit check failed for {user_id}: {e}")
         console.print(f"[error]Rate limit check failed for {user_id}: {e}[/error]")
-        return True  # Allow request if rate limiting fails
+        return True
 
 def validate_email(email: Optional[str]) -> bool:
-    """Validate an email address."""
     if not email:
         return True
     return validators.email(email)
 
 def validate_location(location: Optional[str]) -> bool:
-    """Validate a location string."""
     return bool(location and isinstance(location, str) and len(location) <= 100)
 
 def validate_webhook_url(url: Optional[str]) -> bool:
-    """Validate a webhook URL."""
     if not url:
         return True
     return validators.url(url)
 
 def is_admin(user_id: int) -> bool:
-    """Check if a user is an admin."""
     config = get_config()
     return user_id in config.allowed_admins
 
 def get_bot() -> TeleBot:
-    """Initialize and return the Telegram bot."""
     try:
         config = get_config()
         bot = TeleBot(config.telegram_bot_token)
@@ -306,8 +289,7 @@ def get_bot() -> TeleBot:
         raise
 
 def send_manual_email(tracking_number: str) -> Tuple[bool, str]:
-    """Send a manual email notification for a shipment."""
-    from app import Shipment  # Import here to avoid circular imports
+    from app import Shipment
     try:
         shipment = get_shipment_details(tracking_number)
         if not shipment:
@@ -343,57 +325,7 @@ def send_manual_email(tracking_number: str) -> Tuple[bool, str]:
         console.print(f"[error]Error sending manual email for {tracking_number}: {e}[/error]")
         return False, f"Error: {e}"
 
-def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
-    """Send or update the dynamic admin menu."""
-    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    try:
-        if not check_rate_limit(str(chat_id)):
-            logger.warning(f"Rate limit exceeded for dynamic menu, chat {chat_id}")
-            console.print(f"[warning]Rate limit exceeded for dynamic menu, chat {chat_id}[/warning]")
-            return
-        bot = get_bot()
-        markup = InlineKeyboardMarkup(row_width=2)
-        buttons = [
-            InlineKeyboardButton("List Shipments", callback_data=f"list_{page}"),
-            InlineKeyboardButton("Generate ID", callback_data="generate_id"),
-            InlineKeyboardButton("Add Shipment", callback_data="add"),
-            InlineKeyboardButton("Delete Shipment", callback_data=f"delete_menu_{page}"),
-            InlineKeyboardButton("Toggle Email", callback_data=f"toggle_email_menu_{page}"),
-            InlineKeyboardButton("Bulk Actions", callback_data="bulk_action"),
-            InlineKeyboardButton("Stats", callback_data="stats"),
-            InlineKeyboardButton("Settings", callback_data="settings"),
-            InlineKeyboardButton("Help", callback_data="help")
-        ]
-        markup.add(*buttons)
-        if page > 1:
-            markup.add(InlineKeyboardButton("Previous", callback_data=f"menu_page_{page-1}"))
-        markup.add(InlineKeyboardButton("Next", callback_data=f"menu_page_{page+1}"))
-        text = f"*Admin Menu* (Page {page})"
-        if message_id:
-            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
-        else:
-            bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
-        logger.info(f"Sent dynamic menu to chat {chat_id}, page {page}")
-        console.print(f"[info]Sent dynamic menu to chat {chat_id}, page {page}[/info]")
-    except Exception as e:
-        logger.error(f"Failed to send dynamic menu to chat {chat_id}: {e}")
-        console.print(f"[error]Failed to send dynamic menu to chat {chat_id}: {e}[/error]")
-
-def check_bot_status() -> bool:
-    """Check if the Telegram bot is responsive."""
-    try:
-        bot = get_bot()
-        bot.get_me()
-        logger.info("Telegram bot is responsive")
-        console.print("[info]Telegram bot is responsive[/info]")
-        return True
-    except Exception as e:
-        logger.error(f"Telegram bot check failed: {e}")
-        console.print(f"[error]Telegram bot check failed: {e}[/error]")
-        return False
-
 def send_email_notification(recipient_email: str, subject: str, plain_body: str, html_body: Optional[str] = None) -> bool:
-    """Send an email notification using SMTP with plain text and optional HTML content."""
     config = get_config()
     smtp_pool = get_smtp_pool()
     max_retries = 3
@@ -415,15 +347,9 @@ def send_email_notification(recipient_email: str, subject: str, plain_body: str,
             logger.info(f"Sent email to {recipient_email}")
             console.print(f"[info]Sent email to {recipient_email}[/info]")
             return True
-        except smtplib.SMTPException as e:
-            logger.error(f"SMTP error sending email to {recipient_email}: {e}")
-            console.print(f"[error]SMTP error sending email to {recipient_email}: {e}[/error]")
-            if conn:
-                smtp_pool.release_connection(conn)
-            return False
         except Exception as e:
-            logger.error(f"Unexpected error sending email to {recipient_email}: {e}")
-            console.print(f"[error]Unexpected error sending email to {recipient_email}: {e}[/error]")
+            logger.error(f"Error sending email to {recipient_email}: {e}")
+            console.print(f"[error]Error sending email to {recipient_email}: {e}[/error]")
             if conn:
                 smtp_pool.release_connection(conn)
             return False
@@ -432,96 +358,49 @@ def send_email_notification(recipient_email: str, subject: str, plain_body: str,
         with eventlet.Timeout(10, False):
             if send_email():
                 return True
-            logger.warning(f"Email attempt {attempt + 1} failed for {recipient_email}")
-            console.print(f"[warning]Email attempt {attempt + 1} failed for {recipient_email}[/warning]")
             if attempt < max_retries - 1:
                 eventlet.sleep(retry_delay * (2 ** attempt))
-    logger.error(f"Max retries exceeded for email to {recipient_email}")
-    console.print(f"[error]Max retries exceeded for email to {recipient_email}[/error]")
     return False
 
 def send_webhook_notification(webhook_url: str, tracking_number: str, data: Dict[str, Any]) -> bool:
-    """Send a webhook notification with shipment data."""
     max_retries = 3
     retry_delay = 5
-
-    def send_webhook() -> bool:
-        try:
-            headers = {"Content-Type": "application/json"}
-            response = requests.post(webhook_url, json=data, headers=headers, timeout=10)
-            response.raise_for_status()
-            logger.info(f"Sent webhook notification to {webhook_url} for {tracking_number}")
-            console.print(f"[info]Sent webhook notification to {webhook_url} for {tracking_number}[/info]")
-            return True
-        except requests.RequestException as e:
-            logger.error(f"Webhook request failed for {tracking_number} to {webhook_url}: {e}")
-            console.print(f"[error]Webhook request failed for {tracking_number} to {webhook_url}: {e}[/error]")
-            return False
-
     for attempt in range(max_retries):
-        with eventlet.Timeout(10, False):
-            if send_webhook():
-                return True
-            logger.warning(f"Webhook attempt {attempt + 1} failed for {tracking_number} to {webhook_url}")
-            console.print(f"[warning]Webhook attempt {attempt + 1} failed for {tracking_number} to {webhook_url}[/warning]")
+        try:
+            response = requests.post(webhook_url, json=data, headers={"Content-Type": "application/json"}, timeout=10)
+            response.raise_for_status()
+            logger.info(f"Webhook sent to {webhook_url}")
+            console.print(f"[info]Webhook sent to {webhook_url}[/info]")
+            return True
+        except Exception as e:
+            logger.error(f"Webhook failed: {e}")
+            console.print(f"[error]Webhook failed: {e}[/error]")
             if attempt < max_retries - 1:
                 eventlet.sleep(retry_delay * (2 ** attempt))
-    logger.error(f"Max retries exceeded for webhook to {webhook_url} for {tracking_number}")
-    console.print(f"[error]Max retries exceeded for webhook to {webhook_url} for {tracking_number}[/error]")
     return False
 
 def send_websocket_notification(tracking_number: str, data: Dict[str, Any]) -> bool:
-    """Send a WebSocket notification with shipment data."""
     config = get_config()
-    max_retries = 3
-    retry_delay = 5
-
-    def send_websocket() -> bool:
+    try:
+        from flask_socketio import emit
+        emit('shipment_update', data, namespace='/', broadcast=True)
+        logger.info(f"WebSocket broadcast for {tracking_number}")
+        console.print(f"[info]WebSocket broadcast for {tracking_number}[/info]")
+        return True
+    except Exception as e:
+        logger.debug(f"Direct emit failed, falling back to HTTP: {e}")
         try:
-            # Try direct emission if running in the same process
-            try:
-                emit('shipment_update', data, namespace='/', broadcast=True)
-                logger.info(f"Sent WebSocket notification directly for {tracking_number}")
-                console.print(f"[info]Sent WebSocket notification directly for {tracking_number}[/info]")
-                return True
-            except Exception as e:
-                logger.debug(f"Direct WebSocket emission failed: {e}, falling back to HTTP")
-                console.print(f"[debug]Direct WebSocket emission failed: {e}, falling back to HTTP[/debug]")
-
-            # Fallback to HTTP POST to WEBSOCKET_SERVER/notify
             notify_url = f"{config.websocket_server}/notify"
-            headers = {"Content-Type": "application/json"}
-            response = requests.post(notify_url, json=data, headers=headers, timeout=10)
+            response = requests.post(notify_url, json=data, timeout=10)
             response.raise_for_status()
-            logger.info(f"Sent WebSocket notification to {notify_url} for {tracking_number}")
-            console.print(f"[info]Sent WebSocket notification to {notify_url} for {tracking_number}[/info]")
             return True
-        except requests.RequestException as e:
-            logger.error(f"WebSocket notification request failed for {tracking_number} to {notify_url}: {e}")
-            console.print(f"[error]WebSocket notification request failed for {tracking_number} to {notify_url}: {e}[/error]")
+        except Exception as e2:
+            logger.error(f"WebSocket fallback failed: {e2}")
+            console.print(f"[error]WebSocket fallback failed: {e2}[/error]")
             return False
-        except Exception as e:
-            logger.error(f"Unexpected error sending WebSocket notification for {tracking_number}: {e}")
-            console.print(f"[error]Unexpected error sending WebSocket notification for {tracking_number}: {e}[/error]")
-            return False
-
-    for attempt in range(max_retries):
-        with eventlet.Timeout(10, False):
-            if send_websocket():
-                return True
-            logger.warning(f"WebSocket notification attempt {attempt + 1} failed for {tracking_number}")
-            console.print(f"[warning]WebSocket notification attempt {attempt + 1} failed for {tracking_number}[/warning]")
-            if attempt < max_retries - 1:
-                eventlet.sleep(retry_delay * (2 ** attempt))
-    logger.error(f"Max retries exceeded for WebSocket notification for {tracking_number}")
-    console.print(f"[error]Max retries exceeded for WebSocket notification for {tracking_number}[/error]")
-    return False
 
 def enqueue_notification(notification_data: Dict[str, Any]) -> bool:
-    """Enqueue a notification in Redis."""
     if not redis_client:
-        logger.error("Redis client not available for enqueuing notification")
-        console.print("[error]Redis client not available for notification[/error]")
         return False
     try:
         notification = {
@@ -531,17 +410,15 @@ def enqueue_notification(notification_data: Dict[str, Any]) -> bool:
             "timestamp": datetime.utcnow().isoformat()
         }
         safe_redis_operation(redis_client.lpush, "notifications", json.dumps(notification))
-        logger.info(f"Enqueued {notification_data['type']} notification for {notification_data['tracking_number']}")
-        console.print(f"[info]Enqueued {notification_data['type']} notification for {notification_data['tracking_number']}[/info]")
+        logger.info(f"Enqueued {notification_data['type']} notification")
         return True
     except Exception as e:
-        logger.error(f"Failed to enqueue {notification_data['type']} notification for {notification_data['tracking_number']}: {e}")
-        console.print(f"[error]Failed to enqueue {notification_data['type']} notification for {notification_data['tracking_number']}: {e}[/error]")
+        logger.error(f"Failed to enqueue notification: {e}")
         return False
 
-def get_shipment_list(page: int = 1, per_page: int = 5) -> Tuple[List[str], int]:
+def get_shipment_list(page: int = 1, per_page: int = 8) -> Tuple[List[str], int]:
     """Retrieve a paginated list of shipment tracking numbers."""
-    from app import Shipment, db  # Import here to avoid circular imports
+    from app import Shipment
     try:
         shipments = Shipment.query.order_by(Shipment.created_at.desc()).offset((page-1)*per_page).limit(per_page).all()
         total = Shipment.query.count()
@@ -551,320 +428,301 @@ def get_shipment_list(page: int = 1, per_page: int = 5) -> Tuple[List[str], int]
         console.print(f"[error]Error retrieving shipment list: {e}[/error]")
         return [], 0
 
-def search_shipments(query: str, page: int = 1, per_page: int = 5) -> Tuple[List[str], int]:
-    """Search shipments by tracking number, status, or location."""
-    from app import Shipment  # Import here to avoid circular imports
-    try:
-        query = query.lower()
-        shipments = Shipment.query.filter(
-            (Shipment.tracking_number.ilike(f"%{query}%")) |
-            (Shipment.status.ilike(f"%{query}%")) |
-            (Shipment.delivery_location.ilike(f"%{query}%")) |
-            (Shipment.origin_location.ilike(f"%{query}%"))
-        ).order_by(Shipment.created_at.desc()).offset((page-1)*per_page).limit(per_page).all()
-        total = Shipment.query.filter(
-            (Shipment.tracking_number.ilike(f"%{query}%")) |
-            (Shipment.status.ilike(f"%{query}%")) |
-            (Shipment.delivery_location.ilike(f"%{query}%")) |
-            (Shipment.origin_location.ilike(f"%{query}%"))
-        ).count()
-        return [s.tracking_number for s in shipments], total
-    except Exception as e:
-        logger.error(f"Error searching shipments: {e}")
-        console.print(f"[error]Error searching shipments: {e}[/error]")
-        return [], 0
+# ──────────────────────────────────────────────────────────────
+#  TELEGRAM ADMIN COMMAND HANDLERS
+# ──────────────────────────────────────────────────────────────
 
-def get_shipment_details(tracking_number: str) -> Optional[Dict[str, Any]]:
-    """Retrieve details for a specific shipment."""
-    from app import Shipment  # Import here to avoid circular imports
-    sanitized_tn = sanitize_tracking_number(tracking_number)
-    if not sanitized_tn:
-        logger.warning(f"Invalid tracking number for details: {tracking_number}")
-        console.print(f"[warning]Invalid tracking number for details: {tracking_number}[/warning]")
-        return None
-    try:
-        cached = safe_redis_operation(redis_client.get, f"shipment:{sanitized_tn}") if redis_client else None
-        if cached:
-            logger.info(f"Cache hit for shipment {sanitized_tn}")
-            console.print(f"[info]Cache hit for shipment {sanitized_tn}[/info]")
-            return json.loads(cached)
-        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
+def register_bot_handlers(bot: TeleBot):
+    """Register all admin-only Telegram bot commands."""
+    from app import Shipment, db, broadcast_update, invalidate_cache, simulate_tracking
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    import re
+
+    # ------------------------------------------------------------------
+    #  /start /help
+    # ------------------------------------------------------------------
+    @bot.message_handler(commands=['start', 'help'])
+    def cmd_help(message):
+        if not is_admin(message.from_user.id):
+            bot.reply_to(message, "Unauthorized.")
+            return
+        txt = (
+            "*Shipment Admin Bot*\n\n"
+            "/list `[page]` – List shipments\n"
+            "/status `<TRK…>` – View details\n"
+            "/pause `<TRK…>` – Pause simulation\n"
+            "/resume `<TRK…>` – Resume simulation\n"
+            "/speed `<TRK…>` `<0.1-10.0>` – Set speed\n"
+            "/delete `<TRK…>` – Delete shipment\n"
+            "/stats – System stats\n"
+            "/menu – Interactive admin menu\n"
+            "/help – Show this message"
+        )
+        bot.reply_to(message, txt, parse_mode='Markdown')
+        logger.info(f"/help from user {message.from_user.id}")
+
+    # ------------------------------------------------------------------
+    #  /list [page]
+    # ------------------------------------------------------------------
+    @bot.message_handler(commands=['list'])
+    def cmd_list(message):
+        if not is_admin(message.from_user.id):
+            bot.reply_to(message, "Unauthorized.")
+            return
+        page = 1
+        args = message.text.split()
+        if len(args) > 1 and args[1].isdigit():
+            page = max(1, int(args[1]))
+        tracking_numbers, total = get_shipment_list(page=page, per_page=8)
+        if not tracking_numbers:
+            bot.reply_to(message, "No shipments found.")
+            return
+        lines = [f"*Page {page} / {((total - 1) // 8) + 1}*"]
+        for tn in tracking_numbers:
+            sh = get_shipment_details(tn)
+            paused = " (paused)" if redis_client and redis_client.hget("paused_simulations", tn) == "true" else ""
+            lines.append(f"• `{tn}` – {sh['status']}{paused}")
+        if page * 8 < total:
+            lines.append(f"\nUse `/list {page + 1}` for next page.")
+        bot.reply_to(message, "\n".join(lines), parse_mode='Markdown')
+        logger.info(f"/list page {page} by {message.from_user.id}")
+
+    # ------------------------------------------------------------------
+    #  /status <TRK…>
+    # ------------------------------------------------------------------
+    @bot.message_handler(commands=['status'])
+    def cmd_status(message):
+        if not is_admin(message.from_user.id):
+            bot.reply_to(message, "Unauthorized.")
+            return
+        try:
+            tn = re.split(r'\s+', message.text, 1)[1].strip()
+        except IndexError:
+            bot.reply_to(message, "Usage: /status `<TRK…>`")
+            return
+        sanitized = sanitize_tracking_number(tn)
+        if not sanitized:
+            bot.reply_to(message, "Invalid tracking number.")
+            return
+        details = get_shipment_details(sanitized)
+        if not details:
+            bot.reply_to(message, f"`{sanitized}` not found.")
+            return
+        paused = " (paused)" if redis_client and redis_client.hget("paused_simulations", sanitized) == "true" else ""
+        speed = float(redis_client.hget("sim_speed_multipliers", sanitized) or 1.0) if redis_client else 1.0
+        chk = (details.get('checkpoints') or '').split(';')
+        last5 = "\n".join([f"• {c}" for c in chk[-5:]]) if chk else "_none_"
+        txt = (
+            f"*Shipment {sanitized}*{paused}\n"
+            f"Status: `{details['status']}`\n"
+            f"Speed: `{speed:.1f}x`\n"
+            f"Delivery: `{details['delivery_location']}`\n"
+            f"Email: `{details.get('recipient_email') or '-'}`\n"
+            f"Last 5 checkpoints:\n{last5}"
+        )
+        bot.reply_to(message, txt, parse_mode='Markdown')
+        logger.info(f"/status {sanitized} by {message.from_user.id}")
+
+    # ------------------------------------------------------------------
+    #  /pause <TRK…>
+    # ------------------------------------------------------------------
+    @bot.message_handler(commands=['pause'])
+    def cmd_pause(message):
+        if not is_admin(message.from_user.id):
+            bot.reply_to(message, "Unauthorized.")
+           毕
+            return
+        try:
+            tn = re.split(r'\s+', message.text, 1)[1].strip()
+        except IndexError:
+            bot.reply_to(message, "Usage: /pause `<TRK…>`")
+            return
+        sanitized = sanitize_tracking_number(tn)
+        if not sanitized or not redis_client:
+            bot.reply_to(message, "Invalid tracking number or Redis unavailable.")
+            return
+        redis_client.hset("paused_simulations", sanitized, "true")
+        invalidate_cache(sanitized)
+        broadcast_update(sanitized)
+        bot.reply_to(message, f"`{sanitized}` paused.")
+        logger.info(f"/pause {sanitized} by {message.from_user.id}")
+
+    # ------------------------------------------------------------------
+    #  /resume <TRK…>
+    # ------------------------------------------------------------------
+    @bot.message_handler(commands=['resume'])
+    def cmd_resume(message):
+        if not is_admin(message.from_user.id):
+            bot.reply_to(message, "Unauthorized.")
+            return
+        try:
+            tn = re.split(r'\s+', message.text, 1)[1].strip()
+        except IndexError:
+            bot.reply_to(message, "Usage: /resume `<TRK…>`")
+            return
+        sanitized = sanitize_tracking_number(tn)
+        if not sanitized or not redis_client:
+            bot.reply_to(message, "Invalid tracking number or Redis unavailable.")
+            return
+        redis_client.hdel("paused_simulations", sanitized)
+        invalidate_cache(sanitized)
+        eventlet.spawn(simulate_tracking, sanitized)
+        bot.reply_to(message, f"`{sanitized}` resumed.")
+        logger.info(f"/resume {sanitized} by {message.from_user.id}")
+
+    # ------------------------------------------------------------------
+    #  /speed <TRK…> <multiplier>
+    # ------------------------------------------------------------------
+    @bot.message_handler(commands=['speed'])
+    def cmd_speed(message):
+        if not is_admin(message.from_user.id):
+            bot.reply_to(message, "Unauthorized.")
+            return
+        parts = message.text.split()
+        if len(parts) < 3:
+            bot.reply_to(message, "Usage: /speed `<TRK…>` `<0.1-10.0>`")
+            return
+        tn, mult = parts[1], parts[2]
+        sanitized = sanitize_tracking_number(tn)
+        if not sanitized or not redis_client:
+            bot.reply_to(message, "Invalid tracking number or Redis unavailable.")
+            return
+        try:
+            speed = float(mult)
+            if not 0.1 <= speed <= 10.0:
+                raise ValueError
+        except ValueError:
+            bot.reply_to(message, "Speed must be between 0.1 and 10.0")
+            return
+        redis_client.hset("sim_speed_multipliers", sanitized, str(speed))
+        invalidate_cache(sanitized)
+        broadcast_update(sanitized)
+        bot.reply_to(message, f"`{sanitized}` speed → `{speed:.1f}x`")
+        logger.info(f"/speed {sanitized} → {speed} by {message.from_user.id}")
+
+    # ------------------------------------------------------------------
+    #  /delete <TRK…>
+    # ------------------------------------------------------------------
+    @bot.message_handler(commands=['delete'])
+    def cmd_delete(message):
+        if not is_admin(message.from_user.id):
+            bot.reply_to(message, "Unauthorized.")
+            return
+        try:
+            tn = re.split(r'\s+', message.text, 1)[1].strip()
+        except IndexError:
+            bot.reply_to(message, "Usage: /delete `<TRK…>`")
+            return
+        sanitized = sanitize_tracking_number(tn)
+        if not sanitized:
+            bot.reply_to(message, "Invalid tracking number.")
+            return
+        shipment = Shipment.query.filter_by(tracking_number=sanitized).first()
         if not shipment:
-            logger.warning(f"Shipment not found: {sanitized_tn}")
-            console.print(f"[warning]Shipment not found: {sanitized_tn}[/warning]")
-            return None
-        data = {
-            "tracking_number": shipment.tracking_number,
-            "status": shipment.status,
-            "checkpoints": shipment.checkpoints or "",
-            "delivery_location": shipment.delivery_location,
-            "recipient_email": shipment.recipient_email,
-            "origin_location": shipment.origin_location,
-            "webhook_url": shipment.webhook_url,
-            "email_notifications": shipment.email_notifications,
-            "last_updated": shipment.last_updated.isoformat(),
-            "created_at": shipment.created_at.isoformat()
-        }
+            bot.reply_to(message, f"`{sanitized}` not found.")
+            return
+        db.session.delete(shipment)
+        db.session.commit()
+        invalidate_cache(sanitized)
         if redis_client:
-            safe_redis_operation(redis_client.set, f"shipment:{sanitized_tn}", json.dumps(data), ex=3600)
-        logger.info(f"Retrieved shipment {sanitized_tn} from database")
-        console.print(f"[info]Retrieved shipment {sanitized_tn} from database[/info]")
-        return data
-    except Exception as e:
-        logger.error(f"Failed to retrieve shipment details for {sanitized_tn}: {e}")
-        console.print(f"[error]Failed to retrieve shipment details for {sanitized_tn}: {e}[/error]")
-        return None
+            redis_client.hdel("paused_simulations", sanitized)
+            redis_client.hdel("sim_speed_multipliers", sanitized)
+        bot.reply_to(message, f"`{sanitized}` deleted.")
+        logger.info(f"/delete {sanitized} by {message.from_user.id}")
 
-def save_shipment(
-    tracking_number: str,
-    status: str,
-    checkpoints: str,
-    delivery_location: str,
-    recipient_email: Optional[str] = None,
-    origin_location: Optional[str] = None,
-    webhook_url: Optional[str] = None
-) -> bool:
-    """Save or update a shipment in the database."""
-    from app import Shipment, db  # Import here to avoid circular imports
-    sanitized_tn = sanitize_tracking_number(tracking_number)
-    if not sanitized_tn:
-        logger.warning(f"Invalid tracking number: {tracking_number}")
-        console.print(f"[warning]Invalid tracking number: {tracking_number}[/warning]")
-        raise ValueError("Invalid tracking number")
-    if not validate_location(delivery_location):
-        logger.warning(f"Invalid delivery location: {delivery_location}")
-        console.print(f"[warning]Invalid delivery location: {delivery_location}[/warning]")
-        raise ValueError("Invalid delivery location")
-    if recipient_email and not validate_email(recipient_email):
-        logger.warning(f"Invalid recipient email: {recipient_email}")
-        console.print(f"[warning]Invalid recipient email: {recipient_email}[/warning]")
-        raise ValueError("Invalid recipient email")
-    if webhook_url and not validate_webhook_url(webhook_url):
-        logger.warning(f"Invalid webhook URL: {webhook_url}")
-        console.print(f"[warning]Invalid webhook URL: {webhook_url}[/warning]")
-        raise ValueError("Invalid webhook URL")
-    if origin_location and not validate_location(origin_location):
-        logger.warning(f"Invalid origin location: {origin_location}")
-        console.print(f"[warning]Invalid origin location: {origin_location}[/warning]")
-        raise ValueError("Invalid origin location")
-    config = get_config()
-    if status not in config.valid_statuses:
-        logger.warning(f"Invalid status: {status}")
-        console.print(f"[warning]Invalid status: {status}[/warning]")
-        raise ValueError("Invalid status")
+    # ------------------------------------------------------------------
+    #  /stats
+    # ------------------------------------------------------------------
+    @bot.message_handler(commands=['stats'])
+    def cmd_stats(message):
+        if not is_admin(message.from_user.id):
+            bot.reply_to(message, "Unauthorized.")
+            return
+        total = Shipment.query.count()
+        status_counts = db.session.query(Shipment.status, db.func.count(Shipment.id)) \
+            .group_by(Shipment.status).all()
+        status_txt = "\n".join([f"• {s}: {c}" for s, c in status_counts]) if status_counts else "_none_"
+        queue_len = redis_client.llen("notifications") if redis_client else 0
+        txt = (
+            "*System Stats*\n"
+            f"Total shipments: `{total}`\n"
+            f"Notification queue: `{queue_len}`\n\n"
+            f"*By status*\n{status_txt}"
+        )
+        bot.reply_to(message, txt, parse_mode='Markdown')
+        logger.info(f"/stats by {message.from_user.id}")
 
-    try:
-        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
-        current_time = datetime.utcnow()
-        action = "updated" if shipment else "created"
-        if shipment:
-            shipment.status = status
-            shipment.checkpoints = checkpoints
-            shipment.delivery_location = delivery_location
-            shipment.recipient_email = recipient_email
-            shipment.origin_location = origin_location
-            shipment.webhook_url = webhook_url
-            shipment.last_updated = current_time
-        else:
-            shipment = Shipment(
-                tracking_number=sanitized_tn,
-                status=status,
-                checkpoints=checkpoints,
-                delivery_location=delivery_location,
-                recipient_email=recipient_email,
-                origin_location=origin_location,
-                webhook_url=webhook_url,
-                last_updated=current_time,
-                created_at=current_time
+    # ------------------------------------------------------------------
+    #  /menu – Interactive inline menu
+    # ------------------------------------------------------------------
+    @bot.message_handler(commands=['menu'])
+    def cmd_menu(message):
+        if not is_admin(message.from_user.id):
+            bot.reply_to(message, "Unauthorized.")
+            return
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("List", callback_data="menu_list_1"),
+            InlineKeyboardButton("Stats", callback_data="menu_stats"),
+            InlineKeyboardButton("Gen ID", callback_data="menu_genid"),
+            InlineKeyboardButton("Help", callback_data="menu_help")
+        )
+        bot.send_message(
+            message.chat.id,
+            "*Admin Menu* – Choose an action:",
+            reply_markup=markup,
+            parse_mode='Markdown'
+        )
+        logger.info(f"/menu sent to {message.from_user.id}")
+
+    # ------------------------------------------------------------------
+    #  Inline Callback Handler
+    # ------------------------------------------------------------------
+    @bot.callback_query_handler(func=lambda call: True)
+    def callback_handler(call):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Unauthorized.")
+            return
+
+        data = call.data
+
+        if data.startswith("menu_list_"):
+            page = int(data.split("_")[-1])
+            tns, total = get_shipment_list(page=page, per_page=6)
+            lines = [f"*Page {page} / {((total - 1) // 6) + 1}*"]
+            for tn in tns:
+                sh = get_shipment_details(tn)
+                paused = " (paused)" if redis_client and redis_client.hget("paused_simulations", tn) == "true" else ""
+                lines.append(f"• `{tn}` – {sh['status']}{paused}")
+            markup = InlineKeyboardMarkup()
+            if page > 1:
+                markup.add(InlineKeyboardButton("Back", callback_data=f"menu_list_{page-1}"))
+            if page * 6 < total:
+                markup.add(InlineKeyboardButton("Next", callback_data=f"menu_list_{page+1}"))
+            bot.edit_message_text(
+                "\n".join(lines),
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=markup,
+                parse_mode='Markdown'
             )
-            db.session.add(shipment)
-        db.session.commit()
-        invalidate_cache(sanitized_tn)
-        logger.info(f"Saved shipment {sanitized_tn} ({action})")
-        console.print(f"[info]Saved shipment {sanitized_tn} ({action})[/info]")
+            bot.answer_callback_query(call.id)
 
-        # Send webhook notification if webhook_url is provided
-        if webhook_url:
-            webhook_data = {
-                "tracking_number": sanitized_tn,
-                "status": status,
-                "checkpoints": checkpoints,
-                "delivery_location": delivery_location,
-                "recipient_email": recipient_email,
-                "origin_location": origin_location,
-                "webhook_url": webhook_url,
-                "action": action,
-                "timestamp": current_time.isoformat()
-            }
-            send_webhook_notification(webhook_url, sanitized_tn, webhook_data)
+        elif data == "menu_stats":
+            cmd_stats(call.message)
+            bot.answer_callback_query(call.id)
 
-        # Send WebSocket notification
-        websocket_data = {
-            "tracking_number": sanitized_tn,
-            "status": status,
-            "checkpoints": checkpoints,
-            "delivery_location": delivery_location,
-            "recipient_email": recipient_email,
-            "origin_location": origin_location,
-            "webhook_url": webhook_url,
-            "action": action,
-            "timestamp": current_time.isoformat()
-        }
-        send_websocket_notification(sanitized_tn, websocket_data)
+        elif data == "menu_genid":
+            new_id = generate_unique_id()
+            bot.edit_message_text(
+                f"New Tracking ID:\n`{new_id}`",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode='Markdown'
+            )
+            bot.answer_callback_query(call.id)
 
-        return True
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Failed to save shipment {sanitized_tn}: {e}")
-        console.print(f"[error]Failed to save shipment {sanitized_tn}: {e}[/error]")
-        return False
-
-def update_shipment(
-    tracking_number: str,
-    status: Optional[str] = None,
-    delivery_location: Optional[str] = None,
-    recipient_email: Optional[str] = None,
-    origin_location: Optional[str] = None,
-    webhook_url: Optional[str] = None
-) -> bool:
-    """Update an existing shipment's details."""
-    from app import Shipment, db  # Import here to avoid circular imports
-    sanitized_tn = sanitize_tracking_number(tracking_number)
-    if not sanitized_tn:
-        logger.warning(f"Invalid tracking number: {tracking_number}")
-        console.print(f"[warning]Invalid tracking number: {tracking_number}[/warning]")
-        return False
-    try:
-        shipment = Shipment.query.filter_by(tracking_number=sanitized_tn).first()
-        if not shipment:
-            logger.warning(f"Shipment not found: {sanitized_tn}")
-            console.print(f"[warning]Shipment not found: {sanitized_tn}[/warning]")
-            return False
-        config = get_config()
-        if status and status in config.valid_statuses:
-            shipment.status = status
-        if delivery_location and validate_location(delivery_location):
-            shipment.delivery_location = delivery_location
-        if recipient_email is not None and (not recipient_email or validate_email(recipient_email)):
-            shipment.recipient_email = recipient_email
-        if origin_location is not None and (not origin_location or validate_location(origin_location)):
-            shipment.origin_location = origin_location
-        if webhook_url is not None and (not webhook_url or validate_webhook_url(webhook_url)):
-            shipment.webhook_url = webhook_url
-        shipment.last_updated = datetime.utcnow()
-        db.session.commit()
-        invalidate_cache(sanitized_tn)
-        logger.info(f"Updated shipment {sanitized_tn}")
-        console.print(f"[info]Updated shipment {sanitized_tn}[/info]")
-
-        # Send webhook notification if webhook_url is provided
-        if shipment.webhook_url:
-            webhook_data = {
-                "tracking_number": sanitized_tn,
-                "status": shipment.status,
-                "checkpoints": shipment.checkpoints or "",
-                "delivery_location": shipment.delivery_location,
-                "recipient_email": shipment.recipient_email,
-                "origin_location": shipment.origin_location,
-                "webhook_url": shipment.webhook_url,
-                "action": "updated",
-                "timestamp": shipment.last_updated.isoformat()
-            }
-            send_webhook_notification(shipment.webhook_url, sanitized_tn, webhook_data)
-
-        # Send WebSocket notification
-        websocket_data = {
-            "tracking_number": sanitized_tn,
-            "status": shipment.status,
-            "checkpoints": shipment.checkpoints or "",
-            "delivery_location": shipment.delivery_location,
-            "recipient_email": shipment.recipient_email,
-            "origin_location": shipment.origin_location,
-            "webhook_url": shipment.webhook_url,
-            "action": "updated",
-            "timestamp": shipment.last_updated.isoformat()
-        }
-        send_websocket_notification(sanitized_tn, websocket_data)
-
-        return True
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error updating shipment {sanitized_tn}: {e}")
-        console.print(f"[error]Error updating shipment {sanitized_tn}: {e}[/error]")
-        return False
-
-def invalidate_cache(tracking_number: str):
-    """Invalidate Redis cache for a shipment."""
-    if redis_client:
-        try:
-            safe_redis_operation(redis_client.delete, f"shipment:{tracking_number}")
-            logger.info(f"Invalidated cache for {tracking_number}")
-            console.print(f"[info]Invalidated cache for {tracking_number}[/info]")
-        except Exception as e:
-            logger.error(f"Failed to invalidate cache for {tracking_number}: {e}")
-            console.print(f"[error]Failed to invalidate cache for {tracking_number}: {e}[/error]")
-
-def get_app_modules() -> Dict[str, str]:
-    """Return a dictionary of application modules and their versions."""
-    try:
-        import pkg_resources
-        modules = {
-            "flask": pkg_resources.get_distribution("flask").version,
-            "flask-sqlalchemy": pkg_resources.get_distribution("flask-sqlalchemy").version,
-            "upstash-redis": pkg_resources.get_distribution("upstash-redis").version,
-            "python-telegram-bot": pkg_resources.get_distribution("python-telegram-bot").version,
-            "requests": pkg_resources.get_distribution("requests").version,
-            "smtplib": "stdlib",
-            "eventlet": pkg_resources.get_distribution("eventlet").version,
-            "flask-socketio": pkg_resources.get_distribution("flask-socketio").version,
-            "flask-limiter": pkg_resources.get_distribution("flask-limiter").version,
-            "rich": pkg_resources.get_distribution("rich").version,
-            "validators": pkg_resources.get_distribution("validators").version,
-            "flask-wtf": pkg_resources.get_distribution("flask-wtf").version,
-            "wtforms": pkg_resources.get_distribution("wtforms").version
-        }
-        logger.info("Retrieved application modules")
-        console.print("[info]Retrieved application modules[/info]")
-        return modules
-    except Exception as e:
-        logger.error(f"Error retrieving application modules: {e}")
-        console.print(f"[error]Error retrieving application modules: {e}[/error]")
-        return {}
-
-def cache_route_templates():
-    """Cache route templates in Redis or in-memory."""
-    global route_templates_cache
-    config = get_config()
-    route_templates_cache = config.route_templates
-    if redis_client:
-        try:
-            safe_redis_operation(redis_client.set, "route_templates", json.dumps(config.route_templates), ex=86400)
-            logger.info("Cached route templates in Redis")
-            console.print("[info]Cached route templates in Redis[/info]")
-        except Exception as e:
-            logger.error(f"Failed to cache route templates in Redis: {e}")
-            console.print(f"[error]Failed to cache route templates in Redis: {e}[/error]")
-    logger.info("Cached route templates in memory")
-    console.print("[info]Cached route templates in memory[/info]")
-
-def get_cached_route_templates() -> Dict[str, List[str]]:
-    """Retrieve cached route templates from Redis or in-memory."""
-    global route_templates_cache
-    if route_templates_cache is not None:
-        return route_templates_cache
-    if redis_client:
-        try:
-            cached = safe_redis_operation(redis_client.get, "route_templates")
-            if cached:
-                route_templates_cache = json.loads(cached)
-                logger.info("Retrieved route templates from Redis cache")
-                console.print("[info]Retrieved route templates from Redis cache[/info]")
-                return route_templates_cache
-        except Exception as e:
-            logger.error(f"Failed to retrieve route templates from Redis: {e}")
-            console.print(f"[error]Failed to retrieve route templates from Redis: {e}[/error]")
-    config = get_config()
-    route_templates_cache = config.route_templates
-    logger.info("Retrieved route templates from config")
-    console.print(f"[info]Retrieved route templates from config[/info]")
-    return route_templates_cache
+        elif data == "menu_help":
+            cmd_help(call.message)
+            bot.answer_callback_query(call.id)
