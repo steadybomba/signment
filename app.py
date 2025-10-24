@@ -158,6 +158,7 @@ class Shipment(db.Model):
         return {
             'tracking_number': self.tracking_number,
             'status': self.status,
+
             'checkpoints': self.checkpoints,
             'delivery_location': self.delivery_location,
             'last_updated': self.last_updated.isoformat(),
@@ -222,10 +223,16 @@ def init_db():
     console.print(Panel("[critical]Failed to initialize database after max retries[/critical]", title="Database Error", border_style="red"))
     raise Exception("Database initialization failed")
 
+# ================================================================
+#  RE-CAPTCHA V2 VERIFICATION (UPDATED FOR CHECKBOX)
+# ================================================================
 def verify_recaptcha(response_token):
-    """Verify reCAPTCHA response with Google API."""
+    """
+    Verify reCAPTCHA v2 (checkbox) token.
+    v2 responses only have 'success' — no 'score'.
+    """
     if not app.config['RECAPTCHA_SECRET_KEY'] or 'your-secret-key' in app.config['RECAPTCHA_SECRET_KEY']:
-        flask_logger.debug("reCAPTCHA disabled due to missing or default secret key")
+        flask_logger.debug("reCAPTCHA disabled due to missing or default secret key", extra={'tracking_number': ''})
         return True
     try:
         payload = {
@@ -234,12 +241,19 @@ def verify_recaptcha(response_token):
         }
         response = requests.post(app.config['RECAPTCHA_VERIFY_URL'], data=payload, timeout=5)
         result = response.json()
-        if result.get('success') and result.get('score', 1.0) >= 0.5:
-            flask_logger.debug(f"reCAPTCHA verification successful: score={result.get('score')}", extra={'tracking_number': ''})
+
+        if result.get('success'):
+            flask_logger.debug("reCAPTCHA v2 verification successful", extra={'tracking_number': ''})
             return True
-        flask_logger.warning(f"reCAPTCHA verification failed: {result}", extra={'tracking_number': ''})
-        console.print(Panel(f"[warning]reCAPTCHA verification failed: {result}[/warning]", title="reCAPTCHA Warning", border_style="yellow"))
+
+        # Log exact error codes from Google
+        err_codes = result.get('error-codes', [])
+        flask_logger.warning(f"reCAPTCHA v2 verification failed: {err_codes}", extra={'tracking_number': ''})
+        console.print(Panel(
+            f"[warning]reCAPTCHA v2 failed: {', '.join(err_codes)}[/warning]",
+            title="reCAPTCHA Warning", border_style="yellow"))
         return False
+
     except requests.RequestException as e:
         flask_logger.error(f"reCAPTCHA verification error: {e}", extra={'tracking_number': ''})
         console.print(Panel(f"[error]reCAPTCHA error: {e}[/error]", title="reCAPTCHA Error", border_style="red"))
@@ -705,10 +719,12 @@ def track():
         flask_logger.warning("Form validation failed", extra={'tracking_number': ''})
         return jsonify({'error': 'Invalid form data'}), 400
 
+    # RE-CAPTCHA v2 CHECK
     recaptcha_response = request.form.get('g-recaptcha-response')
-    if app.config['RECAPTCHA_SITE_KEY'] and 'your-site-key' not in app.config['RECAPTCHA_SITE_KEY'] and not verify_recaptcha(recaptcha_response):
-        flask_logger.warning("reCAPTCHA verification failed", extra={'tracking_number': ''})
-        return jsonify({'error': 'reCAPTCHA verification failed'}), 400
+    if app.config['RECAPTCHA_SITE_KEY'] and 'your-site-key' not in app.config['RECAPTCHA_SITE_KEY']:
+        if not verify_recaptcha(recaptcha_response):
+            flask_logger.warning("reCAPTCHA v2 verification failed", extra={'tracking_number': ''})
+            return jsonify({'error': 'reCAPTCHA verification failed'}), 400
 
     tracking_number = form.tracking_number.data
     email = form.email.data
