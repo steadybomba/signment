@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Admin Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+  <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { background: #f8f9fa; }
+    .stat-card { background: white; border-radius: 12px; padding: 1.5rem; box-shadow: 0 2px 10px rgba(0,0,0,0.05); text-align: center; }
+    .table th { background: #f1f5f9; }
+    .btn-pause, .btn-resume { font-size: 0.85rem; padding: 0.25rem 0.5rem; }
+    .btn-pause { background: #dc3545; border: none; }
+    .btn-resume { background: #198754; border: none; }
+    .spinner { display: none; width: 1rem; height: 1rem; }
+    .speed-slider { width: 100px; }
+    .speed-value { font-family: monospace; font-weight: bold; min-width: 40px; }
+    #map { height: 400px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 1rem; }
+    .leaflet-popup-content { font-family: system-ui; }
+    .truck-marker { background: transparent; border: none; }
+  </style>
+</head>
+<body>
+  <div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h1>Admin Dashboard</h1>
+      <div>
+        <a href="{{ url_for('admin_csv') }}" class="btn btn-success me-2">CSV</a>
+        <a href="{{ url_for('admin_logout') }}" class="btn btn-outline-danger">Logout</a>
+      </div>
+    </div>
+
+    <!-- LIVE MAP -->
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5>Live Shipment Map</h5>
+        <small class="text-muted" id="map-status">Loading...</small>
+      </div>
+      <div class="card-body p-0">
+        <div id="map"></div>
+      </div>
+    </div>
+
+    <!-- STATS -->
+    <div class="row g-3 mb-4">
+      <div class="col-md-3">
+        <div class="stat-card">
+          <h5>Total Shipments</h5>
+          <h3 class="text-primary">{{ total }}</h3>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="stat-card">
+          <h5>Notification Queue</h5>
+          <h3 class="text-warning">{{ queue_len }}</h3>
+        </div>
+      </div>
+      <div class="col-режим-3">
+        <div class="stat-card">
+          <h5>Live Clients</h5>
+          <h3 class="text-info">{{ active_clients }}</h3>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="stat-card">
+          <h5>Last Update</h5>
+          <h6 class="text-muted" id="now">{{ now }}</h6>
+        </div>
+      </div>
+    </div>
+
+    <!-- SHIPMENT TABLE -->
+    <div class="card">
+      <div class="card-header d-flex justify-content-between">
+        <h5>Shipments</h5>
+        <small class="text-muted">{{ shipments|length }} of {{ total }}</small>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover mb-0" id="shipment-table">
+            <thead>
+              <tr>
+                <th>Tracking #</th>
+                <th>Status</th>
+                <th>Destination</th>
+                <th>Speed</th>
+                <th>Last Updated</th>
+                <th>Controls</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for s in shipments %}
+              <tr data-tn="{{ s.tracking_number }}">
+                <td><code>{{ s.tracking_number }}</code></td>
+                <td>
+                  <span class="badge bg-{% if s.status == 'Delivered' %}success{% elif s.status == 'Returned' %}danger{% elif s.paused %}secondary{% else %}primary{% endif %}">
+                    {{ s.status }}{% if s.paused %} (paused){% endif %}
+                  </span>
+                </td>
+                <td>{{ s.delivery_location }}</td>
+                <td>
+                  <div class="d-flex align-items-center gap-2">
+                    <input type="range" class="form-range speed-slider" min="1" max="100" value="{{ (s.speed[:-1]|float * 10)|int }}" 
+                           onchange="updateSpeed('{{ s.tracking_number }}', this.value / 10)">
+                    <span class="speed-value">{{ s.speed }}</span>
+                  </div>
+                </td>
+                <td><small class="last-updated">{{ s.last_updated }}</small></td>
+                <td>
+                  {% if s.paused %}
+                  <button class="btn btn-resume btn-sm" onclick="togglePause('{{ s.tracking_number }}', false)">
+                    <span class="spinner-border spinner-border-sm spinner"></span>
+                    Resume
+                  </button>
+                  {% else %}
+                  <button class="btn btn-pause btn-sm" onclick="togglePause('{{ s.tracking_number }}', true)">
+                    <span class="spinner-border spinner-border-sm spinner"></span>
+                    Pause
+                  </button>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card-footer">
+        <nav>
+          <ul class="pagination justify-content-center mb-0">
+            {% if page > 1 %}
+            <li class="page-item"><a class="page-link" href="?page={{ page - 1 }}">Previous</a></li>
+            {% endif %}
+            <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ total_pages }}</span></li>
+            {% if page < total_pages %}
+            <li class="page-item"><a class="page-link" href="?page={{ page + 1 }}">Next</a></li>
+            {% endif %}
+          </ul>
+        </nav>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    const map = L.map('map').setView([20, 0], 2);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap & Carto'
+    }).addTo(map);
+
+    const markers = {};
+    const polylines = {};
+
+    const cityCoords = {
+      "Lagos, NG": [6.5244, 3.3792],
+      "Abuja, NG": [9.0579, 7.4951],
+      "Port Harcourt, NG": [4.8156, 7.0498],
+      "New York, NY": [40.7128, -74.0060],
+      "New Jersey, NJ": [40.0583, -74.4057],
+      "Boston, MA": [42.3601, -71.0589],
+      "London, UK": [51.5074, -0.1278],
+      "Birmingham, UK": [52.4862, -1.8904],
+      "Manchester, UK": [53.4808, -2.2426]
+    };
+
+    function getLastCheckpoint(checkpoints) {
+      const parts = checkpoints.split(';').filter(c => c.trim());
+      return parts.length > 0 ? parts[parts.length - 1].split(' - ')[1] : null;
+    }
+
+    function updateMap(data) {
+      const tn = data.tracking_number;
+      const checkpoints = data.checkpoints || [];
+      const lastLoc = getLastCheckpoint(checkpoints.join(';'));
+      const dest = data.delivery_location;
+      const status = data.status;
+      const paused = data.paused || false;
+
+      if (!lastLoc || !cityCoords[lastLoc] || !cityCoords[dest]) return;
+
+      // Marker
+      if (!markers[tn]) {
+        const icon = L.divIcon({
+          html: `<i class="bi bi-truck" style="color:#2563eb; font-size:18px;"></i>`,
+          iconSize: [20, 20],
+          className: 'truck-marker'
+        });
+        markers[tn] = L.marker(cityCoords[lastLoc], { icon }).addTo(map)
+          .bindPopup(`<b>${tn}</b><br>Status: ${status}<br>Location: ${lastLoc}`);
+      } else {
+        markers[tn].setLatLng(cityCoords[lastLoc]);
+        markers[tn].setPopupContent(`<b>${tn}</b><br>Status: ${status}<br>Location: ${lastLoc}`);
+      }
+
+      // Polyline
+      if (!polylines[tn]) {
+        polylines[tn] = L.polyline([], { color: '#2563eb', weight: 3, opacity: 0.7 }).addTo(map);
+      }
+      const path = checkpoints.map(c => {
+        const loc = c.split(' - ')[1];
+        return cityCoords[loc];
+      }).filter(p => p);
+      path.push(cityCoords[dest]);
+      polylines[tn].setLatLngs(path);
+
+      // Animate
+      const iconHtml = status !== 'Delivered' && !paused
+        ? `<i class="bi bi-truck" style="color:#dc2626; font-size:18px;"></i>`
+        : `<i class="bi bi-truck" style="color:#2563eb; font-size:18px;"></i>`;
+      markers[tn].setIcon(L.divIcon({ html: iconHtml, iconSize: [20, 20], className: 'truck-marker' }));
+    }
+
+    socket.on('tracking_update', (data) => {
+      if (data.tracking_number) {
+        updateMap(data);
+        const row = document.querySelector(`tr[data-tn="${data.tracking_number}"]`);
+        if (row) {
+          const badge = row.querySelector('.badge');
+          const status = data.status || badge.textContent.split(' ')[0];
+          const paused = data.paused || false;
+          badge.className = `badge bg-${status === 'Delivered' ? 'success' : status === 'Returned' ? 'danger' : paused ? 'secondary' : 'primary'}`;
+          badge.textContent = status + (paused ? ' (paused)' : '');
+          row.querySelector('.last-updated').textContent = new Date().toLocaleString();
+          if (data.speed_multiplier) {
+            const slider = row.querySelector('.speed-slider');
+            slider.value = data.speed_multiplier * 10;
+            row.querySelector('.speed-value').textContent = data.speed_multiplier.toFixed(1) + 'x';
+          }
+        }
+      }
+    });
+
+    function togglePause(tn, pause) {
+      const btn = event.target;
+      const spinner = btn.querySelector('.spinner');
+      btn.disabled = true;
+      spinner.style.display = 'inline-block';
+      fetch('/admin/api/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracking_number: tn, pause })
+      })
+      .then(r => r.json())
+      .then(d => { if (d.success) location.reload(); })
+      .finally(() => { btn.disabled = false; spinner.style.display = 'none'; });
+    }
+
+    function updateSpeed(tn, speed) {
+      const row = document.querySelector(`tr[data-tn="${tn}"]`);
+      row.querySelector('.speed-value').textContent = speed.toFixed(1) + 'x';
+      fetch('/admin/api/speed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracking_number: tn, speed })
+      });
+    }
+
+    setInterval(() => { document.getElementById('now').textContent = new Date().toLocaleString(); }, 1000);
+    document.getElementById('map-status').textContent = 'Live';
+  </script>
+</body>
+</html>
