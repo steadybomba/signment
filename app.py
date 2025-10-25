@@ -11,6 +11,9 @@ import time
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from io import StringIO
+import csv
+from math import radians, cos, sin, sqrt, atan2
 
 # Third-party imports
 import requests
@@ -23,10 +26,9 @@ from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO, emit
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 import validators
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
-from sqlalchemy import inspect, text, func
+from sqlalchemy import inspect, text
 from time import sleep
 from telebot import TeleBot
 from wtforms import StringField, SubmitField
@@ -84,17 +86,7 @@ try:
         RATELIMIT_DEFAULTS=['200 per day', '50 per hour'],
         RATELIMIT_STORAGE_URI=os.getenv("RATELIMIT_STORAGE_URI", f"redis://{config.redis_url}" if config.redis_url else "memory://"),
         GLOBAL_WEBHOOK_URL=os.getenv("GLOBAL_WEBHOOK_URL", config.websocket_server),
-        ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD", "admin123"),
-        STATUS_TRANSITIONS=json.loads(os.getenv("STATUS_TRANSITIONS", '''
-            {
-                "Pending": {"next": ["In_Transit"], "delay": [60, 300], "probabilities": [1.0], "events": {}},
-                "In_Transit": {"next": ["Out_for_Delivery", "Delayed"], "delay": [120, 600], "probabilities": [0.9, 0.1], "events": {"Delayed due to weather", "Customs inspection"}},
-                "Out_for_Delivery": {"next": ["Delivered"], "delay": [60, 300], "probabilities": [1.0], "events": {}},
-                "Delayed": {"next": ["Out_for_Delivery"], "delay": [300, 1200], "probabilities": [1.0], "events": {"Resolved delay"}},
-                "Delivered": {"next": [], "delay": [0, 0], "probabilities": [], "events": {}},
-                "Returned": {"next": [], "delay": [0, 0], "probabilities": [], "events": {}}
-            }
-        '''))
+        ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD", "admin123")
     )
 except Exception as e:
     console.print(Panel(f"[error]Configuration failed: {e}[/error]", title="Config Error", border_style="red"))
@@ -263,14 +255,21 @@ def process_notification_queue():
         if not notif:
             time.sleep(1)
             continue
-        data = json.loads(notif)
-        tn = data["tracking_number"]
-        typ = data["type"]
-        d = data["data"]
-        if typ == "email" and d.get("recipient_email"):
-            send_email_notification(d["recipient_email"], f"Update: {tn}", f"Status: {d['status']}")
-        elif typ == "webhook" and d.get("webhook_url"):
-            requests.post(d["webhook_url"], json={**d, "tracking_number": tn}, timeout=10)
+        try:
+            data = json.loads(notif)
+            typ = data["type"]
+            d = data["data"]
+            if typ == "email":
+                send_email_notification(
+                    d["recipient_email"],
+                    d.get("subject", "Shipment Update"),
+                    d.get("html_body"),
+                    d.get("plain_body")
+                )
+            elif typ == "webhook" and d.get("webhook_url"):
+                requests.post(d["webhook_url"], json={**d, "tracking_number": data["tracking_number"]}, timeout=10)
+        except Exception as e:
+            flask_logger.error(f"Queue error: {e}")
 
 def cleanup_websocket_clients():
     while True:
@@ -284,75 +283,256 @@ def cleanup_websocket_clients():
                     except:
                         remove_client(tn, sid)
 
-# Simulation
+# === REALISTIC DISTANCE CALCULATION (50+ CITIES) ===
+def estimate_distance(origin, dest):
+    city_coords = {
+        # Nigeria
+        "Lagos, NG": (6.5244, 3.3792),
+        "Abuja, NG": (9.0579, 7.4951),
+        "Port Harcourt, NG": (4.8156, 7.0498),
+        "Kano, NG": (12.0001, 8.5167),
+        "Ibadan, NG": (7.3775, 3.9470),
+        "Enugu, NG": (6.4584, 7.5170),
+        "Kaduna, NG": (10.5105, 7.4165),
+        "Benin City, NG": (6.3340, 5.6037),
+        "Jos, NG": (9.8965, 8.8583),
+        "Ilorin, NG": (8.4966, 4.5429),
+
+        # United States
+        "New York, NY": (40.7128, -74.0060),
+        "Los Angeles, CA": (34.0522, -118.2437),
+        "Chicago, IL": (41.8781, -87.6298),
+        "Houston, TX": (29.7604, -95.3698),
+        "Phoenix, AZ": (33.4484, -112.0740),
+        "Philadelphia, PA": (39.9526, -75.1652),
+        "San Antonio, TX": (29.4241, -98.4936),
+        "San Diego, CA": (32.7157, -117.1611),
+        "Dallas, TX": (32.7767, -96.7970),
+        "San Francisco, CA": (37.7749, -122.4194),
+
+        # United Kingdom
+        "London, UK": (51.5074, -0.1278),
+        "Manchester, UK": (53.4808, -2.2426),
+        "Birmingham, UK": (52.4862, -1.8904),
+        "Glasgow, UK": (55.8642, -4.2518),
+        "Liverpool, UK": (53.4084, -2.9916),
+
+        # Europe
+        "Paris, FR": (48.8566, 2.3522),
+        "Berlin, DE": (52.5200, 13.4050),
+        "Madrid, ES": (40.4168, -3.7038),
+        "Rome, IT": (41.9028, 12.4964),
+        "Amsterdam, NL": (52.3676, 4.9041),
+        "Vienna, AT": (48.2082, 16.3738),
+        "Warsaw, PL": (52.2297, 21.0122),
+        "Prague, CZ": (50.0755, 14.4378),
+
+        # Asia
+        "Dubai, UAE": (25.2048, 55.2708),
+        "Mumbai, IN": (19.0760, 72.8777),
+        "Delhi, IN": (28.7041, 77.1025),
+        "Bangalore, IN": (12.9716, 77.5946),
+        "Singapore, SG": (1.3521, 103.8198),
+        "Beijing, CN": (39.9042, 116.4074),
+        "Shanghai, CN": (31.2304, 121.4737),
+        "Hong Kong, HK": (22.3193, 114.1694),
+        "Tokyo, JP": (35.6762, 139.6503),
+        "Seoul, KR": (37.5665, 126.9780),
+        "Jakarta, ID": (-6.2088, 106.8456),
+        "Bangkok, TH": (13.7563, 100.5018),
+
+        # Africa
+        "Johannesburg, ZA": (-26.2041, 28.0473),
+        "Cape Town, ZA": (-33.9249, 18.4241),
+        "Nairobi, KE": (-1.2921, 36.8219),
+        "Accra, GH": (5.6037, -0.1870),
+        "Cairo, EG": (30.0444, 31.2357),
+        "Addis Ababa, ET": (8.9806, 38.7578),
+
+        # Oceania
+        "Sydney, AU": (-33.8688, 151.2093),
+        "Melbourne, AU": (-37.8136, 144.9631),
+        "Auckland, NZ": (-36.8485, 174.7633),
+
+        # South America
+        "São Paulo, BR": (-23.5505, -46.6333),
+        "Buenos Aires, AR": (-34.6037, -58.3816),
+        "Lima, PE": (-12.0464, -77.0428),
+        "Santiago, CL": (-33.4489, -70.6693),
+    }
+
+    # Normalize city names
+    origin_key = next((k for k in city_coords if origin.lower() in k.lower() or k.lower().startswith(origin.lower())), None)
+    dest_key = next((k for k in city_coords if dest.lower() in k.lower() or k.lower().startswith(dest.lower())), None)
+
+    if not origin_key or not dest_key:
+        return 1000  # fallback distance in km
+
+    lat1, lon1 = map(radians, city_coords[origin_key])
+    lat2, lon2 = map(radians, city_coords[dest_key])
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return round(6371 * c, 1)  # km, rounded to 1 decimal
+
+# === REALISTIC SIMULATION ===
 def simulate_tracking(tn):
     shipment = Shipment.query.filter_by(tracking_number=tn).first()
     if not shipment:
         return
-    start = datetime.now()
-    while datetime.now() - start < timedelta(days=30):
+
+    origin = shipment.origin_location or "Lagos, NG"
+    destination = shipment.delivery_location
+    route_template = get_cached_route_templates().get(destination, get_cached_route_templates().get(origin, []))
+    if not route_template:
+        route_template = [origin, destination]
+
+    checkpoints = (shipment.checkpoints or "").split(";") if shipment.checkpoints else []
+    current_idx = len([c for c in checkpoints if "Processed" in c])
+    start_time = datetime.now()
+
+    # Distance-based realistic timing
+    distance_km = estimate_distance(origin, destination)
+    base_hours = max(24, min(120, distance_km / 100))  # 24h min, 5 days max
+    speed_multiplier = float(redis_client.hget("sim_speed_multipliers", tn) or "1.0") if redis_client else 1.0
+    speed_multiplier = max(0.1, min(10.0, speed_multiplier))
+
+    while datetime.now() - start_time < timedelta(days=7):
         if redis_client and redis_client.hget("paused_simulations", tn) == "true":
-            time.sleep(5)
+            eventlet.sleep(10)
             continue
+
         try:
-            status = shipment.status
-            checkpoints = (shipment.checkpoints or "").split(";")
-            delivery_loc = shipment.delivery_location
-            origin = shipment.origin_location or delivery_loc
-            webhook = shipment.webhook_url or app.config['GLOBAL_WEBHOOK_URL']
-            email = shipment.recipient_email
+            # === UPDATE CHECKPOINT ===
+            if current_idx < len(route_template) and shipment.status not in ["Delivered", "Returned"]:
+                city = route_template[current_idx]
+                events = [
+                    "Processed", "In transit", "Arrived at sorting center",
+                    "Departed facility", "Customs clearance", "On vehicle for delivery"
+                ]
+                event = random.choice(events)
+                weather_delay = ""
+                if random.random() < 0.1:
+                    weather_delay = " | Weather delay"
+                    eventlet.sleep(random.uniform(300, 900) / speed_multiplier)
+                checkpoint = f"{datetime.now():%Y-%m-%d %H:%M} - {city} - {event}{weather_delay}"
+                if checkpoint not in checkpoints:
+                    checkpoints.append(checkpoint)
+                    current_idx += 1
 
-            if status in ['Delivered', 'Returned']:
-                break
+            # === STATUS TRANSITION ===
+            current_status = shipment.status
+            if current_status == "Pending" and current_idx > 0:
+                current_status = "In_Transit"
+            elif current_status == "In_Transit" and current_idx >= len(route_template) - 1:
+                current_status = "Out_for_Delivery"
+            elif current_status == "Out_for_Delivery" and random.random() < 0.7:
+                current_status = "Delivered"
+                checkpoints.append(f"{datetime.now():%Y-%m-%d %H:%M} - {destination} - Delivered")
+            elif current_status == "In_Transit" and random.random() < 0.05:
+                current_status = "Delayed"
+            elif current_status == "Delayed" and random.random() < 0.8:
+                current_status = "In_Transit"
 
-            transition = app.config['STATUS_TRANSITIONS'].get(status, {})
-            next_states = transition.get('next', ['Delivered'])
-            delay = random.uniform(*transition.get('delay', (60, 300)))
-            speed = float(redis_client.hget("sim_speed_multipliers", tn) or 1.0) if redis_client else 1.0
-            speed = max(0.1, min(10.0, speed))
-            delay /= speed
-
-            if status != 'Out_for_Delivery':
-                template = get_cached_route_templates().get(delivery_loc, ['Lagos, NG'])
-                idx = min(len(checkpoints), len(template) - 1)
-                cp = f"{datetime.now():%Y-%m-%d %H:%M} - {template[idx]} - Processed"
-                if cp not in checkpoints:
-                    checkpoints.append(cp)
-
-            new_status = random.choices(next_states, transition.get('probabilities', [1.0]))[0] if next_states else status
-            if new_status != status:
-                if transition.get('events'):
-                    event = random.choice(list(transition['events']))
-                    checkpoints.append(f"{datetime.now():%Y-%m-%d %H:%M} - {delivery_loc} - {event}")
-                if new_status == 'Delivered':
-                    checkpoints.append(f"{datetime.now():%Y-%m-%d %H:%M} - {delivery_loc} - Delivered")
-                if new_status == 'Returned':
-                    checkpoints.append(f"{datetime.now():%Y-%m-%d %H:%M} - {origin} - Returned")
-
-            shipment.status = new_status
-            shipment.checkpoints = ";".join(checkpoints)
+            # === FINALIZE ===
+            shipment.status = current_status
+            shipment.checkpoints = ";".join(checkpoints[-50:])
             shipment.last_updated = datetime.now()
             db.session.commit()
             invalidate_cache(tn)
 
-            if new_status != status and email and shipment.email_notifications:
-                enqueue_notification({
-                    "tracking_number": tn,
-                    "type": "email",
-                    "data": {"status": new_status, "checkpoints": ";".join(checkpoints), "delivery_location": delivery_loc, "recipient_email": email}
-                })
-            if webhook:
-                enqueue_notification({
-                    "tracking_number": tn,
-                    "type": "webhook",
-                    "data": {"status": new_status, "checkpoints": checkpoints, "delivery_location": delivery_loc, "webhook_url": webhook}
-                })
+            # === NOTIFICATION ===
+            if len(checkpoints) > 1 and random.random() < 0.6:
+                enqueue_realistic_email(tn, current_status, checkpoints[-1], destination)
 
             broadcast_update(tn)
-            eventlet.sleep(delay)
+
+            # === DYNAMIC SLEEP ===
+            base_sleep = base_hours * 3600 / len(route_template) / speed_multiplier
+            jitter = random.uniform(0.7, 1.3)
+            eventlet.sleep(base_sleep * jitter)
+
+            if current_status in ["Delivered", "Returned"]:
+                break
+
         except Exception as e:
             sim_logger.error(f"Sim error {tn}: {e}")
-            break
+            eventlet.sleep(30)
+
+# === REALISTIC EMAIL NOTIFICATION ===
+def enqueue_realistic_email(tn, status, latest_checkpoint, destination):
+    shipment = Shipment.query.filter_by(tracking_number=tn).first()
+    if not shipment or not shipment.recipient_email or not shipment.email_notifications:
+        return
+
+    subject = f"Shipment Update: {tn} — {status}"
+    location = latest_checkpoint.split(' - ')[1] if ' - ' in latest_checkpoint else destination
+    html_body = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; border-radius: 12px; overflow: hidden;">
+      <div style="background: #2563eb; color: white; padding: 1.5rem; text-align: center;">
+        <h2 style="margin: 0;">Shipment Update</h2>
+      </div>
+      <div style="padding: 1.5rem;">
+        <p><strong>Tracking #:</strong> <code>{tn}</code></p>
+        <p><strong>Status:</strong> <span style="color: #dc2626; font-weight: bold;">{status}</span></p>
+        <p><strong>Latest:</strong> {location}</p>
+        <p><strong>Destination:</strong> {destination}</p>
+        <hr>
+        <p style="color: #666; font-size: 0.9rem;">
+          This is an automated update. <a href="{app.config['WEBSOCKET_SERVER']}/track/{tn}">Track Live</a>
+        </p>
+      </div>
+      <div style="background: #f8f9fa; padding: 1rem; text-align: center; font-size: 0.8rem; color: #888;">
+        © {datetime.now().year} Your Logistics Co.
+      </div>
+    </div>
+    """
+    plain_body = f"Update: {tn}\nStatus: {status}\nLatest: {location}\nTrack: {app.config['WEBSOCKET_SERVER']}/track/{tn}"
+
+    enqueue_notification({
+        "tracking_number": tn,
+        "type": "email",
+        "data": {
+            "recipient_email": shipment.recipient_email,
+            "subject": subject,
+            "html_body": html_body,
+            "plain_body": plain_body
+        }
+    })
+
+# === ROBUST EMAIL SENDER ===
+def send_email_notification(recipient, subject, html_body=None, plain_body=None):
+    if not all([app.config['SMTP_HOST'], app.config['SMTP_USER'], app.config['SMTP_PASS']]):
+        flask_logger.warning("SMTP not configured")
+        return False
+
+    msg = MIMEMultipart("alternative")
+    msg['From'] = app.config['SMTP_FROM']
+    msg['To'] = recipient
+    msg['Subject'] = subject
+
+    if plain_body:
+        msg.attach(MIMEText(plain_body, "plain"))
+    if html_body:
+        msg.attach(MIMEText(html_body, "html"))
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT'], timeout=10) as server:
+                server.starttls()
+                server.login(app.config['SMTP_USER'], app.config['SMTP_PASS'])
+                server.send_message(msg)
+            flask_logger.info(f"Email sent to {recipient}")
+            return True
+        except Exception as e:
+            flask_logger.error(f"Email attempt {attempt+1} failed: {e}")
+            if attempt == max_retries - 1:
+                console.print(Panel(f"[error]Failed to send email to {recipient}[/error]", title="Email Error"))
+                return False
+            time.sleep(2 ** attempt)
+    return False
 
 # Broadcast
 def broadcast_update(tn):
