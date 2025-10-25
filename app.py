@@ -8,11 +8,11 @@ import json
 import random
 import threading
 import time
+import csv
+from io import StringIO
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from io import StringIO
-import csv
 from math import radians, cos, sin, sqrt, atan2
 
 # Third-party imports
@@ -92,6 +92,29 @@ except Exception as e:
     console.print(Panel(f"[error]Configuration failed: {e}[/error]", title="Config Error", border_style="red"))
     raise
 
+# === DHL CARRIER CONFIG ===
+DHL_CONFIG = {
+    "name": "DHL Express",
+    "primary_color": "#D40511",
+    "secondary_color": "#FFCC00",
+    "logo_url": "https://www.dhl.com/etc.clientlibs/dhl/clientlibs/clientlib-site/resources/images/dhl-logo.svg",
+    "tracking_prefix": "JD",
+    "tracking_format": r"^JD\d{10}$",
+    "status_flow": {
+        "Pending": {"next": ["In_Transit"], "delay": [60, 180]},
+        "In_Transit": {"next": ["Out_for_Delivery", "Delayed"], "delay": [120, 600], "probabilities": [0.92, 0.08]},
+        "Out_for_Delivery": {"next": ["Delivered"], "delay": [60, 240]},
+        "Delayed": {"next": ["Out_for_Delivery"], "delay": [300, 900]},
+        "Delivered": {"next": [], "delay": [0, 0]},
+        "Returned": {"next": [], "delay": [0, 0]}
+    },
+    "events": {
+        "In_Transit": ["Shipment picked up", "Departed origin facility", "Arrived at sort facility", "Processed at hub"],
+        "Out_for_Delivery": ["Out for delivery", "With delivery courier"],
+        "Delayed": ["Held at customs", "Weather delay", "Routing delay"]
+    }
+}
+
 # Core extensions
 db = SQLAlchemy(app)
 limiter = Limiter(get_remote_address, app=app, default_limits=app.config['RATELIMIT_DEFAULTS'], storage_uri=app.config['RATELIMIT_STORAGE_URI'])
@@ -137,6 +160,7 @@ class Shipment(db.Model):
     origin_location = db.Column(db.String(100))
     webhook_url = db.Column(db.String(200))
     email_notifications = db.Column(db.Boolean, default=True)
+    carrier = db.Column(db.String(20), default="DHL")
 
     def to_dict(self):
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
@@ -159,8 +183,12 @@ def init_db():
                         created_at TIMESTAMP NOT NULL,
                         origin_location VARCHAR(100),
                         webhook_url VARCHAR(200),
-                        email_notifications BOOLEAN DEFAULT TRUE
+                        email_notifications BOOLEAN DEFAULT TRUE,
+                        carrier VARCHAR(20) DEFAULT 'DHL'
                     )
+                """))
+                db.session.execute(text("""
+                    ALTER TABLE shipments ADD COLUMN IF NOT EXISTS carrier VARCHAR(20) DEFAULT 'DHL';
                 """))
                 db.session.commit()
                 if inspectors := inspect(db.engine):
@@ -283,118 +311,73 @@ def cleanup_websocket_clients():
                     except:
                         remove_client(tn, sid)
 
-# === REALISTIC DISTANCE CALCULATION (50+ CITIES) ===
+# === REALISTIC DISTANCE (50+ CITIES) ===
 def estimate_distance(origin, dest):
     city_coords = {
-        # Nigeria
-        "Lagos, NG": (6.5244, 3.3792),
-        "Abuja, NG": (9.0579, 7.4951),
-        "Port Harcourt, NG": (4.8156, 7.0498),
-        "Kano, NG": (12.0001, 8.5167),
-        "Ibadan, NG": (7.3775, 3.9470),
-        "Enugu, NG": (6.4584, 7.5170),
-        "Kaduna, NG": (10.5105, 7.4165),
-        "Benin City, NG": (6.3340, 5.6037),
-        "Jos, NG": (9.8965, 8.8583),
-        "Ilorin, NG": (8.4966, 4.5429),
-
-        # United States
-        "New York, NY": (40.7128, -74.0060),
-        "Los Angeles, CA": (34.0522, -118.2437),
-        "Chicago, IL": (41.8781, -87.6298),
-        "Houston, TX": (29.7604, -95.3698),
-        "Phoenix, AZ": (33.4484, -112.0740),
-        "Philadelphia, PA": (39.9526, -75.1652),
-        "San Antonio, TX": (29.4241, -98.4936),
-        "San Diego, CA": (32.7157, -117.1611),
-        "Dallas, TX": (32.7767, -96.7970),
-        "San Francisco, CA": (37.7749, -122.4194),
-
-        # United Kingdom
-        "London, UK": (51.5074, -0.1278),
-        "Manchester, UK": (53.4808, -2.2426),
-        "Birmingham, UK": (52.4862, -1.8904),
-        "Glasgow, UK": (55.8642, -4.2518),
-        "Liverpool, UK": (53.4084, -2.9916),
-
-        # Europe
-        "Paris, FR": (48.8566, 2.3522),
-        "Berlin, DE": (52.5200, 13.4050),
-        "Madrid, ES": (40.4168, -3.7038),
-        "Rome, IT": (41.9028, 12.4964),
-        "Amsterdam, NL": (52.3676, 4.9041),
-        "Vienna, AT": (48.2082, 16.3738),
-        "Warsaw, PL": (52.2297, 21.0122),
-        "Prague, CZ": (50.0755, 14.4378),
-
-        # Asia
-        "Dubai, UAE": (25.2048, 55.2708),
-        "Mumbai, IN": (19.0760, 72.8777),
-        "Delhi, IN": (28.7041, 77.1025),
-        "Bangalore, IN": (12.9716, 77.5946),
-        "Singapore, SG": (1.3521, 103.8198),
-        "Beijing, CN": (39.9042, 116.4074),
-        "Shanghai, CN": (31.2304, 121.4737),
-        "Hong Kong, HK": (22.3193, 114.1694),
-        "Tokyo, JP": (35.6762, 139.6503),
-        "Seoul, KR": (37.5665, 126.9780),
-        "Jakarta, ID": (-6.2088, 106.8456),
-        "Bangkok, TH": (13.7563, 100.5018),
-
-        # Africa
-        "Johannesburg, ZA": (-26.2041, 28.0473),
-        "Cape Town, ZA": (-33.9249, 18.4241),
-        "Nairobi, KE": (-1.2921, 36.8219),
-        "Accra, GH": (5.6037, -0.1870),
-        "Cairo, EG": (30.0444, 31.2357),
-        "Addis Ababa, ET": (8.9806, 38.7578),
-
-        # Oceania
-        "Sydney, AU": (-33.8688, 151.2093),
-        "Melbourne, AU": (-37.8136, 144.9631),
-        "Auckland, NZ": (-36.8485, 174.7633),
-
-        # South America
-        "São Paulo, BR": (-23.5505, -46.6333),
-        "Buenos Aires, AR": (-34.6037, -58.3816),
-        "Lima, PE": (-12.0464, -77.0428),
-        "Santiago, CL": (-33.4489, -70.6693),
+        "Lagos, NG": (6.5244, 3.3792), "Abuja, NG": (9.0579, 7.4951), "Port Harcourt, NG": (4.8156, 7.0498),
+        "Kano, NG": (12.0001, 8.5167), "Ibadan, NG": (7.3775, 3.9470), "Enugu, NG": (6.4584, 7.5170),
+        "New York, NY": (40.7128, -74.0060), "Los Angeles, CA": (34.0522, -118.2437), "London, UK": (51.5074, -0.1278),
+        "Dubai, UAE": (25.2048, 55.2708), "Tokyo, JP": (35.6762, 139.6503), "Sydney, AU": (-33.8688, 151.2093),
+        "Paris, FR": (48.8566, 2.3522), "Berlin, DE": (52.5200, 13.4050), "Mumbai, IN": (19.0760, 72.8777),
+        "Singapore, SG": (1.3521, 103.8198), "Hong Kong, HK": (22.3193, 114.1694), "São Paulo, BR": (-23.5505, -46.6333),
+        "Johannesburg, ZA": (-26.2041, 28.0473), "Cairo, EG": (30.0444, 31.2357), "Moscow, RU": (55.7558, 37.6173),
+        "Toronto, CA": (43.6532, -79.3832), "Mexico City, MX": (19.4326, -99.1332), "Seoul, KR": (37.5665, 126.9780),
+        "Bangkok, TH": (13.7563, 100.5018), "Jakarta, ID": (-6.2088, 106.8456), "Delhi, IN": (28.7041, 77.1025),
+        "Beijing, CN": (39.9042, 116.4074), "Shanghai, CN": (31.2304, 121.4737), "Istanbul, TR": (41.0082, 28.9784),
+        "Karachi, PK": (24.8607, 67.0011), "Buenos Aires, AR": (-34.6037, -58.3816), "Rio de Janeiro, BR": (-22.9068, -43.1729),
+        "Lima, PE": (-12.0464, -77.0428), "Bogotá, CO": (4.7110, -74.0721), "Santiago, CL": (-33.4489, -70.6693),
+        "Cape Town, ZA": (-33.9249, 18.4241), "Nairobi, KE": (-1.2921, 36.8219), "Accra, GH": (5.6037, -0.1870),
+        "Addis Ababa, ET": (8.9806, 38.7578), "Kuala Lumpur, MY": (3.1390, 101.6869), "Hanoi, VN": (21.0285, 105.8342),
+        "Manila, PH": (14.5995, 120.9842), "Taipei, TW": (25.0330, 121.5654), "Riyadh, SA": (24.7136, 46.6753),
+        "Tel Aviv, IL": (32.0853, 34.7818), "Athens, GR": (37.9838, 23.7275), "Lisbon, PT": (38.7223, -9.1393),
+        "Stockholm, SE": (59.3293, 18.0686), "Oslo, NO": (59.9139, 10.7522), "Helsinki, FI": (60.1699, 24.9384),
+        "Warsaw, PL": (52.2297, 21.0122), "Prague, CZ": (50.0755, 14.4378), "Budapest, HU": (47.4979, 19.0402),
+        "Vienna, AT": (48.2082, 16.3738), "Zurich, CH": (47.3769, 8.5417), "Amsterdam, NL": (52.3676, 4.9041),
+        "Brussels, BE": (50.8476, 4.3572), "Dublin, IE": (53.3498, -6.2603), "Madrid, ES": (40.4168, -3.7038),
+        "Rome, IT": (41.9028, 12.4964), "Milan, IT": (45.4642, 9.1900), "Barcelona, ES": (41.3851, 2.1734)
     }
-
-    # Normalize city names
     origin_key = next((k for k in city_coords if origin.lower() in k.lower() or k.lower().startswith(origin.lower())), None)
     dest_key = next((k for k in city_coords if dest.lower() in k.lower() or k.lower().startswith(dest.lower())), None)
-
     if not origin_key or not dest_key:
-        return 1000  # fallback distance in km
-
+        return 1000
     lat1, lon1 = map(radians, city_coords[origin_key])
     lat2, lon2 = map(radians, city_coords[dest_key])
     dlon = lon2 - lon1
     dlat = lat2 - lat1
     a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
     c = 2 * atan2(sqrt(a), sqrt(1-a))
-    return round(6371 * c, 1)  # km, rounded to 1 decimal
+    return round(6371 * c, 1)
 
-# === REALISTIC SIMULATION ===
+# === DHL SIMULATION (AIR/GROUND) ===
 def simulate_tracking(tn):
     shipment = Shipment.query.filter_by(tracking_number=tn).first()
     if not shipment:
         return
 
+    carrier = shipment.carrier or "DHL"
+    config = DHL_CONFIG if carrier == "DHL" else app.config.get('STATUS_TRANSITIONS', {})
+
     origin = shipment.origin_location or "Lagos, NG"
     destination = shipment.delivery_location
-    route_template = get_cached_route_templates().get(destination, get_cached_route_templates().get(origin, []))
-    if not route_template:
-        route_template = [origin, destination]
+    distance_km = estimate_distance(origin, destination)
+    default_mode = "air" if distance_km > 1000 else "ground"
+    transport_mode = redis_client.hget("transport_mode", tn) or default_mode
+    transport_mode = transport_mode.lower()
+
+    air_hubs = ["Dubai, UAE", "Leipzig, DE", "Hong Kong, HK"]
+    ground_route = get_cached_route_templates().get(destination, [origin, destination])
+    air_route = [origin] + random.sample(air_hubs, k=min(2, len(air_hubs))) + [destination]
+    route_template = air_route if transport_mode == "air" else ground_route
 
     checkpoints = (shipment.checkpoints or "").split(";") if shipment.checkpoints else []
-    current_idx = len([c for c in checkpoints if "Processed" in c])
+    current_idx = len([c for c in checkpoints if any(e in c for e in config.get("events", {}).values())])
     start_time = datetime.now()
 
-    # Distance-based realistic timing
-    distance_km = estimate_distance(origin, destination)
-    base_hours = max(24, min(120, distance_km / 100))  # 24h min, 5 days max
+    if transport_mode == "air":
+        base_hours = max(6, min(48, distance_km / 850))
+    else:
+        base_hours = max(24, min(120, distance_km / 90))
+
     speed_multiplier = float(redis_client.hget("sim_speed_multipliers", tn) or "1.0") if redis_client else 1.0
     speed_multiplier = max(0.1, min(10.0, speed_multiplier))
 
@@ -404,91 +387,87 @@ def simulate_tracking(tn):
             continue
 
         try:
-            # === UPDATE CHECKPOINT ===
-            if current_idx < len(route_template) and shipment.status not in ["Delivered", "Returned"]:
+            current_status = shipment.status
+
+            if current_idx < len(route_template) and current_status not in ["Delivered", "Returned"]:
                 city = route_template[current_idx]
-                events = [
-                    "Processed", "In transit", "Arrived at sorting center",
-                    "Departed facility", "Customs clearance", "On vehicle for delivery"
-                ]
-                event = random.choice(events)
-                weather_delay = ""
-                if random.random() < 0.1:
-                    weather_delay = " | Weather delay"
-                    eventlet.sleep(random.uniform(300, 900) / speed_multiplier)
-                checkpoint = f"{datetime.now():%Y-%m-%d %H:%M} - {city} - {event}{weather_delay}"
+                event_pool = config["events"].get(current_status, ["Processed at facility"])
+                event = random.choice(event_pool)
+                delay_note = ""
+                if random.random() < 0.07:
+                    delay_note = " | " + random.choice(["Customs clearance", "Weather delay", "High volume"])
+                    eventlet.sleep(random.uniform(600, 1800) / speed_multiplier)
+                checkpoint = f"{datetime.now():%Y-%m-%d %H:%M} - {city} - {event}{delay_note}"
                 if checkpoint not in checkpoints:
                     checkpoints.append(checkpoint)
                     current_idx += 1
 
-            # === STATUS TRANSITION ===
-            current_status = shipment.status
-            if current_status == "Pending" and current_idx > 0:
-                current_status = "In_Transit"
-            elif current_status == "In_Transit" and current_idx >= len(route_template) - 1:
-                current_status = "Out_for_Delivery"
-            elif current_status == "Out_for_Delivery" and random.random() < 0.7:
-                current_status = "Delivered"
-                checkpoints.append(f"{datetime.now():%Y-%m-%d %H:%M} - {destination} - Delivered")
-            elif current_status == "In_Transit" and random.random() < 0.05:
-                current_status = "Delayed"
-            elif current_status == "Delayed" and random.random() < 0.8:
-                current_status = "In_Transit"
+            transition = config.get("status_flow", {}).get(current_status, {})
+            next_states = transition.get("next", [])
+            if next_states and current_status not in ["Delivered", "Returned"]:
+                probs = transition.get("probabilities", [1.0/len(next_states)]*len(next_states))
+                new_status = random.choices(next_states, probs)[0]
+                if new_status != current_status:
+                    current_status = new_status
+                    if new_status == "Delivered":
+                        checkpoints.append(f"{datetime.now():%Y-%m-%d %H:%M} - {destination} - Delivered successfully")
+                    elif new_status == "Returned":
+                        checkpoints.append(f"{datetime.now():%Y-%m-%d %H:%M} - {origin} - Returned to shipper")
 
-            # === FINALIZE ===
             shipment.status = current_status
             shipment.checkpoints = ";".join(checkpoints[-50:])
             shipment.last_updated = datetime.now()
             db.session.commit()
             invalidate_cache(tn)
 
-            # === NOTIFICATION ===
-            if len(checkpoints) > 1 and random.random() < 0.6:
-                enqueue_realistic_email(tn, current_status, checkpoints[-1], destination)
+            if len(checkpoints) > 1 and random.random() < 0.65:
+                enqueue_dhl_email(tn, current_status, checkpoints[-1], destination)
 
             broadcast_update(tn)
 
-            # === DYNAMIC SLEEP ===
-            base_sleep = base_hours * 3600 / len(route_template) / speed_multiplier
-            jitter = random.uniform(0.7, 1.3)
-            eventlet.sleep(base_sleep * jitter)
+            steps = max(1, len(route_template))
+            base_sleep = base_hours * 3600 / steps / speed_multiplier
+            eventlet.sleep(base_sleep * random.uniform(0.7, 1.3))
 
             if current_status in ["Delivered", "Returned"]:
                 break
 
         except Exception as e:
-            sim_logger.error(f"Sim error {tn}: {e}")
+            sim_logger.error(f"DHL Sim error {tn}: {e}")
             eventlet.sleep(30)
 
-# === REALISTIC EMAIL NOTIFICATION ===
-def enqueue_realistic_email(tn, status, latest_checkpoint, destination):
+# === DHL EMAIL ===
+def enqueue_dhl_email(tn, status, latest_checkpoint, destination):
     shipment = Shipment.query.filter_by(tracking_number=tn).first()
     if not shipment or not shipment.recipient_email or not shipment.email_notifications:
         return
 
-    subject = f"Shipment Update: {tn} — {status}"
     location = latest_checkpoint.split(' - ')[1] if ' - ' in latest_checkpoint else destination
+    subject = f"DHL Shipment {tn} - {status}"
+
     html_body = f"""
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; border-radius: 12px; overflow: hidden;">
-      <div style="background: #2563eb; color: white; padding: 1.5rem; text-align: center;">
-        <h2 style="margin: 0;">Shipment Update</h2>
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; border-radius: 8px; overflow: hidden;">
+      <div style="background: #D40511; padding: 1rem; text-align: center;">
+        <img src="{DHL_CONFIG['logo_url']}" alt="DHL" width="120">
       </div>
-      <div style="padding: 1.5rem;">
-        <p><strong>Tracking #:</strong> <code>{tn}</code></p>
-        <p><strong>Status:</strong> <span style="color: #dc2626; font-weight: bold;">{status}</span></p>
-        <p><strong>Latest:</strong> {location}</p>
+      <div style="padding: 1.5rem; background: #fff;">
+        <h3 style="color: #D40511; margin-top: 0;">Shipment Update</h3>
+        <p><strong>Waybill:</strong> <code style="background:#f5f5f5;padding:2px 6px;border-radius:4px;">{tn}</code></p>
+        <p><strong>Status:</strong> <span style="color:#D40511;font-weight:bold;">{status}</span></p>
+        <p><strong>Location:</strong> {location}</p>
         <p><strong>Destination:</strong> {destination}</p>
-        <hr>
-        <p style="color: #666; font-size: 0.9rem;">
-          This is an automated update. <a href="{app.config['WEBSOCKET_SERVER']}/track/{tn}">Track Live</a>
+        <hr style="border:0;border-top:1px solid #eee;margin:1.5rem 0;">
+        <p style="font-size:0.9rem;color:#666;">
+          Track live: <a href="{app.config['WEBSOCKET_SERVER']}/track/{tn}" style="color:#D40511;">View Shipment</a>
         </p>
       </div>
-      <div style="background: #f8f9fa; padding: 1rem; text-align: center; font-size: 0.8rem; color: #888;">
-        © {datetime.now().year} Your Logistics Co.
+      <div style="background:#FFCC00;padding:0.8rem;text-align:center;font-size:0.8rem;color:#000;">
+        © {datetime.now().year} DHL International GmbH. All rights reserved.
       </div>
     </div>
     """
-    plain_body = f"Update: {tn}\nStatus: {status}\nLatest: {location}\nTrack: {app.config['WEBSOCKET_SERVER']}/track/{tn}"
+
+    plain_body = f"DHL Update: {tn}\nStatus: {status}\nLocation: {location}\nTrack: {app.config['WEBSOCKET_SERVER']}/track/{tn}"
 
     enqueue_notification({
         "tracking_number": tn,
@@ -501,7 +480,7 @@ def enqueue_realistic_email(tn, status, latest_checkpoint, destination):
         }
     })
 
-# === ROBUST EMAIL SENDER ===
+# === EMAIL SENDER ===
 def send_email_notification(recipient, subject, html_body=None, plain_body=None):
     if not all([app.config['SMTP_HOST'], app.config['SMTP_USER'], app.config['SMTP_PASS']]):
         flask_logger.warning("SMTP not configured")
@@ -548,7 +527,8 @@ def broadcast_update(tn):
         "checkpoints": (shipment.checkpoints or "").split(";"),
         "last_updated": shipment.last_updated.isoformat(),
         "speed_multiplier": speed,
-        "paused": paused
+        "paused": paused,
+        "carrier": shipment.carrier
     }
     try:
         emit('tracking_update', data, broadcast=True)
@@ -668,13 +648,16 @@ def admin_dashboard():
         if s:
             paused = redis_client and redis_client.hget("paused_simulations", tn) == "true"
             speed = float(redis_client.hget("sim_speed_multipliers", tn) or "1.0") if redis_client else 1.0
+            mode = redis_client.hget("transport_mode", tn) or ("air" if estimate_distance(s.origin_location or "Lagos, NG", s.delivery_location) > 1000 else "ground")
             shipments.append({
                 'tracking_number': s.tracking_number,
                 'status': s.status,
                 'delivery_location': s.delivery_location,
                 'last_updated': s.last_updated.strftime("%Y-%m-%d %H:%M"),
                 'paused': paused,
-                'speed': f"{speed:.1f}x"
+                'speed': f"{speed:.1f}x",
+                'mode': mode,
+                'carrier': s.carrier
             })
     total_pages = (total - 1) // per_page + 1
     return render_template('admin_dashboard.html',
@@ -688,10 +671,10 @@ def admin_dashboard():
 def admin_csv():
     output = StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Tracking Number", "Status", "Origin", "Destination", "Email", "Last Updated", "Created At"])
+    writer.writerow(["Tracking Number", "Status", "Origin", "Destination", "Email", "Carrier", "Last Updated", "Created At"])
     for s in Shipment.query.order_by(Shipment.created_at.desc()).all():
         writer.writerow([s.tracking_number, s.status, s.origin_location or "-", s.delivery_location,
-                         s.recipient_email or "-", s.last_updated.strftime("%Y-%m-%d %H:%M"), s.created_at.strftime("%Y-%m-%d %H:%M")])
+                         s.recipient_email or "-", s.carrier, s.last_updated.strftime("%Y-%m-%d %H:%M"), s.created_at.strftime("%Y-%m-%d %H:%M")])
     output.seek(0)
     return Response(output, mimetype="text/csv", headers={"Content-Disposition": f"attachment;filename=shipments_{datetime.utcnow().strftime('%Y%m%d')}.csv"})
 
@@ -729,6 +712,38 @@ def admin_api_speed():
     broadcast_update(tn)
     return jsonify({"success": True})
 
+@app.route('/admin/api/mode', methods=['POST'])
+@admin_required
+def admin_api_mode():
+    data = request.get_json()
+    tn = data.get('tracking_number')
+    mode = data.get('mode')
+    if not tn or mode not in ["air", "ground"]:
+        return jsonify({"error": "Invalid"}), 400
+    if not redis_client:
+        return jsonify({"error": "Redis down"}), 500
+    redis_client.hset("transport_mode", tn, mode)
+    invalidate_cache(tn)
+    broadcast_update(tn)
+    return jsonify({"success": True, "mode": mode})
+
+@app.route('/admin/api/carrier', methods=['POST'])
+@admin_required
+def admin_api_carrier():
+    data = request.get_json()
+    tn = data.get('tracking_number')
+    carrier = data.get('carrier')
+    if not tn or carrier != "DHL":
+        return jsonify({"error": "Invalid"}), 400
+    shipment = Shipment.query.filter_by(tracking_number=tn).first()
+    if not shipment:
+        return jsonify({"error": "Not found"}), 404
+    shipment.carrier = "DHL"
+    db.session.commit()
+    invalidate_cache(tn)
+    broadcast_update(tn)
+    return jsonify({"success": True, "carrier": "DHL"})
+
 # SocketIO
 @socketio.on('connect')
 def on_connect():
@@ -749,10 +764,11 @@ def on_request(data):
     coords = geocode_locations(checkpoints)
     speed = float(redis_client.hget("sim_speed_multipliers", tn) or "1.0") if redis_client else 1.0
     paused = redis_client and redis_client.hget("paused_simulations", tn) == "true"
+    mode = redis_client.hget("transport_mode", tn) or ("air" if estimate_distance(shipment.origin_location or "Lagos, NG", shipment.delivery_location) > 1000 else "ground")
     emit('tracking_update', {
         'tracking_number': tn, 'status': shipment.status, 'delivery_location': shipment.delivery_location,
         'checkpoints': checkpoints, 'coords': [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords],
-        'speed_multiplier': speed, 'paused': paused
+        'speed_multiplier': speed, 'paused': paused, 'mode': mode, 'carrier': shipment.carrier
     })
 
 @socketio.on('disconnect')
