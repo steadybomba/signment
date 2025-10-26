@@ -11,8 +11,9 @@ from rich.console import Console
 from flask_sqlalchemy import SQLAlchemy
 from flask import Flask
 from math import radians, sin, cos, sqrt, atan2
+from typing import Optional, List, Tuple, Dict, Any
 
-# Logging setup
+# === LOGGING & CONSOLE ===
 bot_logger = logging.getLogger('telegram_bot')
 bot_logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
@@ -20,29 +21,45 @@ handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s -
 bot_logger.addHandler(handler)
 console = Console()
 
-# Bot configuration
+# === UPSTASH REDIS CLIENT ===
 try:
-    config = type('BotConfig', (), {
-        'telegram_bot_token': os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        'redis_url': os.getenv("REDIS_URL"),
-        'redis_token': os.getenv("REDIS_TOKEN", ""),
-        'webhook_url': os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-        'websocket_server': os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
-        'allowed_admins': [int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        'valid_statuses': os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-        'route_templates': json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-        'smtp_host': os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        'smtp_port': int(os.getenv("SMTP_PORT", 587)),
-        'smtp_user': os.getenv("SMTP_USER", ""),
-        'smtp_pass': os.getenv("SMTP_PASS", ""),
-        'smtp_from': os.getenv("SMTP_FROM", "no-reply@example.com")
-    })
+    from upstash_redis import Redis
+    redis_client = Redis(
+        url=os.getenv("REDIS_URL", "https://chief-crane-7882.upstash.io"),
+        token=os.getenv("REDIS_TOKEN", "AR7KAAImcDJmZTI5ODIxMjA2YTg0NGEzOTcwYWRjYWM0NTg4MTcxM3AyNzg4Mg")
+    )
+    # Test connection
+    redis_client.set("health_check", "ok", ex=10)
+    redis_client.delete("health_check")
+    console.print("[green]Upstash Redis connected[/green]")
 except Exception as e:
-    bot_logger.error(f"Configuration validation failed: {e}")
-    console.print(f"[error]Configuration validation failed: {e}[/error]")
+    console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
+    redis_client = None
+
+# === CONFIGURATION CLASS (EXPORTED) ===
+class BotConfig:
+    def __init__(self):
+        self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.redis_url = os.getenv("REDIS_URL")
+        self.redis_token = os.getenv("REDIS_TOKEN", "")
+        self.webhook_url = os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook")
+        self.websocket_server = os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com")
+        self.allowed_admins = [int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid.strip()]
+        self.valid_statuses = os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(",")
+        self.route_templates = json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}'))
+        self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+        self.smtp_port = int(os.getenv("SMTP_PORT", 587))
+        self.smtp_user = os.getenv("SMTP_USER", "")
+        self.smtp_pass = os.getenv("SMTP_PASS", "")
+        self.smtp_from = os.getenv("SMTP_FROM", "no-reply@example.com")
+
+try:
+    config = BotConfig()
+except Exception as e:
+    bot_logger.error(f"Config init failed: {e}")
     raise
 
-# === DHL CARRIER CONFIG (MATCHES app.py) ===
+# === DHL CONFIG ===
 DHL_CONFIG = {
     "name": "DHL Express",
     "primary_color": "#D40511",
@@ -65,13 +82,12 @@ DHL_CONFIG = {
     }
 }
 
-# Temporary Flask app for SQLAlchemy
+# === FLASK & DB ===
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI', 'sqlite:///shipments.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# === UPDATED SHIPMENT MODEL (WITH CARRIER) ===
 class Shipment(db.Model):
     __tablename__ = 'shipments'
     id = db.Column(db.Integer, primary_key=True)
@@ -85,9 +101,9 @@ class Shipment(db.Model):
     origin_location = db.Column(db.String(100), nullable=True)
     webhook_url = db.Column(db.Text, nullable=True)
     email_notifications = db.Column(db.Boolean, default=True)
-    carrier = db.Column(db.String(20), default="DHL")  # NEW
+    carrier = db.Column(db.String(20), default="DHL")
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, Any]:
         return {
             'id': self.id,
             'tracking_number': self.tracking_number,
@@ -103,15 +119,7 @@ class Shipment(db.Model):
             'checkpoints': (self.checkpoints or "").split(";") if self.checkpoints else []
         }
 
-# === REDIS CLIENT ===
-redis_client = None
-try:
-    import redis
-    if config.redis_url:
-        redis_client = redis.from_url(config.redis_url)
-except Exception as e:
-    bot_logger.warning(f"Redis not available: {e}")
-
+# === REDIS HELPERS ===
 def safe_redis_operation(func, *args, **kwargs):
     if not redis_client:
         return None
@@ -121,36 +129,34 @@ def safe_redis_operation(func, *args, **kwargs):
         bot_logger.error(f"Redis error: {e}")
         return None
 
-# === UTILITY FUNCTIONS ===
-def get_bot():
+# === UTILS ===
+def get_bot() -> TeleBot:
     return TeleBot(config.telegram_bot_token)
 
-def is_admin(user_id):
+def is_admin(user_id: int) -> bool:
     return user_id in config.allowed_admins
 
-def sanitize_tracking_number(tn):
+def sanitize_tracking_number(tn: str) -> Optional[str]:
     if not tn:
         return None
     tn = re.sub(r'\W+', '', tn.upper())
-    if re.match(DHL_CONFIG['tracking_format'], tn):
-        return tn
-    return None
+    return tn if re.match(DHL_CONFIG['tracking_format'], tn) else None
 
-def generate_unique_id():
+def generate_unique_id() -> str:
     import secrets
     return f"JD{secrets.randbelow(10**10):010d}"
 
-def validate_email(email):
+def validate_email(email: str) -> bool:
     return bool(email and re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email))
 
-def validate_location(location):
+def validate_location(location: str) -> bool:
     return bool(location and isinstance(location, str) and len(location) <= 100)
 
-def validate_webhook_url(url):
+def validate_webhook_url(url: str) -> bool:
     return bool(url and re.match(r'^https?://[^\s/$.?#].[^\s]*$', url))
 
-# === REALISTIC DISTANCE (50+ CITIES) ===
-def estimate_distance(origin, dest):
+# === DISTANCE CALCULATION (50+ CITIES) ===
+def estimate_distance(origin: str, dest: str) -> float:
     city_coords = {
         "Lagos, NG": (6.5244, 3.3792), "Abuja, NG": (9.0579, 7.4951), "Port Harcourt, NG": (4.8156, 7.0498),
         "Kano, NG": (12.0001, 8.5167), "Ibadan, NG": (7.3775, 3.9470), "Enugu, NG": (6.4584, 7.5170),
@@ -186,64 +192,53 @@ def estimate_distance(origin, dest):
     c = 2 * atan2(sqrt(a), sqrt(1-a))
     return round(6371 * c, 1)
 
-# === CACHING & DB OPERATIONS ===
-def get_cached_route_templates():
-    return config.route_templates
-
-def invalidate_cache(tracking_number):
-    if redis_client:
-        try:
-            safe_redis_operation(redis_client.delete, f"shipment:{tracking_number}")
-            bot_logger.info(f"Invalidated cache for {tracking_number}")
-        except Exception as e:
-            bot_logger.error(f"Failed to invalidate cache: {e}")
-
-def get_shipment_list(page=1, per_page=10):
+# === DB OPERATIONS ===
+def get_shipment_list(page: int = 1, per_page: int = 10) -> Tuple[List[str], int]:
     try:
         offset = (page - 1) * per_page
         shipments = Shipment.query.order_by(Shipment.created_at.desc()).offset(offset).limit(per_page).all()
         total = Shipment.query.count()
         return [s.tracking_number for s in shipments], total
     except Exception as e:
-        bot_logger.error(f"Error listing shipments: {e}")
+        bot_logger.error(f"List error: {e}")
         return [], 0
 
-def get_shipment_details(tracking_number):
+def get_shipment_details(tracking_number: str) -> Optional[Dict[str, Any]]:
     try:
         shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
-        if not shipment:
-            return None
-        return shipment.to_dict()
+        return shipment.to_dict() if shipment else None
     except Exception as e:
-        bot_logger.error(f"Error fetching {tracking_number}: {e}")
+        bot_logger.error(f"Fetch error {tracking_number}: {e}")
         return None
 
-def save_shipment(tracking_number, status, checkpoints='', delivery_location=None, recipient_email=None, origin_location=None, webhook_url=None, carrier="DHL"):
+def save_shipment(tracking_number: str, status: str, checkpoints: str = '', delivery_location: Optional[str] = None,
+                  recipient_email: Optional[str] = None, origin_location: Optional[str] = None,
+                  webhook_url: Optional[str] = None, carrier: str = "DHL") -> bool:
     try:
         shipment = Shipment(
             tracking_number=tracking_number,
             status=status,
             checkpoints=checkpoints,
-            delivery_location=delivery_location,
+            delivery_location=delivery_location or "Lagos, NG",
             recipient_email=recipient_email,
-            origin_location=origin_location,
+            origin_location=origin_location or "Lagos, NG",
             webhook_url=webhook_url,
             email_notifications=True,
-            carrier=carrier,
-            last_updated=datetime.utcnow(),
-            created_at=datetime.utcnow()
+            carrier=carrier
         )
         db.session.add(shipment)
         db.session.commit()
         invalidate_cache(tracking_number)
-        bot_logger.info(f"Saved shipment {tracking_number}")
+        bot_logger.info(f"Saved {tracking_number}")
         return True
     except Exception as e:
         db.session.rollback()
-        bot_logger.error(f"Save failed {tracking_number}: {e}")
+        bot_logger.error(f"Save failed: {e}")
         return False
 
-def update_shipment(tracking_number, status=None, delivery_location=None, recipient_email=None, origin_location=None, webhook_url=None, carrier=None):
+def update_shipment(tracking_number: str, status: Optional[str] = None, delivery_location: Optional[str] = None,
+                    recipient_email: Optional[str] = None, origin_location: Optional[str] = None,
+                    webhook_url: Optional[str] = None, carrier: Optional[str] = None) -> bool:
     try:
         shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
         if not shipment:
@@ -267,10 +262,10 @@ def update_shipment(tracking_number, status=None, delivery_location=None, recipi
         return True
     except Exception as e:
         db.session.rollback()
-        bot_logger.error(f"Update failed {tracking_number}: {e}")
+        bot_logger.error(f"Update failed: {e}")
         return False
 
-def search_shipments(query, page=1, per_page=10):
+def search_shipments(query: str, page: int = 1, per_page: int = 10) -> Tuple[List[str], int]:
     try:
         query = f"%{query}%"
         offset = (page - 1) * per_page
@@ -295,8 +290,14 @@ def search_shipments(query, page=1, per_page=10):
         bot_logger.error(f"Search error: {e}")
         return [], 0
 
-# === NOTIFICATION QUEUE ===
-def enqueue_notification(data):
+def invalidate_cache(tracking_number: str):
+    if redis_client:
+        try:
+            safe_redis_operation(redis_client.delete, f"shipment:{tracking_number}")
+        except:
+            pass
+
+def enqueue_notification(data: Dict[str, Any]) -> bool:
     if not redis_client:
         return False
     try:
@@ -306,17 +307,30 @@ def enqueue_notification(data):
         bot_logger.error(f"Queue failed: {e}")
         return False
 
-# === DYNAMIC MENU (DHL BRANDING) ===
-def send_dynamic_menu(chat_id, message_id=None, page=1):
+# === MENU & RATE LIMIT ===
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX = 20
+
+def rate_limit(func):
+    @wraps(func)
+    def wrapper(message):
+        user_id = str(message.from_user.id)
+        key = f"rate_limit:{user_id}"
+        count = safe_redis_operation(redis_client.incr, key) if redis_client else 0
+        if count == 1:
+            safe_redis_operation(redis_client.expire, key, RATE_LIMIT_WINDOW)
+        if count > RATE_LIMIT_MAX:
+            get_bot().reply_to(message, "Rate limit exceeded. Try again later.")
+            return
+        return func(message)
+    return wrapper
+
+def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
     shipments, total = get_shipment_list(page=page)
     markup = InlineKeyboardMarkup(row_width=2)
     for tn in shipments:
         s = get_shipment_details(tn)
-        status = s['status']
-        carrier = s.get('carrier', 'DHL')
-        label = f"{tn} [{status}]"
-        if carrier == "DHL":
-            label = f"{tn} [DHL]"
+        label = f"{tn} [DHL]" if s.get('carrier') == 'DHL' else f"{tn} [{s['status']}]"
         markup.add(InlineKeyboardButton(label, callback_data=f"view_{tn}"))
     nav = []
     if page > 1:
@@ -334,31 +348,13 @@ def send_dynamic_menu(chat_id, message_id=None, page=1):
         InlineKeyboardButton("Help", callback_data="help")
     )
     text = f"*Admin Panel* (Page {page})\nTotal: `{total}` shipments"
+    bot = get_bot()
     if message_id:
         bot.edit_message_text(text, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
     else:
         bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
 
-# === RATE LIMIT ===
-RATE_LIMIT_WINDOW = 60
-RATE_LIMIT_MAX = 20
-
-def rate_limit(func):
-    @wraps(func)
-    def wrapper(message):
-        user_id = str(message.from_user.id)
-        key = f"rate_limit:{user_id}"
-        count = safe_redis_operation(redis_client.incr, key) if redis_client else 0
-        if count == 1:
-            safe_redis_operation(redis_client.expire, key, RATE_LIMIT_WINDOW)
-        if count > RATE_LIMIT_MAX:
-            bot.reply_to(message, "Rate limit exceeded. Try again later.")
-            return
-        return func(message)
-    return wrapper
-
-# === EXPORT & LOGS ===
-def export_shipments():
+def export_shipments() -> Optional[str]:
     try:
         shipments = Shipment.query.all()
         return json.dumps([s.to_dict() for s in shipments], indent=2, default=str)
@@ -366,21 +362,18 @@ def export_shipments():
         bot_logger.error(f"Export error: {e}")
         return None
 
-def get_recent_logs(limit=5):
+def get_recent_logs(limit: int = 5) -> List[str]:
     return [f"{datetime.utcnow().isoformat()} - INFO - Sample log {i}" for i in range(1, limit + 1)]
 
-# === CALLBACK HELPERS ===
-def show_shipment_menu(call, page, prefix, prompt, extra_buttons=None):
+def show_shipment_menu(call, page: int, prefix: str, prompt: str, extra_buttons=None):
     shipments, total = get_shipment_list(page=page)
     if not shipments:
-        bot.edit_message_text("No shipments.", call.message.chat.id, call.message.message_id)
+        get_bot().edit_message_text("No shipments.", call.message.chat.id, call.message.message_id)
         return
     markup = InlineKeyboardMarkup(row_width=1)
     for tn in shipments:
         s = get_shipment_details(tn)
-        label = tn
-        if s.get('carrier') == 'DHL':
-            label = f"{tn} [DHL]"
+        label = f"{tn} [DHL]" if s.get('carrier') == 'DHL' else tn
         markup.add(InlineKeyboardButton(label, callback_data=f"{prefix}_{tn}_{page}"))
     nav = []
     if page > 1:
@@ -391,46 +384,39 @@ def show_shipment_menu(call, page, prefix, prompt, extra_buttons=None):
         markup.add(*nav)
     if extra_buttons:
         markup.add(*extra_buttons)
-    bot.edit_message_text(f"*{prompt}* (Page {page}):", call.message.chat.id, call.message.message_id,
-                         parse_mode='Markdown', reply_markup=markup)
+    get_bot().edit_message_text(f"*{prompt}* (Page {page}):", call.message.chat.id, call.message.message_id,
+                               parse_mode='Markdown', reply_markup=markup)
 
-# === WEBHOOK SETUP ===
+# === WEBHOOK & KEEP-ALIVE ===
 def set_webhook():
     try:
         bot = get_bot()
         bot.remove_webhook()
+        time.sleep(1)
         bot.set_webhook(url=config.webhook_url)
         bot_logger.info(f"Webhook set: {config.webhook_url}")
     except Exception as e:
         bot_logger.error(f"Webhook failed: {e}")
 
-# === BOT INSTANCE (for use in handlers) ===
 bot = get_bot()
 
-# === KEEP-ALIVE LOOP ===
 def keep_alive():
-    bot_logger.info("Starting keep-alive loop")
-    console.print("[info]Starting keep-alive loop[/info]")
+    bot_logger.info("Keep-alive loop started")
+    console.print("[info]Keep-alive loop started[/info]")
     while True:
         try:
-            webhook_info = bot.get_webhook_info()
-            if webhook_info.url != config.webhook_url:
-                bot_logger.warning("Webhook URL mismatch, resetting...")
-                console.print("[warning]Webhook URL mismatch, resetting...[/warning]")
+            info = bot.get_webhook_info()
+            if info.url != config.webhook_url:
+                bot_logger.warning("Webhook mismatch, resetting...")
                 set_webhook()
-            else:
-                bot_logger.info("Webhook status: OK")
-                console.print("[info]Webhook status: OK[/info]")
             time.sleep(300)
         except Exception as e:
-            bot_logger.error(f"Error in keep-alive loop: {e}")
-            console.print(f"[error]Error in keep-alive loop: {e}[/error]")
+            bot_logger.error(f"Keep-alive error: {e}")
             time.sleep(60)
 
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
     set_webhook()
-    bot_logger.info("Bot started with webhook mode")
-    console.print("[info]Bot started with webhook mode[/info]")
+    console.print("[green]utils.py ready — Upstash Redis + BotConfig exported[/green]")
     keep_alive()
