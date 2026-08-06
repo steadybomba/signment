@@ -661,6 +661,34 @@ class DHLRealisticSimulator:
         }
         return random.choice(weather_events.get(city, ["Clear"]))
 
+    @staticmethod
+    def generate_pickup_location(origin):
+        """Generate a realistic pickup location."""
+        pickup_locations = {
+            "Lagos, NG": ["Ikeja Industrial Zone", "Apapa Port Complex", "Victoria Island Business District"],
+            "Abuja, NG": ["Central Business District", "Garki Industrial Area", "Wuse Commercial Zone"],
+            "Dubai, UAE": ["Jebel Ali Free Zone", "Dubai Airport Freezone", "Business Bay"],
+            "London, UK": ["Heathrow Cargo Area", "Canary Wharf", "London City Business Park"],
+            "New York, NY": ["JFK Cargo Area", "Times Square District", "Brooklyn Industrial Zone"],
+            "Sydney, AU": ["Sydney Airport Cargo", "Parramatta Industrial", "CBD Business District"]
+        }
+        locations = pickup_locations.get(origin, ["Industrial Zone", "Business District"])
+        return random.choice(locations)
+
+    @staticmethod
+    def generate_delivery_location(destination):
+        """Generate a realistic delivery location."""
+        delivery_locations = {
+            "Lagos, NG": ["Adeola Odeku Street, VI", "Bourdillon Road, Ikoyi", "Awolowo Road, Ikoyi"],
+            "Abuja, NG": ["Gana Street, Maitama", "Lagos Street, Garki", "Mambilla Street, Wuse"],
+            "Dubai, UAE": ["Sheikh Zayed Road, Dubai Marina", "Jumeirah Beach Road", "Al Barsha District"],
+            "London, UK": ["Brick Lane, Shoreditch", "King's Road, Chelsea", "Oxford Street, Mayfair"],
+            "New York, NY": ["5th Avenue, Manhattan", "Wall Street, Financial District", "Broadway, Soho"],
+            "Sydney, AU": ["George Street, CBD", "Bondi Beach Road", "Kings Cross, Potts Point"]
+        }
+        locations = delivery_locations.get(destination, ["Main Street", "City Center"])
+        return random.choice(locations)
+
 
 def track_metrics(tn, event_type, data):
     """Log simulation metrics for monitoring."""
@@ -697,128 +725,179 @@ def handle_exception(tn, shipment, reason):
     eventlet.sleep(3600)
 
 
-def enhanced_simulate_tracking(tn):
+def enhanced_full_simulate_tracking(tn):
+    """Complete pickup-to-delivery simulation."""
     with app.app_context():
         shipment = Shipment.query.filter_by(tracking_number=tn).first()
         if not shipment:
             return
 
         origin = shipment.origin_location or "Lagos, NG"
-    destination = shipment.delivery_location
-    estimated_duration, _ = DHLRealisticSimulator.estimate_realistic_delivery_time(origin, destination)
-    speed_multiplier = float(redis_client.hget("sim_speed_multipliers", tn) or "1.0") if redis_client else 1.0
-    speed_multiplier = max(0.1, min(5.0, speed_multiplier))
-    distance_km = estimate_distance(origin, destination)
+        destination = shipment.delivery_location
+        
+        # Generate realistic locations
+        pickup_location = DHLRealisticSimulator.generate_pickup_location(origin)
+        delivery_address = DHLRealisticSimulator.generate_delivery_location(destination)
+        
+        # Store in Redis for tracking
+        if redis_client:
+            redis_client.hset("pickup_location", tn, pickup_location)
+            redis_client.hset("delivery_address", tn, delivery_address)
+        
+        estimated_duration, _ = DHLRealisticSimulator.estimate_realistic_delivery_time(origin, destination)
+        speed_multiplier = float(redis_client.hget("sim_speed_multipliers", tn) or "1.0") if redis_client else 1.0
+        speed_multiplier = max(0.1, min(5.0, speed_multiplier))
+        distance_km = estimate_distance(origin, destination)
 
-    hubs = ["Leipzig, DE", "Dubai, UAE", "Hong Kong, HK"] if distance_km > 5000 else ["Frankfurt, DE", "London, UK"] if distance_km > 2000 else [origin]
-    route_template = [origin] + random.sample(hubs, k=min(len(hubs), max(1, len(hubs)))) + [destination]
+        hubs = ["Leipzig, DE", "Dubai, UAE", "Hong Kong, HK"] if distance_km > 5000 else ["Frankfurt, DE", "London, UK"] if distance_km > 2000 else [origin]
+        route_template = [origin] + random.sample(hubs, k=min(len(hubs), max(1, len(hubs)))) + [destination]
 
-    checkpoints = (shipment.checkpoints or "").split(";") if shipment.checkpoints else []
-    current_status = shipment.status
-    start_time = datetime.now()
-    delivery_attempts = 0
-    max_attempts = 3 if random.random() < 0.15 else 1
+        checkpoints = (shipment.checkpoints or "").split(";") if shipment.checkpoints else []
+        current_status = shipment.status
+        start_time = datetime.now()
+        delivery_attempts = 0
+        max_attempts = 3 if random.random() < 0.15 else 1
+        stage = "pickup"  # pickup → transit → delivery → delivered
 
-    while datetime.now() - start_time < timedelta(days=10):
-        if redis_client and redis_client.hget("paused_simulations", tn) == "true":
-            eventlet.sleep(10)
-            continue
+        while datetime.now() - start_time < timedelta(days=10):
+            if redis_client and redis_client.hget("paused_simulations", tn) == "true":
+                eventlet.sleep(10)
+                continue
 
-        try:
-            elapsed_hours = (datetime.now() - start_time).total_seconds() / 3600
-            total_hours = max(1, estimated_duration.total_seconds() / 3600)
-            progress = min(elapsed_hours * speed_multiplier / total_hours, 1.0)
+            try:
+                elapsed_hours = (datetime.now() - start_time).total_seconds() / 3600
+                total_hours = max(1, estimated_duration.total_seconds() / 3600)
+                progress = min(elapsed_hours * speed_multiplier / total_hours, 1.0)
 
-            if progress < 0.1:
-                new_status = "Pending"
-            elif progress < 0.35:
-                new_status = "In_Transit"
-            elif progress < 0.55:
-                new_status = "Customs_Clearance" if random.random() < 0.12 else "In_Transit"
-            elif progress < 0.75:
-                new_status = "In_Transit"
-            elif progress < 0.9:
-                new_status = "Out_for_Delivery"
-            else:
-                if delivery_attempts >= max_attempts:
-                    new_status = "Delivered"
-                elif random.random() < 0.15:
-                    new_status = "Exception"
-                    delivery_attempts += 1
+                # Determine stage based on progress
+                if progress < 0.1:
+                    stage = "pickup"
+                    new_status = "Pending"
+                elif progress < 0.35:
+                    stage = "pickup"
+                    new_status = "In_Transit"
+                elif progress < 0.55:
+                    stage = "transit"
+                    new_status = "Customs_Clearance" if random.random() < 0.12 else "In_Transit"
+                elif progress < 0.75:
+                    stage = "transit"
+                    new_status = "In_Transit"
+                elif progress < 0.9:
+                    stage = "delivery"
+                    new_status = "Out_for_Delivery"
                 else:
-                    new_status = "Delivered"
+                    if delivery_attempts >= max_attempts:
+                        new_status = "Delivered"
+                        stage = "delivered"
+                    elif random.random() < 0.15:
+                        new_status = "Exception"
+                        delivery_attempts += 1
+                    else:
+                        new_status = "Delivered"
+                        stage = "delivered"
 
-            if new_status == "Delayed" or (progress < 1.0 and random.random() < 0.05 * speed_multiplier):
-                new_status = "Delayed"
+                # Generate appropriate checkpoint
+                if new_status != current_status or random.random() < 0.12:
+                    checkpoint = None
+                    
+                    if stage == "pickup":
+                        pickup_events = [
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {pickup_location} - Pickup request received from shipper",
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {pickup_location} - DHL courier en route for pickup",
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {pickup_location} - Package collected from shipper",
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {origin} - Shipment processed at DHL origin facility",
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {origin} - Package scanned and weighed at DHL facility"
+                        ]
+                        checkpoint = random.choice(pickup_events)
+                        
+                    elif stage == "transit":
+                        city = random.choice(route_template)
+                        checkpoint = DHLRealisticSimulator.generate_realistic_checkpoint(
+                            city,
+                            new_status,
+                            tn,
+                            destination=destination
+                        )
+                        
+                    elif stage == "delivery":
+                        delivery_events = [
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {destination} - Shipment arrived at destination DHL facility",
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {destination} - Package sorted for delivery route",
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {delivery_address} - Package loaded onto delivery vehicle",
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {delivery_address} - Out for delivery to recipient address",
+                            f"{datetime.now():%Y-%m-%d %H:%M} - {delivery_address} - Delivery attempted - recipient not available"
+                        ]
+                        if new_status == "Delivered":
+                            delivery_events.append(
+                                f"{datetime.now():%Y-%m-%d %H:%M} - {delivery_address} - Delivered successfully - Signed by: {DHLRealisticSimulator.generate_pod_info()}"
+                            )
+                        checkpoint = random.choice(delivery_events)
+                        
+                    if checkpoint and checkpoint not in checkpoints:
+                        checkpoints.append(checkpoint)
+                        current_status = new_status
+                        track_metrics(tn, "checkpoint_added", {
+                            "status": current_status,
+                            "stage": stage,
+                            "checkpoint": checkpoint,
+                            "progress": round(progress, 2)
+                        })
 
-            if new_status != current_status or random.random() < 0.12:
-                city = origin if new_status == "Pending" else destination if new_status in ["Out_for_Delivery", "Delivered", "Exception"] else random.choice(route_template)
-                checkpoint = DHLRealisticSimulator.generate_realistic_checkpoint(
-                    city,
-                    new_status,
-                    tn,
-                    destination=destination
-                )
-                if new_status == "Delayed":
-                    checkpoint += f" | Weather: {DHLRealisticSimulator.get_weather_impact(city)}"
-                if checkpoint not in checkpoints:
-                    checkpoints.append(checkpoint)
-                    current_status = new_status
-                    track_metrics(tn, "checkpoint_added", {
+                if current_status == "Exception":
+                    handle_exception(tn, shipment, "delivery attempt failed")
+                    track_metrics(tn, "exception", {
                         "status": current_status,
-                        "city": city,
-                        "checkpoint": checkpoint,
-                        "progress": round(progress, 2)
+                        "reason": "delivery attempt failed",
+                        "distance_km": distance_km,
+                        "stage": stage
                     })
+                    break
 
-            if current_status == "Exception":
-                handle_exception(tn, shipment, "recipient not available")
-                track_metrics(tn, "exception", {
-                    "status": current_status,
-                    "reason": "recipient not available",
-                    "distance_km": distance_km
-                })
-                break
+                shipment.status = current_status
+                shipment.checkpoints = ";".join(checkpoints[-50:])
+                shipment.last_updated = datetime.now()
+                db.session.commit()
+                invalidate_cache(tn)
 
-            shipment.status = current_status
-            shipment.checkpoints = ";".join(checkpoints[-50:])
+                if len(checkpoints) > 1 and random.random() < 0.8:
+                    enqueue_dhl_email(tn, current_status, checkpoints[-1], destination)
+
+                broadcast_update(tn)
+
+                if current_status in ["Delivered", "Returned"]:
+                    # Add final delivery confirmation
+                    final_checkpoint = f"{datetime.now():%Y-%m-%d %H:%M} - {delivery_address} - Delivery confirmed - Signed by: {DHLRealisticSimulator.generate_pod_info()}"
+                    if final_checkpoint not in checkpoints:
+                        checkpoints.append(final_checkpoint)
+                        shipment.checkpoints = ";".join(checkpoints[-50:])
+                        db.session.commit()
+                    break
+
+                wait_seconds = random.uniform(15, 60) / speed_multiplier
+                if DHLRealisticSimulator.is_business_hours(datetime.now()):
+                    wait_seconds *= 0.7
+                if stage in ["pickup", "delivery"]:
+                    wait_seconds *= 0.5
+                eventlet.sleep(min(max(wait_seconds, 5), 120))
+
+            except Exception as e:
+                sim_logger.error(f"Enhanced full simulation error for {tn}: {e}")
+                eventlet.sleep(30)
+
+        if shipment.status not in ["Delivered", "Returned"]:
+            shipment.status = "Delivered" if delivery_attempts < max_attempts else "Exception"
             shipment.last_updated = datetime.now()
             db.session.commit()
             invalidate_cache(tn)
-
-            if len(checkpoints) > 1 and random.random() < 0.8:
-                enqueue_dhl_email(tn, current_status, checkpoints[-1], destination)
-
             broadcast_update(tn)
-
-            if current_status in ["Delivered", "Returned"]:
-                break
-
-            wait_seconds = random.uniform(15, 60) / speed_multiplier
-            if DHLRealisticSimulator.is_business_hours(datetime.now()):
-                wait_seconds *= 0.7
-            if current_status in ["Out_for_Delivery", "Delivered"]:
-                wait_seconds *= 0.5
-            eventlet.sleep(min(max(wait_seconds, 5), 120))
-
-        except Exception as e:
-            sim_logger.error(f"Enhanced simulation error for {tn}: {e}")
-            eventlet.sleep(30)
-
-    if shipment.status not in ["Delivered", "Returned"]:
-        shipment.status = "Delivered" if delivery_attempts < max_attempts else "Exception"
-        shipment.last_updated = datetime.now()
-        db.session.commit()
-        invalidate_cache(tn)
-        broadcast_update(tn)
 
 
 def simulate_tracking(tn):
     with app.app_context():
         try:
-            enhanced_simulate_tracking(tn)
+            enhanced_full_simulate_tracking(tn)
         except Exception as e:
-            sim_logger.error(f"Enhanced simulation failed for {tn}: {e}")
+            sim_logger.error(f"Enhanced full simulation failed for {tn}: {e}")
             basic_simulate_tracking(tn)
 
 
