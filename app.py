@@ -1109,15 +1109,26 @@ def send_email_notification(recipient, subject, html_body=None, plain_body=None,
             time.sleep(2 ** attempt)
     return False
 
-# Broadcast
+# ============================================================
+# FIXED: BROADCAST UPDATE - Using socketio.emit instead of emit
+# ============================================================
 def broadcast_update(tn):
+    """Broadcast shipment update via Socket.IO and webhook."""
     shipment = Shipment.query.filter_by(tracking_number=tn).first()
     if not shipment:
         return
+    
     speed = float(redis_client.hget("sim_speed_multipliers", tn) or "1.0") if redis_client else 1.0
     paused = redis_client and redis_client.hget("paused_simulations", tn) == "true"
-    coords = geocode_locations((shipment.checkpoints or "").split(";"))
-    route_coords = build_route_from_checkpoints(coords, mode='drive')
+    
+    try:
+        coords = geocode_locations((shipment.checkpoints or "").split(";"))
+        route_coords = build_route_from_checkpoints(coords, mode='drive')
+    except Exception as e:
+        flask_logger.warning(f"Geocoding failed for {tn}: {e}")
+        coords = []
+        route_coords = []
+    
     data = {
         "tracking_number": tn,
         "status": shipment.status,
@@ -1130,14 +1141,20 @@ def broadcast_update(tn):
         "paused": paused,
         "carrier": shipment.carrier
     }
+    
+    # Socket.IO - Using socketio.emit instead of flask.emit to avoid request context issues
     try:
-        emit('tracking_update', data, broadcast=True)
+        socketio.emit('tracking_update', data, broadcast=True, namespace='/')
     except Exception as e:
-        flask_logger.exception("Socket emit failed for %s: %s", tn, e)
-    try:
-        requests.post(f"{app.config['WEBSOCKET_SERVER']}/notify", json=data, timeout=3)
-    except Exception as e:
-        flask_logger.exception("Webhook notify failed for %s: %s", tn, e)
+        flask_logger.warning(f"Socket emit failed for {tn}: {e}")
+    
+    # Webhook - only if configured and not localhost
+    webhook_url = f"{app.config['WEBSOCKET_SERVER']}/notify"
+    if 'localhost' not in webhook_url and '127.0.0.1' not in webhook_url:
+        try:
+            requests.post(webhook_url, json=data, timeout=2)
+        except Exception as e:
+            flask_logger.debug(f"Webhook notify skipped for {tn}: {e}")
 
 # Admin decorator
 def admin_required(f):
