@@ -2,18 +2,20 @@ import os
 import re
 import json
 import logging
+import socket
 import time
 from datetime import datetime
 from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from functools import wraps
 from rich.console import Console
+from urllib.parse import quote_plus, urlparse
 from utils import (
     BotConfig, config, get_bot, is_admin, send_dynamic_menu, get_shipment_details,
     generate_unique_id, search_shipments, RATE_LIMIT_WINDOW, RATE_LIMIT_MAX,
     safe_redis_operation, redis_client, sanitize_tracking_number, enqueue_notification,
     save_shipment, update_shipment, get_shipment_list, export_shipments, get_recent_logs,
-    show_shipment_menu, cache_route_templates, set_webhook, keep_alive, estimate_distance, DHL_CONFIG
+    show_shipment_menu, cache_route_templates, keep_alive, estimate_distance, DHL_CONFIG
 )
 
 # Logging setup
@@ -670,6 +672,47 @@ def notify_admins_on_startup() -> None:
 
     if redis_client:
         safe_redis_operation(redis_client.set, "bot:startup_notified", "1", ex=86400)
+
+
+def is_valid_webhook_url(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except Exception:
+        return False
+
+
+def is_hostname_resolvable(hostname: str) -> bool:
+    if not hostname:
+        return False
+    try:
+        socket.getaddrinfo(hostname, None)
+        return True
+    except socket.gaierror as e:
+        bot_logger.error(f"Webhook hostname resolution failed: {hostname} -> {e}")
+        return False
+
+
+def set_webhook() -> None:
+    if not config.webhook_url or not is_valid_webhook_url(config.webhook_url):
+        bot_logger.error(f"Skipping webhook setup because WEBHOOK_URL is invalid: {config.webhook_url}")
+        return
+
+    webhook_host = urlparse(config.webhook_url).hostname
+    if not is_hostname_resolvable(webhook_host):
+        bot_logger.error(f"Skipping webhook setup because webhook host is not resolvable: {webhook_host}")
+        return
+
+    try:
+        bot = get_bot()
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=config.webhook_url)
+        bot_logger.info(f"Webhook set: {config.webhook_url}")
+    except Exception as e:
+        bot_logger.error(f"Webhook failed: {e}")
 
 
 def start_bot_service() -> None:
