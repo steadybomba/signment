@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import re
 import json
 import logging
+import socket
 import time
 from datetime import datetime
 from telebot import TeleBot
@@ -13,7 +14,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask import Flask
 from math import radians, sin, cos, sqrt, atan2
 from typing import Optional, List, Tuple, Dict, Any
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 load_dotenv()
 
@@ -43,55 +44,111 @@ console = Console()
 
 # === REDIS CLIENT ===
 redis_client = None
-redis_url = os.getenv("REDIS_URL")
+redis_url = os.getenv("REDIS_URL", "").strip()
 redis_token = os.getenv("REDIS_TOKEN", "")
 redis_user = os.getenv("REDISUSER", os.getenv("REDIS_USER", "default"))
 redis_password = os.getenv("REDIS_PASSWORD", os.getenv("REDISPASSWORD", os.getenv("REDIS_PASS", "")))
-redis_host = os.getenv("REDISHOST", os.getenv("REDIS_HOST", ""))
-redis_port = os.getenv("REDISPORT", os.getenv("REDIS_PORT", "6379"))
+redis_host = os.getenv("REDISHOST", os.getenv("REDIS_HOST", "")).strip()
+redis_port = os.getenv("REDISPORT", os.getenv("REDIS_PORT", "6379")).strip()
 
-# Resolve template-style Railway env vars if needed
-if redis_url:
-    if "${{" in redis_url or "{{" in redis_url:
-        redis_url = redis_url.replace("${{REDISUSER}}", redis_user)
-        redis_url = redis_url.replace("${{REDIS_PASSWORD}}", redis_password)
-        redis_url = redis_url.replace("${{REDISPASSWORD}}", redis_password)
-        redis_url = redis_url.replace("${{REDISHOST}}", redis_host)
-        redis_url = redis_url.replace("${{REDISPORT}}", redis_port)
-        redis_url = redis_url.replace("{{REDISUSER}}", redis_user)
-        redis_url = redis_url.replace("{{REDIS_PASSWORD}}", redis_password)
-        redis_url = redis_url.replace("{{REDISPASSWORD}}", redis_password)
-        redis_url = redis_url.replace("{{REDISHOST}}", redis_host)
-        redis_url = redis_url.replace("{{REDISPORT}}", redis_port)
 
-# If URL is missing or still unresolved, build it from individual parts
-if not redis_url and redis_host:
-    redis_url = f"redis://{redis_user}:{redis_password}@{redis_host}:{redis_port}"
+def _resolve_template_url(url: str) -> str:
+    if not url:
+        return url
+    resolved = url.strip()
+    placeholders = {
+        "${{REDISUSER}}": redis_user,
+        "${{REDIS_PASSWORD}}": redis_password,
+        "${{REDISPASSWORD}}": redis_password,
+        "${{REDISHOST}}": redis_host,
+        "${{REDISPORT}}": redis_port,
+        "${REDISUSER}": redis_user,
+        "${REDIS_PASSWORD}": redis_password,
+        "${REDISPASSWORD}": redis_password,
+        "${REDISHOST}": redis_host,
+        "${REDISPORT}": redis_port,
+        "{{REDISUSER}}": redis_user,
+        "{{REDIS_PASSWORD}}": redis_password,
+        "{{REDISPASSWORD}}": redis_password,
+        "{{REDISHOST}}": redis_host,
+        "{{REDISPORT}}": redis_port,
+    }
+    for placeholder, value in placeholders.items():
+        resolved = resolved.replace(placeholder, value)
+    if "{{" in resolved or "}}" in resolved:
+        return ""
+    return resolved
 
-if redis_url:
-    parsed_url = urlparse(redis_url)
+
+def _build_redis_url(user: str, password: str, host: str, port: str) -> str:
+    if not host:
+        return ""
+    auth = ""
+    if user:
+        auth = quote_plus(user)
+        if password:
+            auth = f"{auth}:{quote_plus(password)}"
+    return f"redis://{auth + '@' if auth else ''}{host}:{port}"
+
+
+def _is_hostname_resolvable(hostname: str) -> bool:
+    if not hostname:
+        return False
     try:
-        if parsed_url.scheme in ("https", "http") or "upstash" in redis_url:
-            from upstash_redis import Redis as UpstashRedis
-
-            redis_client = UpstashRedis(url=redis_url, token=redis_token)
-            redis_client.set("health_check", "ok", ex=10)
-            redis_client.delete("health_check")
-            console.print("[green]Upstash Redis connected[/green]")
-        else:
-            try:
-                from redis import Redis as RedisClient
-            except ImportError as e:
-                raise RuntimeError(
-                    "redis package is not installed; install 'redis' to use standard redis:// URLs"
-                ) from e
-
-            redis_client = RedisClient.from_url(redis_url)
-            redis_client.ping()
-            console.print("[green]Redis connected[/green]")
+        socket.getaddrinfo(hostname, None)
+        return True
     except Exception as e:
-        console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
+        console.print(f"[yellow]Redis hostname not resolvable: {hostname} ({e})[/yellow]")
+        return False
+
+
+if redis_url:
+    redis_url = _resolve_template_url(redis_url)
+
+if not redis_url and redis_host:
+    redis_url = _build_redis_url(redis_user, redis_password, redis_host, redis_port)
+
+if redis_url:
+    redis_url = redis_url.strip()
+    parsed_url = urlparse(redis_url)
+    scheme = parsed_url.scheme.lower()
+    hostname = parsed_url.hostname
+
+    if hostname and not _is_hostname_resolvable(hostname):
+        console.print(f"[yellow]Redis unavailable: host not resolvable: {hostname}[/yellow]")
         redis_client = None
+    else:
+        try:
+            if scheme in ("https", "http") or "upstash" in redis_url.lower() or scheme.startswith("upstash"):
+                from upstash_redis import Redis as UpstashRedis
+
+                redis_client = UpstashRedis(url=redis_url, token=redis_token)
+                redis_client.set("health_check", "ok", ex=10)
+                redis_client.delete("health_check")
+                console.print("[green]Upstash Redis connected[/green]")
+            elif scheme in ("redis", "rediss"):
+                from redis import Redis as RedisClient
+
+                redis_client = RedisClient.from_url(redis_url, decode_responses=True)
+                redis_client.ping()
+                console.print("[green]Redis connected[/green]")
+            else:
+                console.print(f"[yellow]Redis unavailable: unsupported Redis scheme '{scheme}'[/yellow]")
+                redis_client = None
+        except Exception as e:
+            if scheme in ("redis", "rediss") or redis_url.lower().startswith("redis://"):
+                try:
+                    from redis import Redis as RedisClient
+
+                    redis_client = RedisClient.from_url(redis_url, decode_responses=True)
+                    redis_client.ping()
+                    console.print("[green]Redis connected via redis-py fallback[/green]")
+                except Exception as fallback_error:
+                    console.print(f"[yellow]Redis unavailable: {fallback_error}[/yellow]")
+                    redis_client = None
+            else:
+                console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
+                redis_client = None
 else:
     console.print("[yellow]Redis unavailable: REDIS_URL not configured or could not be resolved[/yellow]")
     redis_client = None
