@@ -65,7 +65,7 @@ from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy import inspect, text
 from time import sleep
 from urllib.parse import quote_plus
-from telebot import TeleBot
+from telebot import TeleBot, types
 from wtforms import StringField, SubmitField
 from wtforms.validators import DataRequired
 from flask_wtf import FlaskForm
@@ -1134,6 +1134,20 @@ def track():
         proof_of_delivery=proof_of_delivery,
         tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID']
     )
+
+@app.route('/telegram/webhook', methods=['POST'])
+def telegram_webhook():
+    try:
+        bot = get_bot()
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({'error': 'Invalid JSON payload'}), 400
+        update = types.Update.de_json(data)
+        bot.process_new_updates([update])
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        flask_logger.exception('Telegram webhook processing failed: %s', e)
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/health')
 def health_check():
