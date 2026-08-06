@@ -86,6 +86,10 @@ from utils import (
 # Initialize Flask app
 app = Flask(__name__)
 
+# Email test mode - set in environment
+EMAIL_TEST_MODE = os.getenv('EMAIL_TEST_MODE', 'false').lower() == 'true'
+EMAIL_ENABLED = os.getenv('EMAIL_ENABLED', 'true').lower() == 'true'
+
 # Load config
 try:
     config = BotConfig(
@@ -1063,6 +1067,17 @@ def enqueue_dhl_email(tn, status, latest_checkpoint, destination, service_level=
 
 # === EMAIL SENDER ===
 def send_email_notification(recipient, subject, html_body=None, plain_body=None, tracking_number=None, email_type=None, message=None):
+    # Test mode - just log emails
+    if EMAIL_TEST_MODE:
+        flask_logger.info(f"📧 TEST MODE - Email would be sent to: {recipient}")
+        flask_logger.info(f"   Subject: {subject}")
+        flask_logger.info(f"   Tracking: {tracking_number}")
+        return True
+    
+    if not EMAIL_ENABLED:
+        flask_logger.info(f"📧 Email disabled - would send to {recipient}: {subject}")
+        return True
+    
     if not all([app.config['SMTP_HOST'], app.config['SMTP_USER'], app.config['SMTP_PASS']]):
         flask_logger.warning("SMTP not configured")
         return False
@@ -1110,7 +1125,7 @@ def send_email_notification(recipient, subject, html_body=None, plain_body=None,
     return False
 
 # ============================================================
-# FIXED: BROADCAST UPDATE - Using socketio.emit instead of emit
+# FIXED: BROADCAST UPDATE - Multiple fallback methods
 # ============================================================
 def broadcast_update(tn):
     """Broadcast shipment update via Socket.IO and webhook."""
@@ -1142,11 +1157,16 @@ def broadcast_update(tn):
         "carrier": shipment.carrier
     }
     
-    # Socket.IO - Using socketio.emit instead of flask.emit to avoid request context issues
+    # Socket.IO - Try different emit methods
     try:
+        # Method 1: Try with broadcast=True
         socketio.emit('tracking_update', data, broadcast=True, namespace='/')
-    except Exception as e:
-        flask_logger.warning(f"Socket emit failed for {tn}: {e}")
+    except TypeError:
+        try:
+            # Method 2: Try without broadcast
+            socketio.emit('tracking_update', data, namespace='/')
+        except Exception as e:
+            flask_logger.warning(f"Socket emit failed for {tn}: {e}")
     
     # Webhook - only if configured and not localhost
     webhook_url = f"{app.config['WEBSOCKET_SERVER']}/notify"
@@ -1164,6 +1184,16 @@ def admin_required(f):
             return redirect(url_for('admin_login'))
         return f(*args, **kwargs)
     return decorated
+
+# === FAVICON ROUTE ===
+@app.route('/favicon.ico')
+def favicon():
+    """Serve a favicon."""
+    try:
+        # Redirect to DHL favicon
+        return redirect('https://www.dhl.com/favicon.ico')
+    except:
+        return '', 204
 
 # Routes
 @app.route('/')
