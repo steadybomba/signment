@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 import re
 import json
 import logging
@@ -12,46 +13,114 @@ from flask_sqlalchemy import SQLAlchemy
 from flask import Flask
 from math import radians, sin, cos, sqrt, atan2
 from typing import Optional, List, Tuple, Dict, Any
+from urllib.parse import urlparse
+
+load_dotenv()
 
 # === LOGGING & CONSOLE ===
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+LOG_FORMAT = os.getenv('LOG_FORMAT', '%(asctime)s %(levelname)s [%(name)s] %(message)s')
+
+def configure_logging() -> None:
+    level = getattr(logging, LOG_LEVEL, logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(level)
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        root.addHandler(handler)
+    else:
+        for handler in root.handlers:
+            if not handler.formatter:
+                handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.getLogger('werkzeug').setLevel(level)
+    logging.getLogger('sqlalchemy.engine').setLevel(level)
+
+configure_logging()
+
 bot_logger = logging.getLogger('telegram_bot')
-bot_logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-bot_logger.addHandler(handler)
 console = Console()
 
-# === UPSTASH REDIS CLIENT ===
-try:
-    from upstash_redis import Redis
-    redis_client = Redis(
-        url=os.getenv("REDIS_URL", "https://chief-crane-7882.upstash.io"),
-        token=os.getenv("REDIS_TOKEN", "AR7KAAImcDJmZTI5ODIxMjA2YTg0NGEzOTcwYWRjYWM0NTg4MTcxM3AyNzg4Mg")
-    )
-    # Test connection
-    redis_client.set("health_check", "ok", ex=10)
-    redis_client.delete("health_check")
-    console.print("[green]Upstash Redis connected[/green]")
-except Exception as e:
-    console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
+# === REDIS CLIENT ===
+redis_client = None
+redis_url = os.getenv("REDIS_URL")
+redis_token = os.getenv("REDIS_TOKEN", "")
+
+if redis_url:
+    parsed_url = urlparse(redis_url)
+    try:
+        if parsed_url.scheme in ("https", "http") or "upstash" in redis_url:
+            from upstash_redis import Redis as UpstashRedis
+
+            redis_client = UpstashRedis(url=redis_url, token=redis_token)
+            redis_client.set("health_check", "ok", ex=10)
+            redis_client.delete("health_check")
+            console.print("[green]Upstash Redis connected[/green]")
+        else:
+            try:
+                from redis import Redis as RedisClient
+            except ImportError as e:
+                raise RuntimeError(
+                    "redis package is not installed; install 'redis' to use standard redis:// URLs"
+                ) from e
+
+            redis_client = RedisClient.from_url(redis_url)
+            redis_client.ping()
+            console.print("[green]Redis connected[/green]")
+    except Exception as e:
+        console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
+        redis_client = None
+else:
+    console.print("[yellow]Redis unavailable: REDIS_URL not configured[/yellow]")
     redis_client = None
 
 # === CONFIGURATION CLASS (EXPORTED) ===
 class BotConfig:
-    def __init__(self):
-        self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.redis_url = os.getenv("REDIS_URL")
-        self.redis_token = os.getenv("REDIS_TOKEN", "")
-        self.webhook_url = os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook")
-        self.websocket_server = os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com")
-        self.allowed_admins = [int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid.strip()]
-        self.valid_statuses = os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(",")
-        self.route_templates = json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}'))
-        self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-        self.smtp_port = int(os.getenv("SMTP_PORT", 587))
-        self.smtp_user = os.getenv("SMTP_USER", "")
-        self.smtp_pass = os.getenv("SMTP_PASS", "")
-        self.smtp_from = os.getenv("SMTP_FROM", "no-reply@example.com")
+    def __init__(
+        self,
+        telegram_bot_token=None,
+        redis_url=None,
+        redis_token=None,
+        webhook_url=None,
+        websocket_server=None,
+        allowed_admins=None,
+        valid_statuses=None,
+        route_templates=None,
+        smtp_host=None,
+        smtp_port=None,
+        smtp_user=None,
+        smtp_pass=None,
+        smtp_from=None,
+    ):
+        self.telegram_bot_token = (
+            telegram_bot_token
+            if telegram_bot_token is not None
+            else os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_TOKEN", ""))
+        )
+        self.redis_url = redis_url if redis_url is not None else os.getenv("REDIS_URL")
+        self.redis_token = redis_token if redis_token is not None else os.getenv("REDIS_TOKEN", "")
+        self.webhook_url = webhook_url if webhook_url is not None else os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook")
+        self.websocket_server = websocket_server if websocket_server is not None else os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com")
+        self.allowed_admins = (
+            allowed_admins
+            if allowed_admins is not None
+            else [int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid.strip()]
+        )
+        self.valid_statuses = (
+            valid_statuses
+            if valid_statuses is not None
+            else os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(",")
+        )
+        self.route_templates = (
+            route_templates
+            if route_templates is not None
+            else json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}'))
+        )
+        self.smtp_host = smtp_host if smtp_host is not None else os.getenv("SMTP_HOST", "smtp.gmail.com")
+        self.smtp_port = smtp_port if smtp_port is not None else int(os.getenv("SMTP_PORT", 587))
+        self.smtp_user = smtp_user if smtp_user is not None else os.getenv("SMTP_USER", "")
+        self.smtp_pass = smtp_pass if smtp_pass is not None else os.getenv("SMTP_PASS", "")
+        self.smtp_from = smtp_from if smtp_from is not None else os.getenv("SMTP_FROM", "no-reply@example.com")
 
 try:
     config = BotConfig()
@@ -130,8 +199,47 @@ def safe_redis_operation(func, *args, **kwargs):
         return None
 
 # === UTILS ===
+class DummyBot:
+    def message_handler(self, *args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
+    def callback_query_handler(self, *args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
+    def reply_to(self, message, text, **kwargs):
+        bot_logger.info(f"DummyBot reply_to: {text}")
+
+    def send_message(self, chat_id, text, **kwargs):
+        bot_logger.info(f"DummyBot send_message to {chat_id}: {text}")
+
+    def edit_message_text(self, text, chat_id, message_id, **kwargs):
+        bot_logger.info(f"DummyBot edit_message_text: {text}")
+
+    def answer_callback_query(self, callback_query_id, text=None, show_alert=False, **kwargs):
+        bot_logger.info(f"DummyBot answer_callback_query: {text}")
+
+    def remove_webhook(self):
+        bot_logger.info("DummyBot remove_webhook called")
+
+    def set_webhook(self, url=None):
+        bot_logger.info(f"DummyBot set_webhook called with url={url}")
+
+    def get_webhook_info(self):
+        class Info:
+            url = None
+        return Info()
+
+
 def get_bot() -> TeleBot:
-    return TeleBot(config.telegram_bot_token)
+    token = config.telegram_bot_token
+    if not token or ':' not in token:
+        bot_logger.warning("Invalid or missing Telegram token; using DummyBot")
+        return DummyBot()
+    return TeleBot(token)
 
 def is_admin(user_id: int) -> bool:
     return user_id in config.allowed_admins
@@ -307,6 +415,16 @@ def enqueue_notification(data: Dict[str, Any]) -> bool:
         bot_logger.error(f"Queue failed: {e}")
         return False
 
+def get_cached_route_templates() -> Dict[str, List[str]]:
+    return {
+        "Lagos, NG": ["Lagos, NG"],
+        "Abuja, NG": ["Abuja, NG"],
+        "Port Harcourt, NG": ["Port Harcourt, NG"]
+    }
+
+def cache_route_templates() -> bool:
+    return True
+
 # === MENU & RATE LIMIT ===
 RATE_LIMIT_WINDOW = 60
 RATE_LIMIT_MAX = 20
@@ -398,13 +516,13 @@ def set_webhook():
     except Exception as e:
         bot_logger.error(f"Webhook failed: {e}")
 
-bot = get_bot()
 
 def keep_alive():
     bot_logger.info("Keep-alive loop started")
     console.print("[info]Keep-alive loop started[/info]")
     while True:
         try:
+            bot = get_bot()
             info = bot.get_webhook_info()
             if info.url != config.webhook_url:
                 bot_logger.warning("Webhook mismatch, resetting...")
