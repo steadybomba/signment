@@ -653,6 +653,13 @@ def notify_admins_on_startup() -> None:
     if not config.allowed_admins:
         bot_logger.warning("No allowed admins configured for startup notifications.")
         return
+
+    if redis_client:
+        already_notified = safe_redis_operation(redis_client.exists, "bot:startup_notified")
+        if already_notified:
+            bot_logger.info("Startup welcome already sent recently; skipping.")
+            return
+
     welcome_text = get_startup_welcome_text()
     for admin_id in config.allowed_admins:
         try:
@@ -660,6 +667,9 @@ def notify_admins_on_startup() -> None:
             bot_logger.info(f"Sent startup welcome to admin {admin_id}")
         except Exception as e:
             bot_logger.error(f"Failed to send startup welcome to {admin_id}: {e}")
+
+    if redis_client:
+        safe_redis_operation(redis_client.set, "bot:startup_notified", "1", ex=86400)
 
 
 def start_bot_service() -> None:
