@@ -208,6 +208,33 @@
       color: white;
       border-radius: 8px;
     }
+    
+    /* Toast */
+    .toast-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 9999;
+    }
+    .toast-custom {
+      background: white;
+      border-radius: 12px;
+      padding: 16px 20px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+      border-left: 4px solid #D40511;
+      margin-bottom: 10px;
+      min-width: 280px;
+      animation: slideIn 0.3s ease;
+    }
+    .toast-custom.success { border-left-color: #22c55e; }
+    .toast-custom.error { border-left-color: #dc2626; }
+    .toast-custom .toast-title { font-weight: 600; font-size: 0.95rem; }
+    .toast-custom .toast-message { font-size: 0.85rem; color: #6b7280; }
+    
+    @keyframes slideIn {
+      from { transform: translateX(100px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
   </style>
 </head>
 <body>
@@ -599,11 +626,47 @@
   </div>
 
   <!-- Toast Container -->
-  <div class="toast-container"></div>
+  <div id="toastContainer" class="toast-container"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
-    // Initialize modals
+    // ============================================================
+    // TOAST NOTIFICATIONS
+    // ============================================================
+    function showToast(message, type = 'info', title = '') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      toast.className = `toast-custom ${type}`;
+      const icons = {
+        success: 'bi-check-circle-fill text-success',
+        error: 'bi-exclamation-circle-fill text-danger',
+        info: 'bi-info-circle-fill text-primary'
+      };
+      const icon = icons[type] || icons.info;
+      const titles = {
+        success: 'Success',
+        error: 'Error',
+        info: 'Info'
+      };
+      toast.innerHTML = `
+        <div class="d-flex align-items-start gap-3">
+          <i class="bi ${icon}" style="font-size: 1.25rem;"></i>
+          <div>
+            <div class="toast-title">${title || titles[type] || 'Info'}</div>
+            <div class="toast-message">${message}</div>
+          </div>
+          <button type="button" class="btn-close ms-auto" onclick="this.parentElement.parentElement.remove()"></button>
+        </div>
+      `;
+      container.appendChild(toast);
+      setTimeout(() => {
+        if (toast.parentElement) toast.remove();
+      }, 5000);
+    }
+
+    // ============================================================
+    // MODALS
+    // ============================================================
     const createModal = new bootstrap.Modal(document.getElementById('createModal'));
     const detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
     const emailModal = new bootstrap.Modal(document.getElementById('emailModal'));
@@ -611,7 +674,7 @@
     let currentEmailTn = null;
 
     // ============================================================
-    // CREATE SHIPMENT
+    // CREATE SHIPMENT (FIXED)
     // ============================================================
     function loadCities() {
       fetch('/admin/api/cities')
@@ -626,6 +689,10 @@
               allowClear: true
             });
           });
+        })
+        .catch(err => {
+          console.error('Failed to load cities:', err);
+          showToast('Failed to load cities', 'error');
         });
     }
 
@@ -647,22 +714,26 @@
       const listDiv = document.getElementById('createdList');
       resultDiv.style.display = 'block';
 
+      console.log('Showing result:', data);
+
       if (data.error) {
         alertDiv.className = 'alert alert-danger';
         alertDiv.innerHTML = '<i class="bi bi-exclamation-triangle me-2"></i> Error: ' + data.error;
         listDiv.innerHTML = '';
+        showToast(data.error, 'error');
         return;
       }
 
       if (data.success) {
         alertDiv.className = 'alert alert-success';
-        if (data.total_created > 0) {
+        const createdList = data.created || [];
+        if (createdList.length > 0) {
           alertDiv.innerHTML = `
             <i class="bi bi-check-circle me-2"></i> 
-            Created ${data.total_created} shipment(s) successfully!
+            Created <strong>${createdList.length}</strong> shipment(s) successfully!
             ${data.total_errors > 0 ? ` (${data.total_errors} errors)` : ''}
           `;
-          listDiv.innerHTML = data.created.map(tn => `
+          listDiv.innerHTML = createdList.map(tn => `
             <div class="created-shipment">
               <i class="bi bi-box-seam me-2 text-success"></i>
               <strong>${tn}</strong>
@@ -672,16 +743,24 @@
               </a>
             </div>
           `).join('');
+          showToast(`Created ${createdList.length} shipment(s) successfully!`, 'success');
         } else {
           alertDiv.innerHTML = '<i class="bi bi-info-circle me-2"></i> No shipments were created';
+          listDiv.innerHTML = '';
+          showToast('No shipments were created', 'info');
         }
+      } else {
+        alertDiv.className = 'alert alert-warning';
+        alertDiv.innerHTML = '<i class="bi bi-info-circle me-2"></i> Unexpected response';
+        listDiv.innerHTML = '';
+        showToast('Unexpected response from server', 'error');
       }
     }
 
     function createShipment() {
       const btn = document.getElementById('createBtn');
       btn.disabled = true;
-      btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating...';
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Creating...';
 
       const isBulk = document.getElementById('bulkCreate').checked;
 
@@ -695,14 +774,24 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ shipments })
           })
-          .then(r => r.json())
-          .then(showCreateResult)
-          .catch(err => showCreateResult({ error: err.message }))
+          .then(response => response.json())
+          .then(data => {
+            console.log('Bulk create response:', data);
+            showCreateResult(data);
+            if (data.success && data.created && data.created.length > 0) {
+              setTimeout(() => location.reload(), 3000);
+            }
+          })
+          .catch(err => {
+            console.error('Bulk create error:', err);
+            showCreateResult({ error: err.message || 'Network error' });
+          })
           .finally(() => {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
           });
         } catch (err) {
+          console.error('JSON parse error:', err);
           showCreateResult({ error: 'Invalid JSON: ' + err.message });
           btn.disabled = false;
           btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
@@ -710,12 +799,15 @@
         return;
       }
 
+      // Single create
       const data = {
         origin: document.getElementById('origin').value,
         destination: document.getElementById('destination').value,
         service_level: document.getElementById('serviceLevel').value,
         recipient_email: document.getElementById('recipientEmail').value
       };
+
+      console.log('Creating shipment:', data);
 
       if (!data.origin || !data.destination) {
         showCreateResult({ error: 'Origin and destination are required' });
@@ -729,12 +821,26 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       })
-      .then(r => r.json())
+      .then(response => response.json())
       .then(data => {
-        showCreateResult(data);
-        if (data.success) setTimeout(() => location.reload(), 3000);
+        console.log('Create response:', data);
+        if (data.success) {
+          showCreateResult({
+            success: true,
+            created: [data.tracking_number],
+            total_created: 1,
+            total_errors: 0,
+            shipment: data.shipment
+          });
+          setTimeout(() => location.reload(), 3000);
+        } else {
+          showCreateResult({ error: data.error || 'Failed to create shipment' });
+        }
       })
-      .catch(err => showCreateResult({ error: err.message }))
+      .catch(err => {
+        console.error('Create error:', err);
+        showCreateResult({ error: err.message || 'Network error' });
+      })
       .finally(() => {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
@@ -878,12 +984,15 @@
         if (result.success) {
           showEmailStatus('success', `✅ Email sent successfully to ${result.recipient}`);
           loadEmailHistory(currentEmailTn);
+          showToast(`Email sent to ${result.recipient}`, 'success');
         } else {
           showEmailStatus('error', `❌ ${result.error || 'Unable to send email'}`);
+          showToast(result.error || 'Failed to send email', 'error');
         }
       })
       .catch(err => {
         showEmailStatus('error', '❌ Failed to send email: ' + (err.message || 'Unknown error'));
+        showToast('Failed to send email', 'error');
       })
       .finally(() => {
         btn.disabled = false;
@@ -896,7 +1005,7 @@
     });
 
     // ============================================================
-    // MAP
+    // MAP (unchanged)
     // ============================================================
     const map = L.map('map').setView([20, 0], 2);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
@@ -1055,7 +1164,6 @@
       badge.className = `status-badge bg-${statusColors[status] || 'secondary'} text-white`;
       badge.innerHTML = `<i class="bi ${iconClass} me-1"></i>${status}${paused ? ' <i class="bi bi-pause-circle ms-1"></i>' : ''}`;
 
-      // Update stage if available
       if (data.stage) {
         const stageEl = row.querySelector('.stage-badge');
         const stageMap = {
