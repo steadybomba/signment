@@ -40,6 +40,19 @@
     }
     .status-badge i { font-size: 0.7rem; }
     
+    .stage-badge {
+      font-size: 0.6rem;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .stage-badge.pickup { background: #dbeafe; color: #1e40af; }
+    .stage-badge.transit { background: #fef3c7; color: #92400e; }
+    .stage-badge.delivery { background: #fce7f3; color: #be185d; }
+    .stage-badge.delivered { background: #dcfce7; color: #16a34a; }
+    
     .table th {
       background: #f8f9fa;
       font-weight: 600;
@@ -160,6 +173,41 @@
       right: 20px;
       z-index: 9999;
     }
+    
+    /* Responsive */
+    @media (max-width: 768px) {
+      .dhl-header { padding: 1rem 0; }
+      .stat-card { padding: 1rem; }
+      .stat-card h3 { font-size: 1.25rem; }
+      .table td, .table th { padding: 0.5rem; font-size: 0.75rem; }
+      #map { height: 280px; }
+      .speed-slider { width: 50px; }
+    }
+    @media (max-width: 480px) {
+      .dhl-header .logo-text { font-size: 1rem; }
+      .table-container .table-header { flex-direction: column; align-items: stretch; text-align: center; }
+    }
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .truck-marker { background: transparent; border: none; font-size: 22px; }
+    
+    .pagination .page-link {
+      color: #D40511;
+      border-radius: 8px;
+      margin: 0 2px;
+      border: none;
+      padding: 0.5rem 0.9rem;
+      font-weight: 500;
+      font-size: 0.85rem;
+    }
+    .pagination .page-link:hover {
+      background: #f1f5f9;
+      color: #D40511;
+    }
+    .pagination .page-item.active .page-link {
+      background: #D40511;
+      color: white;
+      border-radius: 8px;
+    }
   </style>
 </head>
 <body>
@@ -266,6 +314,7 @@
               <tr>
                 <th>Waybill</th>
                 <th>Status</th>
+                <th>Stage</th>
                 <th>Service</th>
                 <th>Delivery Window</th>
                 <th>Proof of Delivery</th>
@@ -278,6 +327,7 @@
               {% for s in shipments %}
               <tr data-tn="{{ s.tracking_number }}" 
                   data-status="{{ s.status }}"
+                  data-stage="{{ s.stage|default('pickup') }}"
                   data-delivered="{{ s.status == 'Delivered' }}"
                   data-exception="{{ s.status == 'Exception' }}">
                 <td>
@@ -289,6 +339,16 @@
                   <span class="status-badge bg-{% if s.status == 'Delivered' %}success{% elif s.status == 'Exception' %}danger{% elif s.status == 'Delayed' %}warning{% elif s.paused %}secondary{% else %}primary{% endif %} text-white">
                     <i class="bi {% if s.status == 'Delivered' %}bi-check-circle{% elif s.status == 'In_Transit' %}bi-truck{% elif s.status == 'Out_for_Delivery' %}bi-box-arrow-up{% elif s.status == 'Exception' %}bi-exclamation-triangle{% elif s.status == 'Delayed' %}bi-clock{% else %}bi-hourglass-split{% endif %} me-1"></i>
                     {{ s.status }}{% if s.paused %} <i class="bi bi-pause-circle ms-1"></i>{% endif %}
+                  </span>
+                </td>
+                <td>
+                  <span class="stage-badge 
+                    {%- if s.stage == 'pickup' %} pickup
+                    {%- elif s.stage == 'transit' %} transit
+                    {%- elif s.stage == 'delivery' %} delivery
+                    {%- elif s.stage == 'delivered' %} delivered
+                    {%- else %} pickup{%- endif %}">
+                    {{ s.stage|default('Pickup')|replace('_', ' ')|title }}
                   </span>
                 </td>
                 <td>
@@ -546,9 +606,13 @@
     // Initialize modals
     const createModal = new bootstrap.Modal(document.getElementById('createModal'));
     const detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
+    const emailModal = new bootstrap.Modal(document.getElementById('emailModal'));
     const socket = io();
+    let currentEmailTn = null;
 
-    // Load cities for select2
+    // ============================================================
+    // CREATE SHIPMENT
+    // ============================================================
     function loadCities() {
       fetch('/admin/api/cities')
         .then(r => r.json())
@@ -565,23 +629,121 @@
         });
     }
 
-    // Show create modal
     function showCreateModal() {
       document.getElementById('createResult').style.display = 'none';
       document.getElementById('createForm').reset();
+      $('.city-select').val(null).trigger('change');
       loadCities();
       createModal.show();
     }
 
-    // Toggle bulk mode
     document.getElementById('bulkCreate').addEventListener('change', function() {
       document.getElementById('bulkContainer').style.display = this.checked ? 'block' : 'none';
     });
 
-    // Email modal functionality
-    const emailModal = new bootstrap.Modal(document.getElementById('emailModal'));
-    let currentEmailTn = null;
+    function showCreateResult(data) {
+      const resultDiv = document.getElementById('createResult');
+      const alertDiv = document.getElementById('createAlert');
+      const listDiv = document.getElementById('createdList');
+      resultDiv.style.display = 'block';
 
+      if (data.error) {
+        alertDiv.className = 'alert alert-danger';
+        alertDiv.innerHTML = '<i class="bi bi-exclamation-triangle me-2"></i> Error: ' + data.error;
+        listDiv.innerHTML = '';
+        return;
+      }
+
+      if (data.success) {
+        alertDiv.className = 'alert alert-success';
+        if (data.total_created > 0) {
+          alertDiv.innerHTML = `
+            <i class="bi bi-check-circle me-2"></i> 
+            Created ${data.total_created} shipment(s) successfully!
+            ${data.total_errors > 0 ? ` (${data.total_errors} errors)` : ''}
+          `;
+          listDiv.innerHTML = data.created.map(tn => `
+            <div class="created-shipment">
+              <i class="bi bi-box-seam me-2 text-success"></i>
+              <strong>${tn}</strong>
+              <span class="badge bg-primary ms-2">Simulation Started</span>
+              <a href="/track/${tn}" target="_blank" class="btn btn-sm btn-outline-primary ms-2">
+                <i class="bi bi-eye"></i> Track
+              </a>
+            </div>
+          `).join('');
+        } else {
+          alertDiv.innerHTML = '<i class="bi bi-info-circle me-2"></i> No shipments were created';
+        }
+      }
+    }
+
+    function createShipment() {
+      const btn = document.getElementById('createBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating...';
+
+      const isBulk = document.getElementById('bulkCreate').checked;
+
+      if (isBulk) {
+        try {
+          const shipments = JSON.parse(document.getElementById('bulkData').value);
+          if (!shipments.length) throw new Error('At least one shipment required');
+          
+          fetch('/admin/api/bulk_create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ shipments })
+          })
+          .then(r => r.json())
+          .then(showCreateResult)
+          .catch(err => showCreateResult({ error: err.message }))
+          .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
+          });
+        } catch (err) {
+          showCreateResult({ error: 'Invalid JSON: ' + err.message });
+          btn.disabled = false;
+          btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
+        }
+        return;
+      }
+
+      const data = {
+        origin: document.getElementById('origin').value,
+        destination: document.getElementById('destination').value,
+        service_level: document.getElementById('serviceLevel').value,
+        recipient_email: document.getElementById('recipientEmail').value
+      };
+
+      if (!data.origin || !data.destination) {
+        showCreateResult({ error: 'Origin and destination are required' });
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
+        return;
+      }
+
+      fetch('/admin/api/create_shipment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      })
+      .then(r => r.json())
+      .then(data => {
+        showCreateResult(data);
+        if (data.success) setTimeout(() => location.reload(), 3000);
+      })
+      .catch(err => showCreateResult({ error: err.message }))
+      .finally(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
+      });
+    }
+
+    // ============================================================
+    // EMAIL MODAL
+    // ============================================================
     function showEmailModal(tn) {
       currentEmailTn = tn;
       document.getElementById('emailStatusMessage').style.display = 'none';
@@ -599,21 +761,7 @@
           updateEmailPreview();
           emailModal.show();
         })
-        .catch(() => {
-          showEmailStatus('error', 'Failed to load shipment details');
-        });
-    }
-
-    function validateEmailHistoryPayload(payload) {
-      if (!Array.isArray(payload)) return false;
-      return payload.every(item => {
-        return item && typeof item === 'object' &&
-          typeof item.type === 'string' &&
-          typeof item.timestamp === 'string' &&
-          typeof item.recipient === 'string' &&
-          typeof item.subject === 'string' &&
-          (item.message === null || item.message === undefined || typeof item.message === 'string');
-      });
+        .catch(() => showEmailStatus('error', 'Failed to load shipment details'));
     }
 
     function loadEmailHistory(tn) {
@@ -621,11 +769,7 @@
         .then(r => r.json())
         .then(history => {
           const container = document.getElementById('emailHistoryContent');
-          if (!validateEmailHistoryPayload(history)) {
-            container.innerHTML = '<div class="text-muted text-center">Invalid email history payload</div>';
-            return;
-          }
-          if (!history || history.length === 0) {
+          if (!history || !history.length) {
             container.innerHTML = '<div class="text-muted text-center">No emails sent yet</div>';
             return;
           }
@@ -657,10 +801,10 @@
         .then(r => r.json())
         .then(data => {
           const typeLabels = {
-            'status_update': '📦 Status Update',
-            'delivery_confirmation': '✅ Delivery Confirmation',
-            'exception_alert': '⚠️ Exception Alert',
-            'custom': '📬 Custom Message'
+            'status_update': 'Status Update',
+            'delivery_confirmation': 'Delivery Confirmation',
+            'exception_alert': 'Exception Alert',
+            'custom': 'Custom Message'
           };
 
           let preview = `
@@ -686,7 +830,7 @@
             const proof = 'Signature: J. SMITH';
             preview += `
               <div style="margin-top:8px; padding:8px; background:#f0fdf4; border-radius:4px; border-left:3px solid #22c55e;">
-                <strong>✅ Proof of Delivery:</strong><br>${proof}
+                <strong>Proof of Delivery:</strong><br>${proof}
               </div>
             `;
           }
@@ -751,123 +895,9 @@
       updateEmailPreview();
     });
 
-    // Create shipment
-    function createShipment() {
-      const btn = document.getElementById('createBtn');
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating...';
-
-      const isBulk = document.getElementById('bulkCreate').checked;
-
-      if (isBulk) {
-        // Bulk create
-        try {
-          const shipments = JSON.parse(document.getElementById('bulkData').value);
-          if (!shipments.length) {
-            throw new Error('At least one shipment required');
-          }
-          
-          fetch('/admin/api/bulk_create', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ shipments })
-          })
-          .then(r => r.json())
-          .then(data => {
-            showCreateResult(data);
-          })
-          .catch(err => {
-            showCreateResult({ error: err.message });
-          })
-          .finally(() => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
-          });
-          
-        } catch (err) {
-          showCreateResult({ error: 'Invalid JSON: ' + err.message });
-          btn.disabled = false;
-          btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
-        }
-        return;
-      }
-
-      // Single create
-      const data = {
-        origin: document.getElementById('origin').value,
-        destination: document.getElementById('destination').value,
-        service_level: document.getElementById('serviceLevel').value,
-        recipient_email: document.getElementById('recipientEmail').value
-      };
-
-      if (!data.origin || !data.destination) {
-        showCreateResult({ error: 'Origin and destination are required' });
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
-        return;
-      }
-
-      fetch('/admin/api/create_shipment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-      })
-      .then(r => r.json())
-      .then(data => {
-        showCreateResult(data);
-        if (data.success) {
-          // Reload after short delay to show new shipment
-          setTimeout(() => location.reload(), 3000);
-        }
-      })
-      .catch(err => {
-        showCreateResult({ error: err.message });
-      })
-      .finally(() => {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
-      });
-    }
-
-    function showCreateResult(data) {
-      const resultDiv = document.getElementById('createResult');
-      const alertDiv = document.getElementById('createAlert');
-      const listDiv = document.getElementById('createdList');
-      
-      resultDiv.style.display = 'block';
-      
-      if (data.error) {
-        alertDiv.className = 'alert alert-danger';
-        alertDiv.innerHTML = '<i class="bi bi-exclamation-triangle me-2"></i> Error: ' + data.error;
-        listDiv.innerHTML = '';
-        return;
-      }
-      
-      if (data.success) {
-        alertDiv.className = 'alert alert-success';
-        if (data.total_created > 0) {
-          alertDiv.innerHTML = `
-            <i class="bi bi-check-circle me-2"></i> 
-            Created ${data.total_created} shipment(s) successfully!
-            ${data.total_errors > 0 ? ` (${data.total_errors} errors)` : ''}
-          `;
-          listDiv.innerHTML = data.created.map(tn => `
-            <div class="created-shipment">
-              <i class="bi bi-box-seam me-2 text-success"></i>
-              <strong>${tn}</strong>
-              <span class="badge bg-primary ms-2">Simulation Started</span>
-              <a href="/track/${tn}" target="_blank" class="btn btn-sm btn-outline-primary ms-2">
-                <i class="bi bi-eye"></i> Track
-              </a>
-            </div>
-          `).join('');
-        } else {
-          alertDiv.innerHTML = '<i class="bi bi-info-circle me-2"></i> No shipments were created';
-        }
-      }
-    }
-
-    // Map setup (same as before)
+    // ============================================================
+    // MAP
+    // ============================================================
     const map = L.map('map').setView([20, 0], 2);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; OpenStreetMap & Carto'
@@ -922,18 +952,14 @@
       const progress = data.progress || 0;
 
       const lastCheckpoint = checkpoints.length > 0 ? checkpoints[checkpoints.length - 1] : null;
-      const currentLoc = getLocationFromCheckpoint(lastCheckpoint) || dest;
+      let currentLoc = getLocationFromCheckpoint(lastCheckpoint) || dest;
 
-      if (!cityCoords[currentLoc] || !cityCoords[dest]) {
+      if (!cityCoords[currentLoc]) {
         const matchKey = Object.keys(cityCoords).find(key => 
-          currentLoc && currentLoc.includes(key.split(',')[0]) || 
-          key.includes(currentLoc?.split(',')[0] || '')
+          currentLoc && (currentLoc.includes(key.split(',')[0]) || key.includes(currentLoc.split(',')[0] || ''))
         );
-        if (matchKey && cityCoords[matchKey]) {
-          cityCoords[currentLoc] = cityCoords[matchKey];
-        } else {
-          return;
-        }
+        if (matchKey) cityCoords[currentLoc] = cityCoords[matchKey];
+        else return;
       }
 
       if (!markers[tn]) {
@@ -988,7 +1014,9 @@
       }
     }
 
-    // WebSocket updates
+    // ============================================================
+    // WEBSOCKET
+    // ============================================================
     socket.on('tracking_update', (data) => {
       if (data.tracking_number) {
         updateMap(data);
@@ -1027,6 +1055,19 @@
       badge.className = `status-badge bg-${statusColors[status] || 'secondary'} text-white`;
       badge.innerHTML = `<i class="bi ${iconClass} me-1"></i>${status}${paused ? ' <i class="bi bi-pause-circle ms-1"></i>' : ''}`;
 
+      // Update stage if available
+      if (data.stage) {
+        const stageEl = row.querySelector('.stage-badge');
+        const stageMap = {
+          'pickup': 'pickup',
+          'transit': 'transit',
+          'delivery': 'delivery',
+          'delivered': 'delivered'
+        };
+        stageEl.className = `stage-badge ${stageMap[data.stage] || 'pickup'}`;
+        stageEl.textContent = (data.stage || 'Pickup').replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+      }
+
       if (data.progress !== undefined) {
         const progressBar = row.querySelector('.progress-bar');
         const percent = Math.round(data.progress * 100);
@@ -1057,7 +1098,9 @@
       }
     }
 
-    // Admin functions
+    // ============================================================
+    // ADMIN CONTROLS
+    // ============================================================
     function togglePause(tn, pause) {
       const btn = event.target.closest('button');
       btn.disabled = true;
@@ -1092,57 +1135,67 @@
     }
 
     function showDetails(tn) {
+      document.getElementById('detailContent').innerHTML = `
+        <div class="text-center py-4">
+          <div class="spinner-border text-danger" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      `;
+      detailModal.show();
+
       fetch(`/admin/api/shipment/${tn}`)
         .then(r => r.json())
         .then(data => {
           const content = document.getElementById('detailContent');
+          const checkpoints = (data.checkpoints || []).slice(-5).reverse();
           content.innerHTML = `
-            <div class="row">
+            <div class="row g-3">
               <div class="col-md-6">
-                <h6 class="fw-bold">Shipment Information</h6>
-                <div class="shipment-detail" style="background:#f8fafc; padding:6px 12px; margin:2px 0; border-radius:8px;">
-                  <strong>Tracking:</strong> ${data.tracking_number}
-                </div>
-                <div class="shipment-detail" style="background:#f8fafc; padding:6px 12px; margin:2px 0; border-radius:8px;">
-                  <strong>Status:</strong> ${data.status}
-                </div>
-                <div class="shipment-detail" style="background:#f8fafc; padding:6px 12px; margin:2px 0; border-radius:8px;">
-                  <strong>Origin:</strong> ${data.origin_location || 'N/A'}
-                </div>
-                <div class="shipment-detail" style="background:#f8fafc; padding:6px 12px; margin:2px 0; border-radius:8px;">
-                  <strong>Destination:</strong> ${data.delivery_location}
-                </div>
-                <div class="shipment-detail" style="background:#f8fafc; padding:6px 12px; margin:2px 0; border-radius:8px;">
-                  <strong>Service:</strong> ${data.service_level || 'DHL Express'}
-                </div>
-                <div class="shipment-detail" style="background:#f8fafc; padding:6px 12px; margin:2px 0; border-radius:8px;">
-                  <strong>Delivery Window:</strong> ${data.delivery_window || 'Calculating...'}
-                </div>
-              </div>
-              <div class="col-md-6">
-                <h6 class="fw-bold">Recent Activity</h6>
-                ${(data.checkpoints || []).slice(-5).reverse().map(c => 
-                  `<div style="background:#f8fafc; padding:6px 12px; margin:2px 0; border-radius:8px; font-size:0.85rem;">${c}</div>`
-                ).join('')}
+                <h6 class="fw-bold mb-3"><i class="bi bi-info-circle me-2 text-danger"></i>Shipment Information</h6>
+                ${[
+                  ['Tracking', data.tracking_number],
+                  ['Status', `<span class="badge bg-${data.status === 'Delivered' ? 'success' : data.status === 'Exception' ? 'danger' : 'primary'}">${data.status}</span>`],
+                  ['Origin/Pickup', data.origin_location || 'N/A'],
+                  ['Destination', data.delivery_location],
+                  ['Carrier', data.carrier || 'DHL'],
+                  ['Service', data.service_level || 'DHL Express'],
+                  ['Delivery Window', data.delivery_window || 'Calculating...']
+                ].map(([label, val]) => `
+                  <div class="d-flex justify-content-between py-1 border-bottom" style="font-size:0.9rem;">
+                    <span class="text-muted">${label}</span>
+                    <span>${val}</span>
+                  </div>
+                `).join('')}
                 ${data.proof_of_delivery ? `
-                  <div class="mt-2" style="background:#dcfce7; padding:8px 12px; border-radius:8px; border-left:4px solid #22c55e;">
+                  <div class="mt-2 p-2 bg-success bg-opacity-10 rounded border border-success border-opacity-25">
+                    <i class="bi bi-check-circle text-success me-1"></i>
                     <strong>Proof of Delivery:</strong> ${data.proof_of_delivery}
                   </div>
                 ` : ''}
                 ${data.delivery_attempt ? `
-                  <div class="mt-2" style="background:#fef3c7; padding:8px 12px; border-radius:8px;">
-                    <strong>Delivery Attempt:</strong> ${data.delivery_attempt}/${data.max_attempts}
+                  <div class="mt-2 p-2 bg-warning bg-opacity-10 rounded border border-warning border-opacity-25">
+                    <i class="bi bi-clock text-warning me-1"></i>
+                    <strong>Delivery Attempt:</strong> ${data.delivery_attempt}/${data.max_attempts || 3}
                   </div>
                 ` : ''}
                 ${data.temperature ? `
-                  <div class="mt-2" style="background:#dbeafe; padding:8px 12px; border-radius:8px;">
+                  <div class="mt-2 p-2 bg-info bg-opacity-10 rounded border border-info border-opacity-25">
+                    <i class="bi bi-thermometer-half text-info me-1"></i>
                     <strong>Temperature:</strong> ${data.temperature}°C
                   </div>
                 ` : ''}
               </div>
+              <div class="col-md-6">
+                <h6 class="fw-bold mb-3"><i class="bi bi-clock-history me-2 text-danger"></i>Recent Activity</h6>
+                ${checkpoints.length ? checkpoints.map(c => `
+                  <div class="p-2 mb-1 bg-${c.includes('Delivered') ? 'success' : c.includes('Exception') ? 'danger' : 'light'} bg-opacity-10 rounded" style="font-size:0.85rem;border-left:3px solid ${c.includes('Delivered') ? '#22c55e' : c.includes('Exception') ? '#dc2626' : '#D40511'};">
+                    ${c}
+                  </div>
+                `).join('') : '<div class="text-muted">No checkpoints yet</div>'}
+              </div>
             </div>
           `;
-          detailModal.show();
         })
         .catch(err => {
           document.getElementById('detailContent').innerHTML = 
@@ -1154,7 +1207,9 @@
       location.reload();
     }
 
-    // Initialize stats
+    // ============================================================
+    // INIT
+    // ============================================================
     document.addEventListener('DOMContentLoaded', function() {
       const rows = document.querySelectorAll('#shipment-table tbody tr');
       let inTransit = 0, delivered = 0, exceptions = 0;
@@ -1170,6 +1225,7 @@
     });
 
     document.getElementById('map-status').textContent = `Live (${Object.keys(markers).length} active)`;
+    console.log('✅ Admin Dashboard loaded');
   </script>
 </body>
 </html>
