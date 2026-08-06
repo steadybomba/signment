@@ -9,19 +9,15 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from functools import wraps
 from rich.console import Console
 from utils import (
-    BotConfig, get_bot, is_admin, send_dynamic_menu, get_shipment_details,
+    BotConfig, config, get_bot, is_admin, send_dynamic_menu, get_shipment_details,
     generate_unique_id, search_shipments, RATE_LIMIT_WINDOW, RATE_LIMIT_MAX,
     safe_redis_operation, redis_client, sanitize_tracking_number, enqueue_notification,
     save_shipment, update_shipment, get_shipment_list, export_shipments, get_recent_logs,
-    show_shipment_menu, set_webhook, keep_alive, estimate_distance, DHL_CONFIG
+    show_shipment_menu, cache_route_templates, set_webhook, keep_alive, estimate_distance, DHL_CONFIG
 )
 
 # Logging setup
 bot_logger = logging.getLogger('telegram_bot')
-bot_logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-bot_logger.addHandler(handler)
 console = Console()
 
 # Bot instance
@@ -641,6 +637,37 @@ def handle_add_shipment(message):
     if save_shipment(tn, status, '', dest, email, origin, webhook, "DHL"):
         bot.reply_to(message, f"Shipment `{tn}` added.", parse_mode='Markdown')
 
+
+def get_startup_welcome_text() -> str:
+    return (
+        "🚀 *DHL Shipment Bot is online!*\n\n"
+        "Use /menu to open the admin panel and manage shipments.\n"
+        "Use /track <tracking_number> to view shipment details.\n"
+        "Use /notify <tracking_number> to trigger delivery notifications.\n"
+        "Use /myid to get your Telegram user ID.\n\n"
+        "If you have not already started a chat with this bot, send /start first."
+    )
+
+
+def notify_admins_on_startup() -> None:
+    if not config.allowed_admins:
+        bot_logger.warning("No allowed admins configured for startup notifications.")
+        return
+    welcome_text = get_startup_welcome_text()
+    for admin_id in config.allowed_admins:
+        try:
+            bot.send_message(admin_id, welcome_text, parse_mode='Markdown', disable_web_page_preview=True)
+            bot_logger.info(f"Sent startup welcome to admin {admin_id}")
+        except Exception as e:
+            bot_logger.error(f"Failed to send startup welcome to {admin_id}: {e}")
+
+
+def start_bot_service() -> None:
+    cache_route_templates()
+    set_webhook()
+    notify_admins_on_startup()
+
+
 def send_manual_webhook(call, tracking_number):
     shipment = get_shipment_details(tracking_number)
     if not shipment or not shipment.get('webhook_url'):
@@ -661,8 +688,13 @@ def send_manual_webhook(call, tracking_number):
     else:
         bot.answer_callback_query(call.id, "Failed.", show_alert=True)
 
-# === MAIN ===
-if __name__ == "__main__":
-    set_webhook()
+
+def main():
+    start_bot_service()
+    bot_logger.info("Webhook setup completed successfully")
     console.print("[green]bot.py started — DHL + All Features Live[/green]")
     keep_alive()
+
+
+if __name__ == "__main__":
+    main()
