@@ -45,6 +45,28 @@ console = Console()
 redis_client = None
 redis_url = os.getenv("REDIS_URL")
 redis_token = os.getenv("REDIS_TOKEN", "")
+redis_user = os.getenv("REDISUSER", os.getenv("REDIS_USER", "default"))
+redis_password = os.getenv("REDIS_PASSWORD", os.getenv("REDISPASSWORD", os.getenv("REDIS_PASS", "")))
+redis_host = os.getenv("REDISHOST", os.getenv("REDIS_HOST", ""))
+redis_port = os.getenv("REDISPORT", os.getenv("REDIS_PORT", "6379"))
+
+# Resolve template-style Railway env vars if needed
+if redis_url:
+    if "${{" in redis_url or "{{" in redis_url:
+        redis_url = redis_url.replace("${{REDISUSER}}", redis_user)
+        redis_url = redis_url.replace("${{REDIS_PASSWORD}}", redis_password)
+        redis_url = redis_url.replace("${{REDISPASSWORD}}", redis_password)
+        redis_url = redis_url.replace("${{REDISHOST}}", redis_host)
+        redis_url = redis_url.replace("${{REDISPORT}}", redis_port)
+        redis_url = redis_url.replace("{{REDISUSER}}", redis_user)
+        redis_url = redis_url.replace("{{REDIS_PASSWORD}}", redis_password)
+        redis_url = redis_url.replace("{{REDISPASSWORD}}", redis_password)
+        redis_url = redis_url.replace("{{REDISHOST}}", redis_host)
+        redis_url = redis_url.replace("{{REDISPORT}}", redis_port)
+
+# If URL is missing or still unresolved, build it from individual parts
+if not redis_url and redis_host:
+    redis_url = f"redis://{redis_user}:{redis_password}@{redis_host}:{redis_port}"
 
 if redis_url:
     parsed_url = urlparse(redis_url)
@@ -71,7 +93,7 @@ if redis_url:
         console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
         redis_client = None
 else:
-    console.print("[yellow]Redis unavailable: REDIS_URL not configured[/yellow]")
+    console.print("[yellow]Redis unavailable: REDIS_URL not configured or could not be resolved[/yellow]")
     redis_client = None
 
 # === CONFIGURATION CLASS (EXPORTED) ===
