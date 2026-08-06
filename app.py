@@ -120,7 +120,7 @@ try:
         TAWK_PROPERTY_ID=os.getenv("TAWK_PROPERTY_ID", ""),
         TAWK_WIDGET_ID=os.getenv("TAWK_WIDGET_ID", ""),
         RATELIMIT_DEFAULTS=['200 per day', '50 per hour'],
-        RATELIMIT_STORAGE_URI=os.getenv("RATELIMIT_STORAGE_URI", f"redis://{config.redis_url}" if config.redis_url else "memory://"),
+        RATELIMIT_STORAGE_URI=(os.getenv("RATELIMIT_STORAGE_URI") or ("redis://" + config.redis_url if config.redis_url and redis_client is not None else "memory://")),
         GLOBAL_WEBHOOK_URL=os.getenv("GLOBAL_WEBHOOK_URL", config.websocket_server),
         ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD", "admin123")
     )
