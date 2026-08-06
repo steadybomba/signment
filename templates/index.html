@@ -35,6 +35,58 @@
             flex-direction: column;
             justify-content: space-between;
         }
+        .gate-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.92);
+            padding: 20px;
+        }
+        .gate-card {
+            width: 100%;
+            max-width: 500px;
+            background: #fff;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+            text-align: center;
+        }
+        body.recaptcha-locked .header,
+        body.recaptcha-locked .title,
+        body.recaptcha-locked .track-section,
+        body.recaptcha-locked #tracking-result,
+        body.recaptcha-locked .faq-section,
+        body.recaptcha-locked .footer {
+            visibility: hidden;
+        }
+        body.recaptcha-locked .content-overlay {
+            pointer-events: none;
+        }
+        body.recaptcha-locked #gate-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            pointer-events: auto;
+        }
+        .gate-card h2 {
+            color: #d32f2f;
+            margin-bottom: 16px;
+            font-size: 1.8rem;
+        }
+        .gate-card p {
+            color: #333;
+            margin-bottom: 24px;
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+        .gate-note {
+            margin-top: 12px;
+            color: #666;
+            font-size: 0.95rem;
+        }
         .header {
             background: linear-gradient(to right, #ffcc00, #fff);
             padding: 10px 20px;
@@ -408,6 +460,136 @@
         .menu, .track-box button {
             -webkit-tap-highlight-color: transparent;
         }
+
+        /* ===== FEATURE ADDITIONS (Keep your existing styles above) ===== */
+
+        /* Loading spinner */
+        .loading-spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #fff;
+            border-top: 3px solid transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Tracking result container */
+        .tracking-result {
+            display: none;
+            margin: 20px auto;
+            max-width: 800px;
+            padding: 0 15px;
+            width: 100%;
+        }
+        .tracking-result .card {
+            background: #fff;
+            border-radius: 8px;
+            padding: 24px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .tracking-result .status-badge {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+        .tracking-result .checkpoint {
+            padding: 10px 0;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+        .tracking-result .checkpoint:last-child {
+            border-bottom: none;
+        }
+        .tracking-result .checkpoint .time {
+            color: #666;
+            font-size: 0.85rem;
+            min-width: 150px;
+        }
+        .tracking-result .checkpoint .location {
+            font-weight: 500;
+            color: #333;
+        }
+        .tracking-result .checkpoint .event {
+            color: #666;
+        }
+        .tracking-result .checkpoint .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #d32f2f;
+            margin-top: 5px;
+            flex-shrink: 0;
+        }
+        .tracking-result .checkpoint .dot.delivered {
+            background: #22c55e;
+        }
+        .tracking-result .progress-bar {
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            margin: 16px 0;
+            overflow: hidden;
+        }
+        .tracking-result .progress-bar .fill {
+            height: 100%;
+            background: #d32f2f;
+            border-radius: 3px;
+            transition: width 1s ease;
+        }
+
+        /* Error message */
+        .error-message {
+            display: none;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+            padding: 12px 16px;
+            border-radius: 5px;
+            margin-top: 12px;
+            font-size: 0.95rem;
+        }
+
+        /* Toast notification */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #333;
+            color: white;
+            padding: 14px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 9999;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.4s ease;
+        }
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .toast.success { background: #16a34a; }
+        .toast.error { background: #dc2626; }
+
+        /* FAQ answer toggle */
+        .faq-answer {
+            display: none;
+            margin-top: 10px;
+            color: #555;
+            font-size: 15px;
+            line-height: 1.6;
+            padding-left: 8px;
+            border-left: 3px solid #d32f2f;
+        }
     </style>
     <!-- reCAPTCHA script -->
     <script src="https://www.google.com/recaptcha/api.js" async defer></script>
@@ -444,32 +626,55 @@
             </div>
         </div>
         <div class="title">Track & Trace</div>
+        <div id="gate-overlay" class="gate-overlay">
+            <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+                <h2 id="gate-title">Please verify you are human</h2>
+                <p>Complete the reCAPTCHA below to unlock the tracking page. The page content will appear once verification succeeds.</p>
+                <div id="gate-recaptcha" class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-callback="recaptchaGateSuccess"></div>
+                <p class="gate-note">If the reCAPTCHA doesn't load, refresh the page or check your network connection.</p>
+            </div>
+        </div>
         <div class="track-section">
             <div class="track-box">
-                <form method="POST" action="{{ url_for('track') }}">
+                <form id="trackForm" method="POST" action="{{ url_for('track') }}">
                     {{ form.hidden_tag() }}
+                    <input type="hidden" name="g-recaptcha-response" id="g-recaptcha-response" />
                     <label for="tracking_number">Tracking Number</label>
                     {{ form.tracking_number(id='tracking_number', placeholder='Enter your tracking number', pattern='[A-Za-z0-9]{10,20}', title='Enter a valid tracking number (10-20 alphanumeric characters)', required=True, maxlength=50, class='w-full p-2 mb-2 border border-gray-300 rounded') }}
                     <label for="email" class="mt-4">Email (for updates)</label>
                     {{ form.email(id='email', placeholder='Enter your email', type='email', class='w-full p-2 mb-2 border border-gray-300 rounded') }}
-                    <div class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-callback="recaptchaCallback"></div>
                     {{ form.submit(id='submit-btn', class='bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded w-full cursor-pointer mt-4', disabled='disabled') }}
                 </form>
             </div>
         </div>
+
+        <!-- Tracking Results Container -->
+        <div id="tracking-result" class="tracking-result">
+            <div class="card">
+                <div id="result-content">
+                    <!-- Dynamically populated -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Error Message -->
+        <div id="error-message" class="error-message"></div>
+
+        <!-- Toast Notification -->
+        <div id="toast" class="toast"></div>
         <div class="faq-section">
             <h2 class="text-2xl font-semibold mb-4">Frequently Asked Questions</h2>
             <div class="faq-item">
-                <a href="#" onclick="toggleFAQ('faq1')" class="text-red-600 hover:underline" aria-expanded="false" aria-controls="faq1">What Is a Tracking Number & Where Can I Find It?</a>
-                <div id="faq1" class="text-gray-600 mt-2 hidden">A tracking number is a unique ID assigned to your shipment, found on your shipping confirmation email or receipt.</div>
+                <a href="#" onclick="toggleFAQ('faq1')" class="text-red-600 hover:underline">What Is a Tracking Number & Where Can I Find It?</a>
+                <div id="faq1" class="faq-answer">A tracking number is a unique ID assigned to your shipment, found on your shipping confirmation email or receipt.</div>
             </div>
             <div class="faq-item">
-                <a href="#" onclick="toggleFAQ('faq2')" class="text-red-600 hover:underline" aria-expanded="false" aria-controls="faq2">When will my tracking information appear?</a>
-                <div id="faq2" class="text-gray-600 mt-2 hidden">Tracking information typically appears within 24 hours after your shipment is processed.</div>
+                <a href="#" onclick="toggleFAQ('faq2')" class="text-red-600 hover:underline">When will my tracking information appear?</a>
+                <div id="faq2" class="faq-answer">Tracking information typically appears within 24 hours after your shipment is processed.</div>
             </div>
             <div class="faq-item">
-                <a href="#" onclick="toggleFAQ('faq3')" class="text-red-600 hover:underline" aria-expanded="false" aria-controls="faq3">Why is my tracking number/ID not working?</a>
-                <div id="faq3" class="text-gray-600 mt-2 hidden">Ensure the number is correct or contact customer support if issues persist.</div>
+                <a href="#" onclick="toggleFAQ('faq3')" class="text-red-600 hover:underline">Why is my tracking number/ID not working?</a>
+                <div id="faq3" class="faq-answer">Ensure the number is correct or contact customer support if issues persist.</div>
             </div>
         </div>
         <div class="footer">
@@ -506,13 +711,44 @@
     </div>
 
     <script>
-        // reCAPTCHA Callback to Enable Submit
-        function recaptchaCallback() {
-            document.getElementById('submit-btn').disabled = false;
+        // reCAPTCHA Callback for page gate
+        function recaptchaGateSuccess(token) {
+            const responseInput = document.getElementById('g-recaptcha-response');
+            const submitButton = document.getElementById('submit-btn');
+            responseInput.value = token;
+            submitButton.disabled = false;
+            document.body.classList.remove('recaptcha-locked');
+            const overlay = document.getElementById('gate-overlay');
+            if (overlay) {
+                overlay.style.display = 'none';
+            }
+        }
+
+        function lockPageUntilRecaptcha() {
+            document.body.classList.add('recaptcha-locked');
+            const overlay = document.getElementById('gate-overlay');
+            if (overlay) {
+                overlay.style.display = 'flex';
+            }
+        }
+        lockPageUntilRecaptcha();
+
+        // Initialize Socket.IO
+        const socket = io();
+
+        // Toast notification
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            if (!toast) return;
+            toast.textContent = message;
+            toast.className = `toast ${type}`;
+            setTimeout(() => toast.classList.add('show'), 10);
+            setTimeout(() => toast.classList.remove('show'), 4000);
         }
 
         // Hamburger Menu Toggle
-        document.querySelector('.menu').addEventListener('click', function() {
+        document.querySelector('.menu').addEventListener('click', function(e) {
+            e.stopPropagation();
             const menuContent = document.querySelector('.menu-content');
             menuContent.style.display = menuContent.style.display === 'block' ? 'none' : 'block';
         });
@@ -527,8 +763,149 @@
         // FAQ Toggle
         function toggleFAQ(id) {
             const faq = document.getElementById(id);
-            faq.style.display = faq.style.display === 'none' ? 'block' : 'none';
+            if (faq) {
+                faq.style.display = faq.style.display === 'none' || !faq.style.display ? 'block' : 'none';
+            }
         }
+
+        // Initialize FAQ answers as hidden
+        document.querySelectorAll('.faq-answer').forEach(el => {
+            el.style.display = 'none';
+        });
+
+        // AJAX Form Submission
+        const trackForm = document.getElementById('trackForm');
+        if (trackForm) {
+            trackForm.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                const btn = document.getElementById('submit-btn');
+                const originalText = btn.innerHTML;
+                btn.disabled = true;
+                btn.innerHTML = '⏳ Searching...';
+                const formData = new FormData(this);
+
+                try {
+                    const response = await fetch(this.action, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const html = await response.text();
+                    if (html.includes('tracking-result') || html.includes('shipment')) {
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(html, 'text/html');
+                        const resultContent = doc.querySelector('#result-content') || 
+                                             doc.querySelector('.tracking-result') ||
+                                             doc.querySelector('.card-body');
+                        if (resultContent) {
+                            document.getElementById('result-content').innerHTML = resultContent.innerHTML;
+                            document.getElementById('tracking-result').style.display = 'block';
+                            document.getElementById('error-message').style.display = 'none';
+                            showToast('✅ Tracking information loaded!', 'success');
+                        } else {
+                            showError('Shipment not found. Please check the tracking number.');
+                        }
+                    } else {
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(html, 'text/html');
+                        const errorEl = doc.querySelector('.alert-danger, .error-message, .flash-error');
+                        if (errorEl) {
+                            showError(errorEl.textContent.trim());
+                        } else {
+                            showError('An error occurred. Please try again.');
+                        }
+                    }
+                } catch (error) {
+                    showError('Network error. Please check your connection.');
+                } finally {
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                    if (document.getElementById('g-recaptcha-response').value) {
+                        btn.disabled = false;
+                    }
+                }
+            });
+        }
+
+        function showError(message) {
+            const errorEl = document.getElementById('error-message');
+            if (!errorEl) return;
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+            document.getElementById('tracking-result').style.display = 'none';
+            showToast('❌ ' + message, 'error');
+        }
+
+        // Socket.IO - Real-time updates
+        socket.on('connect', function() {
+            console.log('🔗 Connected to real-time tracking');
+        });
+
+        socket.on('tracking_update', function(data) {
+            console.log('📦 Tracking update received:', data);
+            const currentTn = document.querySelector('#tracking-result .tracking-number');
+            if (currentTn && data.tracking_number === currentTn.textContent.trim()) {
+                updateTrackingDisplay(data);
+            }
+        });
+
+        function updateTrackingDisplay(data) {
+            const container = document.getElementById('result-content');
+            if (!container) return;
+            const statusBadge = container.querySelector('.status-badge');
+            if (statusBadge) {
+                const colors = {
+                    'Delivered': 'bg-green-100 text-green-800',
+                    'In_Transit': 'bg-blue-100 text-blue-800',
+                    'Out_for_Delivery': 'bg-purple-100 text-purple-800',
+                    'Delayed': 'bg-yellow-100 text-yellow-800',
+                    'Exception': 'bg-red-100 text-red-800',
+                    'Pending': 'bg-gray-100 text-gray-800'
+                };
+                statusBadge.className = `status-badge ${colors[data.status] || 'bg-gray-100 text-gray-800'}`;
+                statusBadge.textContent = data.status || 'Unknown';
+            }
+            const progressBar = container.querySelector('.progress-bar .fill');
+            if (progressBar && data.progress !== undefined) {
+                const percent = Math.round(data.progress * 100);
+                progressBar.style.width = percent + '%';
+                progressBar.textContent = percent + '%';
+            }
+            const checkpointsContainer = container.querySelector('.checkpoints-list');
+            if (checkpointsContainer && data.checkpoints) {
+                checkpointsContainer.innerHTML = data.checkpoints.map(cp => {
+                    const parts = cp.split(' - ');
+                    const time = parts[0] || '';
+                    const location = parts[1] || '';
+                    const event = parts.slice(2).join(' - ') || '';
+                    const isDelivered = event.toLowerCase().includes('delivered');
+                    return `
+                        <div class="checkpoint">
+                            <div class="dot ${isDelivered ? 'delivered' : ''}"></div>
+                            <div>
+                                <div class="time">${time}</div>
+                                <div class="location">${location}</div>
+                                <div class="event">${event}</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+            const lastUpdated = container.querySelector('.last-updated');
+            if (lastUpdated && data.last_updated) {
+                const date = new Date(data.last_updated);
+                lastUpdated.textContent = 'Last updated: ' + date.toLocaleString();
+            }
+        }
+
+        setTimeout(() => {
+            const recaptchaContainer = document.getElementById('gate-recaptcha');
+            if (recaptchaContainer && !recaptchaContainer.innerHTML.trim() && window.grecaptcha) {
+                grecaptcha.render(recaptchaContainer, {
+                    'sitekey': '{{ recaptcha_site_key }}',
+                    'callback': 'recaptchaGateSuccess'
+                });
+            }
+        }, 5000);
     </script>
 </body>
 </html>
