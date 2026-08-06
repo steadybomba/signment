@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 import json
 import time
 import logging
@@ -12,12 +13,10 @@ from rich.console import Console
 from rich.panel import Panel
 from utils import BotConfig, safe_redis_operation
 
+load_dotenv()
+
 # Logging setup
 logger = logging.getLogger('worker')
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.addHandler(handler)
 console = Console()
 
 # Initialize Redis client
@@ -38,7 +37,7 @@ except Exception as e:
 # Load configuration
 try:
     config = BotConfig(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_TOKEN", "")),
         redis_url=os.getenv("REDIS_URL"),
         redis_token=os.getenv("REDIS_TOKEN", ""),
         webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
