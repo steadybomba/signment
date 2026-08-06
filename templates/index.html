@@ -7,7 +7,7 @@
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: 'Segoe UI', Arial, sans-serif;
             margin: 0;
             padding: 0;
             line-height: 1.6;
@@ -15,6 +15,7 @@
             position: relative;
             overflow-x: hidden;
         }
+        
         /* Background Video */
         .video-background {
             position: fixed;
@@ -24,69 +25,97 @@
             height: 100vh;
             object-fit: cover;
             z-index: -1;
-            background-color: #000; /* Fallback background color */
+            background-color: #ffffff;
         }
-        /* Overlay to ensure content readability */
+        
+        /* Content Overlay */
         .content-overlay {
             position: relative;
-            background: rgba(255, 255, 255, 0.7); /* Semi-transparent white overlay */
+            background: rgba(255, 255, 255, 0.85);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            justify-content: space-between;
         }
+        
+        /* === CLEAN GATE OVERLAY - White Background === */
         .gate-overlay {
             position: fixed;
             inset: 0;
-            z-index: 2000;
+            z-index: 9999;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: rgba(0, 0, 0, 0.92);
+            background: #ffffff;
             padding: 20px;
         }
+        
         .gate-card {
             width: 100%;
-            max-width: 500px;
-            background: #fff;
-            border-radius: 20px;
-            padding: 30px;
-            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+            max-width: 420px;
+            background: #ffffff;
+            padding: 40px 30px;
             text-align: center;
         }
+        
+        .gate-card .lock-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            color: #d32f2f;
+        }
+        
+        .gate-card h2 {
+            color: #1a1a1a;
+            font-size: 20px;
+            font-weight: 600;
+            margin: 0 0 8px 0;
+            letter-spacing: -0.3px;
+        }
+        
+        .gate-card p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+            margin: 0 0 24px 0;
+        }
+        
+        .gate-card .recaptcha-wrapper {
+            display: flex;
+            justify-content: center;
+            margin: 8px 0 16px 0;
+        }
+        
+        .gate-card .gate-note {
+            color: #999;
+            font-size: 12px;
+            margin-top: 16px;
+        }
+        
+        /* Hide content until reCAPTCHA is solved */
         body.recaptcha-locked .header,
         body.recaptcha-locked .title,
+        body.recaptcha-locked .title-sub,
         body.recaptcha-locked .track-section,
         body.recaptcha-locked #tracking-result,
+        body.recaptcha-locked .blog-section,
         body.recaptcha-locked .faq-section,
         body.recaptcha-locked .footer {
             visibility: hidden;
         }
+        
         body.recaptcha-locked .content-overlay {
             pointer-events: none;
         }
+        
         body.recaptcha-locked #gate-overlay {
-            position: fixed;
-            inset: 0;
-            z-index: 9999;
+            display: flex !important;
             pointer-events: auto;
         }
-        .gate-card h2 {
-            color: #d32f2f;
-            margin-bottom: 16px;
-            font-size: 1.8rem;
+        
+        body:not(.recaptcha-locked) #gate-overlay {
+            display: none !important;
         }
-        .gate-card p {
-            color: #333;
-            margin-bottom: 24px;
-            font-size: 1rem;
-            line-height: 1.6;
-        }
-        .gate-note {
-            margin-top: 12px;
-            color: #666;
-            font-size: 0.95rem;
-        }
+        
+        /* === HEADER === */
         .header {
             background: linear-gradient(to right, #ffcc00, #fff);
             padding: 10px 20px;
@@ -105,6 +134,11 @@
             font-size: 24px;
             cursor: pointer;
             padding: 10px;
+            border-radius: 50%;
+            transition: background 0.3s;
+        }
+        .header .menu:hover {
+            background: rgba(0,0,0,0.05);
         }
         .menu-content {
             display: none;
@@ -113,372 +147,111 @@
             top: 60px;
             background: #fff;
             border: 1px solid #ccc;
-            border-radius: 5px;
-            padding: 10px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-            min-width: 150px;
+            border-radius: 8px;
+            padding: 8px 0;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            min-width: 160px;
             z-index: 1000;
         }
         .menu-content a {
             display: block;
-            padding: 8px 12px;
-            color: #d32f2f;
+            padding: 10px 16px;
+            color: #333;
             text-decoration: none;
-            font-size: 16px;
+            font-size: 14px;
+            transition: background 0.2s;
         }
         .menu-content a:hover {
             background-color: #f5f5f5;
+            color: #d32f2f;
         }
+        
+        /* === TITLE === */
         .title {
             text-align: center;
             color: #d32f2f;
-            font-size: 2em;
-            margin: 20px 0;
+            font-size: 2.5em;
+            margin: 30px 0 10px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
         }
+        .title-sub {
+            text-align: center;
+            color: #666;
+            font-size: 1.1em;
+            margin-bottom: 20px;
+        }
+        
+        /* === TRACKING FORM === */
         .track-section {
             display: flex;
             justify-content: center;
-            margin: 20px 0;
+            margin: 10px 0 30px;
             padding: 0 10px;
         }
         .track-box {
             background: #fff;
-            padding: 20px;
-            border-radius: 5px;
-            max-width: 400px;
-            text-align: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 30px;
+            border-radius: 16px;
+            max-width: 500px;
             width: 100%;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            border: 1px solid #eee;
         }
         .track-box label {
             display: block;
             color: #333;
-            margin-bottom: 8px;
-            font-weight: bold;
+            margin-bottom: 6px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            text-align: left;
         }
         .track-box input {
             width: 100%;
-            padding: 10px;
-            margin-bottom: 10px;
-            border: 1px solid #ccc;
-            border-radius: 5px;
+            padding: 12px 14px;
+            margin-bottom: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
             box-sizing: border-box;
             font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        .track-box input:focus {
+            outline: none;
+            border-color: #d32f2f;
+            box-shadow: 0 0 0 3px rgba(211, 47, 47, 0.1);
         }
         .track-box button {
             background-color: #d32f2f;
             color: white;
-            padding: 12px 20px;
+            padding: 14px 20px;
             border: none;
-            border-radius: 5px;
+            border-radius: 8px;
             cursor: pointer;
             width: 100%;
             box-sizing: border-box;
             font-size: 16px;
-            transition: background-color 0.3s ease;
+            font-weight: 600;
+            transition: all 0.3s ease;
         }
-        .track-box button:hover {
+        .track-box button:hover:not(:disabled) {
             background-color: #b71c1c;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(211, 47, 47, 0.3);
         }
         .track-box button:disabled {
             background-color: #e57373;
             cursor: not-allowed;
+            opacity: 0.7;
         }
-        .faq-section {
-            margin: 20px 10px;
-        }
-        .faq-section h2 {
-            color: #333;
-            font-size: 1.5em;
-        }
-        .faq-item {
-            border-bottom: 1px solid #ccc;
-            padding: 10px 0;
-        }
-        .faq-item a {
-            color: #d32f2f;
-            text-decoration: none;
-            font-size: 16px;
-        }
-        .faq-item a:hover {
-            text-decoration: underline;
-        }
-        .faq-item div {
-            display: none;
-            margin-top: 10px;
-            color: #333;
-            font-size: 14px;
-        }
-        .footer {
-            background: linear-gradient(to right, #ffcc00, #fff);
-            padding: 30px 20px;
-            color: #333;
+        .track-box .recaptcha-note {
+            font-size: 0.8rem;
+            color: #999;
             text-align: center;
-            margin-top: 40px;
+            margin-top: 12px;
         }
-        .footer .footer-content {
-            display: flex;
-            justify-content: space-around;
-            flex-wrap: wrap;
-            max-width: 1200px;
-            margin: 0 auto 20px;
-        }
-        .footer-section {
-            margin: 0 15px 20px;
-            flex: 1;
-            min-width: 150px;
-        }
-        .footer-section h3 {
-            color: #d32f2f;
-            font-size: 1.2em;
-            margin-bottom: 12px;
-            font-weight: bold;
-        }
-        .footer-section p, .footer-section a {
-            color: #333;
-            text-decoration: none;
-            display: block;
-            margin: 6px 0;
-            font-size: 0.95em;
-        }
-        .footer-section a:hover {
-            color: #d32f2f;
-            text-decoration: underline;
-        }
-        .footer .copyright {
-            font-size: 0.85em;
-            color: #666;
-            margin-top: 15px;
-            padding-top: 10px;
-            border-top: 1px solid #ccc;
-        }
-
-        /* Responsive Design */
-        @media (max-width: 480px) {
-            .header {
-                padding: 8px 10px;
-            }
-            .header img {
-                height: 30px;
-            }
-            .menu {
-                font-size: 20px;
-                padding: 8px;
-            }
-            .menu-content {
-                top: 50px;
-                right: 5px;
-                min-width: 120px;
-            }
-            .menu-content a {
-                font-size: 14px;
-                padding: 6px 10px;
-            }
-            .title {
-                font-size: 1.5em;
-                margin: 15px 0;
-            }
-            .track-box {
-                padding: 15px;
-            }
-            .track-box input, .track-box button {
-                font-size: 14px;
-                padding: 8px;
-            }
-            .faq-section {
-                margin: 15px 5px;
-            }
-            .footer {
-                padding: 15px 10px;
-                margin-top: 20px;
-            }
-            .footer .footer-content {
-                flex-direction: column;
-                text-align: center;
-            }
-            .footer-section {
-                margin: 10px 0;
-                min-width: 100%;
-            }
-            .footer-section h3 {
-                font-size: 1em;
-            }
-            .footer-section p, .footer-section a {
-                font-size: 0.9em;
-                margin: 4px 0;
-            }
-            .footer .copyright {
-                font-size: 0.8em;
-                margin-top: 10px;
-                padding-top: 8px;
-            }
-            .video-background {
-                width: 100vw;
-                height: 100vh;
-            }
-        }
-
-        @media (min-width: 481px) and (max-width: 768px) {
-            .header {
-                padding: 10px 15px;
-            }
-            .header img {
-                height: 35px;
-            }
-            .menu-content {
-                top: 55px;
-                right: 10px;
-            }
-            .title {
-                font-size: 1.8em;
-            }
-            .track-box {
-                padding: 15px;
-                max-width: 350px;
-            }
-            .track-box input, .track-box button {
-                font-size: 15px;
-            }
-            .faq-section {
-                margin: 15px 10px;
-            }
-            .footer {
-                padding: 20px 15px;
-            }
-            .footer .footer-content {
-                flex-direction: column;
-                text-align: center;
-            }
-            .footer-section {
-                margin: 12px 0;
-                min-width: 100%;
-            }
-            .footer-section h3 {
-                font-size: 1.1em;
-            }
-            .footer-section p, .footer-section a {
-                font-size: 0.92em;
-                margin: 5px 0;
-            }
-            .footer .copyright {
-                font-size: 0.82em;
-                margin-top: 12px;
-                padding-top: 8px;
-            }
-            .video-background {
-                width: 100vw;
-                height: 100vh;
-            }
-        }
-
-        @media (min-width: 769px) and (max-width: 1024px) {
-            .track-section {
-                margin: 20px 0;
-            }
-            .track-box {
-                max-width: 500px;
-            }
-            .faq-section {
-                margin: 20px 15px;
-            }
-            .footer {
-                padding: 25px 20px;
-            }
-            .footer .footer-content {
-                flex-direction: row;
-                justify-content: space-between;
-            }
-            .footer-section {
-                flex: 1;
-                margin: 0 10px;
-            }
-            .footer-section h3 {
-                font-size: 1.15em;
-            }
-            .footer-section p, .footer-section a {
-                font-size: 0.93em;
-                margin: 6px 0;
-            }
-            .footer .copyright {
-                font-size: 0.83em;
-                margin-top: 15px;
-                padding-top: 10px;
-            }
-            .video-background {
-                width: 100vw;
-                height: 100vh;
-            }
-        }
-
-        @media (min-width: 1025px) {
-            .track-section {
-                margin: 30px 0;
-            }
-            .track-box {
-                max-width: 600px;
-                padding: 25px;
-            }
-            .faq-section {
-                margin: 30px 20px;
-            }
-            .title {
-                font-size: 2.5em;
-            }
-            .faq-section h2 {
-                font-size: 1.8em;
-            }
-            .footer {
-                padding: 30px 20px;
-            }
-            .footer .footer-content {
-                flex-direction: row;
-                justify-content: space-between;
-            }
-            .footer-section {
-                flex: 1;
-                margin: 0 15px;
-            }
-            .footer-section h3 {
-                font-size: 1.2em;
-            }
-            .footer-section p, .footer-section a {
-                font-size: 0.95em;
-                margin: 6px 0;
-            }
-            .footer .copyright {
-                font-size: 0.85em;
-                margin-top: 15px;
-                padding-top: 10px;
-            }
-            .video-background {
-                width: 100vw;
-                height: 100vh;
-            }
-        }
-
-        /* Touch-friendly adjustments */
-        .menu, .track-box button {
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        /* ===== FEATURE ADDITIONS (Keep your existing styles above) ===== */
-
-        /* Loading spinner */
-        .loading-spinner {
-            display: none;
-            width: 20px;
-            height: 20px;
-            border: 3px solid #fff;
-            border-top: 3px solid transparent;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin: 0 auto;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        /* Tracking result container */
+        
+        /* === TRACKING RESULT === */
         .tracking-result {
             display: none;
             margin: 20px auto;
@@ -492,61 +265,61 @@
             padding: 24px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        .tracking-result .status-badge {
-            display: inline-block;
-            padding: 6px 16px;
-            border-radius: 20px;
-            font-weight: 600;
-            font-size: 0.9rem;
+        
+        /* === BLOG SECTION - Each Photo in Own Grid === */
+        .blog-section {
+            max-width: 1200px;
+            margin: 40px auto;
+            padding: 0 20px;
         }
-        .tracking-result .checkpoint {
-            padding: 10px 0;
-            border-bottom: 1px solid #f0f0f0;
-            display: flex;
-            gap: 12px;
-            align-items: flex-start;
+        .blog-section .section-title {
+            text-align: center;
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #1a1a1a;
+            margin-bottom: 4px;
         }
-        .tracking-result .checkpoint:last-child {
-            border-bottom: none;
-        }
-        .tracking-result .checkpoint .time {
+        .blog-section .section-subtitle {
+            text-align: center;
             color: #666;
-            font-size: 0.85rem;
-            min-width: 150px;
+            font-size: 0.95rem;
+            margin-bottom: 30px;
         }
-        .tracking-result .checkpoint .location {
-            font-weight: 500;
-            color: #333;
+        .blog-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
         }
-        .tracking-result .checkpoint .event {
-            color: #666;
-        }
-        .tracking-result .checkpoint .dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #d32f2f;
-            margin-top: 5px;
-            flex-shrink: 0;
-        }
-        .tracking-result .checkpoint .dot.delivered {
-            background: #22c55e;
-        }
-        .tracking-result .progress-bar {
-            height: 6px;
-            background: #e0e0e0;
-            border-radius: 3px;
-            margin: 16px 0;
+        .blog-card {
+            background: #fff;
+            border-radius: 12px;
             overflow: hidden;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            border: 1px solid #eee;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            cursor: pointer;
         }
-        .tracking-result .progress-bar .fill {
-            height: 100%;
-            background: #d32f2f;
-            border-radius: 3px;
-            transition: width 1s ease;
+        .blog-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.1);
         }
-
-        /* Error message */
+        .blog-card .blog-image {
+            width: 100%;
+            height: 260px;
+            object-fit: cover;
+            background: #f0f0f0;
+            display: block;
+        }
+        .blog-card .blog-label {
+            padding: 12px 16px 16px;
+            font-size: 0.85rem;
+            color: #666;
+            text-align: center;
+            border-top: 1px solid #f0f0f0;
+            font-weight: 500;
+        }
+        
+        /* === ERROR MESSAGE === */
         .error-message {
             display: none;
             background: #fef2f2;
@@ -557,8 +330,8 @@
             margin-top: 12px;
             font-size: 0.95rem;
         }
-
-        /* Toast notification */
+        
+        /* === TOAST === */
         .toast {
             position: fixed;
             bottom: 20px;
@@ -579,22 +352,147 @@
         }
         .toast.success { background: #16a34a; }
         .toast.error { background: #dc2626; }
-
-        /* FAQ answer toggle */
-        .faq-answer {
+        
+        /* === FAQ === */
+        .faq-section {
+            margin: 30px 20px;
+            max-width: 800px;
+            align-self: center;
+            width: 100%;
+        }
+        .faq-section h2 {
+            color: #333;
+            font-size: 1.6rem;
+            margin-bottom: 20px;
+            font-weight: 700;
+        }
+        .faq-item {
+            border-bottom: 1px solid #e5e5e5;
+            padding: 14px 0;
+        }
+        .faq-item a {
+            color: #d32f2f;
+            text-decoration: none;
+            font-size: 15px;
+            font-weight: 500;
+            display: block;
+            cursor: pointer;
+        }
+        .faq-item a:hover {
+            text-decoration: underline;
+        }
+        .faq-item .faq-answer {
             display: none;
             margin-top: 10px;
             color: #555;
-            font-size: 15px;
+            font-size: 14px;
             line-height: 1.6;
             padding-left: 8px;
             border-left: 3px solid #d32f2f;
         }
+        
+        /* === FOOTER === */
+        .footer {
+            background: linear-gradient(to right, #ffcc00, #fff);
+            padding: 30px 20px;
+            color: #333;
+            text-align: center;
+            margin-top: 40px;
+            border-top: 1px solid #e5e5e5;
+        }
+        .footer .footer-content {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            max-width: 1200px;
+            margin: 0 auto 20px;
+        }
+        .footer-section {
+            margin: 0 15px 20px;
+            flex: 1;
+            min-width: 150px;
+            text-align: left;
+        }
+        .footer-section h3 {
+            color: #d32f2f;
+            font-size: 1.05rem;
+            margin-bottom: 12px;
+            font-weight: 700;
+        }
+        .footer-section p, .footer-section a {
+            color: #333;
+            text-decoration: none;
+            display: block;
+            margin: 6px 0;
+            font-size: 0.92rem;
+        }
+        .footer-section a:hover {
+            color: #d32f2f;
+            text-decoration: underline;
+        }
+        .footer .copyright {
+            font-size: 0.82rem;
+            color: #666;
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid #ccc;
+        }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .title { font-size: 1.8em; }
+            .track-box { padding: 20px; }
+            .blog-grid { grid-template-columns: 1fr; }
+            .blog-card .blog-image { height: 200px; }
+            .blog-section .section-title { font-size: 1.4rem; }
+        }
+        @media (min-width: 641px) and (max-width: 1024px) {
+            .blog-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        
+        @media (max-width: 480px) {
+            .header { padding: 8px 10px; }
+            .header img { height: 30px; }
+            .menu { font-size: 20px; padding: 8px; }
+            .menu-content { top: 50px; right: 5px; min-width: 120px; }
+            .menu-content a { font-size: 14px; padding: 6px 10px; }
+            .title { font-size: 1.5em; margin: 15px 0; }
+            .title-sub { font-size: 0.95rem; }
+            .track-box { padding: 15px; }
+            .track-box input, .track-box button { font-size: 14px; padding: 8px; }
+            .faq-section { margin: 15px 5px; }
+            .faq-section h2 { font-size: 1.3rem; }
+            .footer { padding: 15px 10px; margin-top: 20px; }
+            .footer .footer-content { flex-direction: column; text-align: center; }
+            .footer-section { margin: 10px 0; min-width: 100%; text-align: center; }
+            .gate-card { padding: 30px 20px; }
+            .gate-card h2 { font-size: 18px; }
+            .gate-card p { font-size: 13px; }
+            .toast { left: 10px; right: 10px; bottom: 10px; padding: 12px 16px; font-size: 0.9rem; }
+            .blog-section { padding: 0 10px; }
+            .blog-card .blog-label { font-size: 0.8rem; padding: 10px 12px; }
+        }
+        
+        @media (min-width: 481px) and (max-width: 768px) {
+            .header { padding: 10px 15px; }
+            .header img { height: 35px; }
+            .title { font-size: 2em; }
+            .track-box { padding: 20px; max-width: 400px; }
+            .footer { padding: 20px 15px; }
+            .footer .footer-content { flex-direction: column; text-align: center; }
+            .footer-section { margin: 12px 0; min-width: 100%; text-align: center; }
+        }
+        
+        .menu, .track-box button {
+            -webkit-tap-highlight-color: transparent;
+        }
     </style>
+    
     <!-- reCAPTCHA script -->
     <script src="https://www.google.com/recaptcha/api.js" async defer></script>
     <!-- Socket.IO script -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    
     <!-- Tawk.to chat -->
     <script type="text/javascript">
         var Tawk_API = Tawk_API || {}, Tawk_LoadStart = new Date();
@@ -608,43 +506,64 @@
         })();
     </script>
 </head>
+
 <body>
     <!-- Background Video -->
     <video class="video-background" autoplay muted loop playsinline poster="{{ url_for('static', filename='fallback-image.jpg') }}">
         <source src="{{ url_for('static', filename='background.mp4') }}" type="video/mp4">
-        Your browser does not support the video tag. Please use a modern browser.
+        Your browser does not support the video tag.
     </video>
+    
     <!-- Content Overlay -->
     <div class="content-overlay">
+        
+        <!-- === CLEAN GATE OVERLAY - White === -->
+        <div id="gate-overlay" class="gate-overlay">
+            <div class="gate-card" role="dialog" aria-modal="true">
+                <div class="lock-icon">🔒</div>
+                <h2>Please verify you're human</h2>
+                <p>Complete the reCAPTCHA below to unlock the tracking page.</p>
+                <div class="recaptcha-wrapper">
+                    <div id="gate-recaptcha" class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-callback="recaptchaGateSuccess"></div>
+                </div>
+                <p class="gate-note">If the reCAPTCHA doesn't load, refresh the page.</p>
+            </div>
+        </div>
+
+        <!-- === HEADER === -->
         <div class="header">
             <img src="{{ url_for('static', filename='dhl-logo.png') }}" alt="DHL Logo">
-            <div class="menu" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="menu-content">≡</div>
+            <div class="menu" aria-label="Toggle navigation" aria-expanded="false">≡</div>
             <div id="menu-content" class="menu-content hidden">
                 <a href="{{ url_for('index') }}">Home</a>
                 <a href="#">Contact</a>
-                <a href="#">Help</a>
+                <a href="#">Support</a>
+                <a href="{{ url_for('admin_dashboard') }}">Admin</a>
             </div>
         </div>
+
+        <!-- === TITLE === -->
         <div class="title">Track & Trace</div>
-        <div id="gate-overlay" class="gate-overlay">
-            <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="gate-title">
-                <h2 id="gate-title">Please verify you are human</h2>
-                <p>Complete the reCAPTCHA below to unlock the tracking page. The page content will appear once verification succeeds.</p>
-                <div id="gate-recaptcha" class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-callback="recaptchaGateSuccess"></div>
-                <p class="gate-note">If the reCAPTCHA doesn't load, refresh the page or check your network connection.</p>
-            </div>
-        </div>
+        <div class="title-sub">Enter your tracking number for real-time updates</div>
+
+        <!-- === TRACKING FORM === -->
         <div class="track-section">
             <div class="track-box">
                 <form id="trackForm" method="POST" action="{{ url_for('track') }}">
                     {{ form.hidden_tag() }}
                     <input type="hidden" name="g-recaptcha-response" id="g-recaptcha-response" />
+                    
                     <label for="tracking_number">Tracking Number</label>
-                    {{ form.tracking_number(id='tracking_number', placeholder='Enter your tracking number', pattern='[A-Za-z0-9]{10,20}', title='Enter a valid tracking number (10-20 alphanumeric characters)', required=True, maxlength=50, class='w-full p-2 mb-2 border border-gray-300 rounded') }}
-                    <label for="email" class="mt-4">Email (for updates)</label>
-                    {{ form.email(id='email', placeholder='Enter your email', type='email', class='w-full p-2 mb-2 border border-gray-300 rounded') }}
-                    {{ form.submit(id='submit-btn', class='bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded w-full cursor-pointer mt-4', disabled='disabled') }}
+                    {{ form.tracking_number(id='tracking_number', placeholder='Enter your tracking number', pattern='[A-Za-z0-9]{10,20}', title='Enter a valid tracking number (10-20 alphanumeric characters)', required=True, maxlength=50) }}
+                    
+                    <label for="email" class="mt-4">Email for Updates <span class="text-gray-400 text-sm">(Optional)</span></label>
+                    {{ form.email(id='email', placeholder='Enter your email address', type='email') }}
+                    
+                    {{ form.submit(id='submit-btn', class='bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded w-full cursor-pointer mt-4', disabled='disabled') }}
+                    
+                    <div class="recaptcha-note">Protected by reCAPTCHA</div>
                 </form>
+                <div id="error-message" class="error-message"></div>
             </div>
         </div>
 
@@ -657,66 +576,99 @@
             </div>
         </div>
 
-        <!-- Error Message -->
-        <div id="error-message" class="error-message"></div>
-
         <!-- Toast Notification -->
         <div id="toast" class="toast"></div>
-        <div class="faq-section">
-            <h2 class="text-2xl font-semibold mb-4">Frequently Asked Questions</h2>
-            <div class="faq-item">
-                <a href="#" onclick="toggleFAQ('faq1')" class="text-red-600 hover:underline">What Is a Tracking Number & Where Can I Find It?</a>
-                <div id="faq1" class="faq-answer">A tracking number is a unique ID assigned to your shipment, found on your shipping confirmation email or receipt.</div>
-            </div>
-            <div class="faq-item">
-                <a href="#" onclick="toggleFAQ('faq2')" class="text-red-600 hover:underline">When will my tracking information appear?</a>
-                <div id="faq2" class="faq-answer">Tracking information typically appears within 24 hours after your shipment is processed.</div>
-            </div>
-            <div class="faq-item">
-                <a href="#" onclick="toggleFAQ('faq3')" class="text-red-600 hover:underline">Why is my tracking number/ID not working?</a>
-                <div id="faq3" class="faq-answer">Ensure the number is correct or contact customer support if issues persist.</div>
+
+        <!-- === BLOG SECTION - Each Photo in Own Grid === -->
+        <div class="blog-section">
+            <div class="section-title">From the DHL Blog</div>
+            <div class="section-subtitle">Stories and insights from our team</div>
+            
+            <div class="blog-grid">
+                <!-- Blog Image 1 -->
+                <div class="blog-card">
+                    <img class="blog-image" src="{{ url_for('static', filename='blog-1.jpg') }}" alt="DHL Blog Post 1">
+                    <div class="blog-label">DHL Logistics & Innovation</div>
+                </div>
+
+                <!-- Blog Image 2 -->
+                <div class="blog-card">
+                    <img class="blog-image" src="{{ url_for('static', filename='blog-2.jpg') }}" alt="DHL Blog Post 2">
+                    <div class="blog-label">DHL Air Freight & Express</div>
+                </div>
+
+                <!-- Blog Image 3 -->
+                <div class="blog-card">
+                    <img class="blog-image" src="{{ url_for('static', filename='blog-3.jpg') }}" alt="DHL Blog Post 3">
+                    <div class="blog-label">DHL Delivery & Customer Service</div>
+                </div>
             </div>
         </div>
+
+        <!-- === FAQ SECTION === -->
+        <div class="faq-section" id="faq">
+            <h2>Frequently Asked Questions</h2>
+            <div class="faq-item">
+                <a onclick="toggleFAQ('faq1')">What Is a Tracking Number & Where Can I Find It?</a>
+                <div id="faq1" class="faq-answer">A tracking number is a unique ID assigned to your shipment. You can find it on your shipping confirmation email, receipt, or the shipping label.</div>
+            </div>
+            <div class="faq-item">
+                <a onclick="toggleFAQ('faq2')">When will my tracking information appear?</a>
+                <div id="faq2" class="faq-answer">Tracking information typically appears within 24 hours after your shipment is processed and picked up by DHL.</div>
+            </div>
+            <div class="faq-item">
+                <a onclick="toggleFAQ('faq3')">Why is my tracking number not working?</a>
+                <div id="faq3" class="faq-answer">Ensure you've entered the number correctly. If it still doesn't work, please contact DHL customer support for assistance.</div>
+            </div>
+            <div class="faq-item">
+                <a onclick="toggleFAQ('faq4')">What does "In Transit" mean?</a>
+                <div id="faq4" class="faq-answer">"In Transit" means your shipment is on its way to the destination and is moving through the DHL network.</div>
+            </div>
+            <div class="faq-item">
+                <a onclick="toggleFAQ('faq5')">Will I receive email updates?</a>
+                <div id="faq5" class="faq-answer">Yes. If you provide your email when tracking, you'll receive automatic updates about your shipment status.</div>
+            </div>
+        </div>
+
+        <!-- === FOOTER === -->
         <div class="footer">
             <div class="footer-content">
                 <div class="footer-section">
-                    <h3 class="text-red-600 font-bold">Contact Us</h3>
+                    <h3>Contact Us</h3>
                     <p>Email: support@dhl.com</p>
                     <p>Phone: +234 700 345 6789</p>
                     <p>Address: 1 DHL Way, Lagos, Nigeria</p>
                 </div>
                 <div class="footer-section">
-                    <h3 class="text-red-600 font-bold">Follow Us</h3>
-                    <a href="https://x.com/dhl" target="_blank" class="hover:text-red-600">X</a>
-                    <a href="https://facebook.com/dhl" target="_blank" class="hover:text-red-600">Facebook</a>
-                    <a href="https://instagram.com/dhl" target="_blank" class="hover:text-red-600">Instagram</a>
+                    <h3>Follow Us</h3>
+                    <a href="https://x.com/dhl" target="_blank">X (Twitter)</a>
+                    <a href="https://facebook.com/dhl" target="_blank">Facebook</a>
+                    <a href="https://instagram.com/dhl" target="_blank">Instagram</a>
                 </div>
                 <div class="footer-section">
-                    <h3 class="text-red-600 font-bold">Legal</h3>
-                    <a href="#" class="hover:text-red-600">Terms & Conditions</a>
-                    <a href="#" class="hover:text-red-600">Privacy Policy</a>
-                    <a href="#" class="hover:text-red-600">Cookies</a>
+                    <h3>Legal</h3>
+                    <a href="#">Terms & Conditions</a>
+                    <a href="#">Privacy Policy</a>
+                    <a href="#">Cookies</a>
                 </div>
                 <div class="footer-section">
-                    <h3 class="text-red-600 font-bold">Support</h3>
-                    <a href="#" class="hover:text-red-600">Help Center</a>
-                    <a href="#" class="hover:text-red-600">FAQs</a>
-                    <a href="#" class="hover:text-red-600">Contact</a>
+                    <h3>Support</h3>
+                    <a href="#">Help Center</a>
+                    <a href="#faq">FAQs</a>
+                    <a href="#">Contact</a>
                 </div>
             </div>
             <div class="copyright">
-                © 2025 DHL International. All rights reserved. steady b
+                &copy; 2025 DHL International. All rights reserved.
             </div>
         </div>
     </div>
 
     <script>
-        // reCAPTCHA Callback for page gate
+        // === reCAPTCHA Callback ===
         function recaptchaGateSuccess(token) {
-            const responseInput = document.getElementById('g-recaptcha-response');
-            const submitButton = document.getElementById('submit-btn');
-            responseInput.value = token;
-            submitButton.disabled = false;
+            document.getElementById('g-recaptcha-response').value = token;
+            document.getElementById('submit-btn').disabled = false;
             document.body.classList.remove('recaptcha-locked');
             const overlay = document.getElementById('gate-overlay');
             if (overlay) {
@@ -724,19 +676,13 @@
             }
         }
 
+        // === Lock page until reCAPTCHA is solved ===
         function lockPageUntilRecaptcha() {
             document.body.classList.add('recaptcha-locked');
-            const overlay = document.getElementById('gate-overlay');
-            if (overlay) {
-                overlay.style.display = 'flex';
-            }
         }
         lockPageUntilRecaptcha();
 
-        // Initialize Socket.IO
-        const socket = io();
-
-        // Toast notification
+        // === Toast Notification ===
         function showToast(message, type = 'success') {
             const toast = document.getElementById('toast');
             if (!toast) return;
@@ -746,25 +692,21 @@
             setTimeout(() => toast.classList.remove('show'), 4000);
         }
 
-        // Hamburger Menu Toggle
+        // === Hamburger Menu ===
         document.querySelector('.menu').addEventListener('click', function(e) {
             e.stopPropagation();
-            const menuContent = document.querySelector('.menu-content');
-            menuContent.style.display = menuContent.style.display === 'block' ? 'none' : 'block';
+            const menu = document.getElementById('menu-content');
+            menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
         });
-        document.addEventListener('click', function(event) {
-            const menu = document.querySelector('.menu');
-            const menuContent = document.querySelector('.menu-content');
-            if (!menu.contains(event.target) && !menuContent.contains(event.target)) {
-                menuContent.style.display = 'none';
-            }
+        document.addEventListener('click', function() {
+            document.getElementById('menu-content').style.display = 'none';
         });
 
-        // FAQ Toggle
+        // === FAQ Toggle ===
         function toggleFAQ(id) {
-            const faq = document.getElementById(id);
-            if (faq) {
-                faq.style.display = faq.style.display === 'none' || !faq.style.display ? 'block' : 'none';
+            const answer = document.getElementById(id);
+            if (answer) {
+                answer.style.display = answer.style.display === 'none' || !answer.style.display ? 'block' : 'none';
             }
         }
 
@@ -773,7 +715,7 @@
             el.style.display = 'none';
         });
 
-        // AJAX Form Submission
+        // === AJAX Form Submission ===
         const trackForm = document.getElementById('trackForm');
         if (trackForm) {
             trackForm.addEventListener('submit', async function(e) {
@@ -781,7 +723,7 @@
                 const btn = document.getElementById('submit-btn');
                 const originalText = btn.innerHTML;
                 btn.disabled = true;
-                btn.innerHTML = '⏳ Searching...';
+                btn.innerHTML = 'Searching...';
                 const formData = new FormData(this);
 
                 try {
@@ -790,6 +732,7 @@
                         body: formData
                     });
                     const html = await response.text();
+                    
                     if (html.includes('tracking-result') || html.includes('shipment')) {
                         const parser = new DOMParser();
                         const doc = parser.parseFromString(html, 'text/html');
@@ -800,7 +743,7 @@
                             document.getElementById('result-content').innerHTML = resultContent.innerHTML;
                             document.getElementById('tracking-result').style.display = 'block';
                             document.getElementById('error-message').style.display = 'none';
-                            showToast('✅ Tracking information loaded!', 'success');
+                            showToast('Tracking information loaded successfully', 'success');
                         } else {
                             showError('Shipment not found. Please check the tracking number.');
                         }
@@ -832,16 +775,18 @@
             errorEl.textContent = message;
             errorEl.style.display = 'block';
             document.getElementById('tracking-result').style.display = 'none';
-            showToast('❌ ' + message, 'error');
+            showToast('Error: ' + message, 'error');
         }
 
-        // Socket.IO - Real-time updates
+        // === Socket.IO ===
+        const socket = io();
+
         socket.on('connect', function() {
-            console.log('🔗 Connected to real-time tracking');
+            console.log('Connected to real-time tracking');
         });
 
         socket.on('tracking_update', function(data) {
-            console.log('📦 Tracking update received:', data);
+            console.log('Tracking update received:', data);
             const currentTn = document.querySelector('#tracking-result .tracking-number');
             if (currentTn && data.tracking_number === currentTn.textContent.trim()) {
                 updateTrackingDisplay(data);
@@ -851,6 +796,8 @@
         function updateTrackingDisplay(data) {
             const container = document.getElementById('result-content');
             if (!container) return;
+            
+            // Update status badge
             const statusBadge = container.querySelector('.status-badge');
             if (statusBadge) {
                 const colors = {
@@ -864,12 +811,16 @@
                 statusBadge.className = `status-badge ${colors[data.status] || 'bg-gray-100 text-gray-800'}`;
                 statusBadge.textContent = data.status || 'Unknown';
             }
+            
+            // Update progress
             const progressBar = container.querySelector('.progress-bar .fill');
             if (progressBar && data.progress !== undefined) {
                 const percent = Math.round(data.progress * 100);
                 progressBar.style.width = percent + '%';
                 progressBar.textContent = percent + '%';
             }
+            
+            // Update checkpoints
             const checkpointsContainer = container.querySelector('.checkpoints-list');
             if (checkpointsContainer && data.checkpoints) {
                 checkpointsContainer.innerHTML = data.checkpoints.map(cp => {
@@ -890,6 +841,8 @@
                     `;
                 }).join('');
             }
+            
+            // Update last updated
             const lastUpdated = container.querySelector('.last-updated');
             if (lastUpdated && data.last_updated) {
                 const date = new Date(data.last_updated);
@@ -897,6 +850,7 @@
             }
         }
 
+        // === Auto-refresh reCAPTCHA ===
         setTimeout(() => {
             const recaptchaContainer = document.getElementById('gate-recaptcha');
             if (recaptchaContainer && !recaptchaContainer.innerHTML.trim() && window.grecaptcha) {
