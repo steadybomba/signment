@@ -36,6 +36,7 @@ eventlet = _get_eventlet()
 # Standard library imports
 import re
 import os
+import sys
 import json
 import random
 import threading
@@ -80,11 +81,9 @@ from utils import (
     cache_route_templates, get_bot, get_shipment_list,
     get_shipment_details, save_shipment, invalidate_cache, is_admin
 )
-from bot import start_bot_service
 
 # Initialize Flask app
 app = Flask(__name__)
-bot = get_bot()
 
 # Load config
 try:
@@ -1954,7 +1953,6 @@ def start_background_services():
             db.create_all()
         init_db()
         cache_route_templates()
-        threading.Thread(target=start_bot_service, daemon=True).start()
         threading.Thread(target=keep_alive, daemon=True).start()
         threading.Thread(target=process_notification_queue, daemon=True).start()
         threading.Thread(target=cleanup_websocket_clients, daemon=True).start()
