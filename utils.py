@@ -43,7 +43,31 @@ bot_logger = logging.getLogger('telegram_bot')
 console = Console()
 
 # === REDIS CLIENT ===
-redis_client = None
+
+class RedisClientProxy:
+    def __init__(self):
+        self._client = None
+
+    def set_client(self, client):
+        self._client = client
+
+    def get_client(self):
+        return self._client
+
+    def __bool__(self):
+        return self._client is not None
+
+    def __getattr__(self, name):
+        def _missing(*args, **kwargs):
+            client = self._client
+            if client is None:
+                raise RuntimeError(f"Redis client is not initialized: {name}")
+            return getattr(client, name)(*args, **kwargs)
+
+        return _missing
+
+
+redis_client = RedisClientProxy()
 redis_url = os.getenv("REDIS_URL", "").strip()
 redis_token = os.getenv("REDIS_TOKEN", "")
 redis_user = os.getenv("REDISUSER", os.getenv("REDIS_USER", "default"))
@@ -102,15 +126,13 @@ def _is_hostname_resolvable(hostname: str) -> bool:
         return False
 
 
-if redis_url:
-    redis_url = _resolve_template_url(redis_url)
+def _initialize_redis_client() -> None:
+    if not redis_url:
+        redis_client.set_client(None)
+        return
 
-if not redis_url and redis_host:
-    redis_url = _build_redis_url(redis_user, redis_password, redis_host, redis_port)
-
-if redis_url:
-    redis_url = redis_url.strip()
-    parsed_url = urlparse(redis_url)
+    redis_url_local = redis_url.strip()
+    parsed_url = urlparse(redis_url_local)
     scheme = parsed_url.scheme.lower()
     hostname = parsed_url.hostname
 
@@ -118,39 +140,54 @@ if redis_url:
         console.print(f"[yellow]Redis hostname lookup warning: {hostname}[/yellow]")
 
     try:
-        if scheme in ("https", "http") or "upstash" in redis_url.lower() or scheme.startswith("upstash"):
+        if scheme in ("https", "http") or "upstash" in redis_url_local.lower() or scheme.startswith("upstash"):
             from upstash_redis import Redis as UpstashRedis
 
-            redis_client = UpstashRedis(url=redis_url, token=redis_token)
-            redis_client.set("health_check", "ok", ex=10)
-            redis_client.delete("health_check")
+            client = UpstashRedis(url=redis_url_local, token=redis_token)
+            client.set("health_check", "ok", ex=10)
+            client.delete("health_check")
+            redis_client.set_client(client)
             console.print("[green]Upstash Redis connected[/green]")
         elif scheme in ("redis", "rediss"):
             from redis import Redis as RedisClient
 
-            redis_client = RedisClient.from_url(redis_url, decode_responses=True)
-            redis_client.ping()
+            client = RedisClient.from_url(redis_url_local, decode_responses=True)
+            client.ping()
+            redis_client.set_client(client)
             console.print("[green]Redis connected[/green]")
         else:
             console.print(f"[yellow]Redis unavailable: unsupported Redis scheme '{scheme}'[/yellow]")
-            redis_client = None
+            redis_client.set_client(None)
     except Exception as e:
-        if scheme in ("redis", "rediss") or redis_url.lower().startswith("redis://"):
+        if scheme in ("redis", "rediss") or redis_url_local.lower().startswith("redis://"):
             try:
                 from redis import Redis as RedisClient
 
-                redis_client = RedisClient.from_url(redis_url, decode_responses=True)
-                redis_client.ping()
+                client = RedisClient.from_url(redis_url_local, decode_responses=True)
+                client.ping()
+                redis_client.set_client(client)
                 console.print("[green]Redis connected via redis-py fallback[/green]")
             except Exception as fallback_error:
                 console.print(f"[yellow]Redis unavailable: {fallback_error}[/yellow]")
-                redis_client = None
+                redis_client.set_client(None)
         else:
             console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
-            redis_client = None
-else:
-    console.print("[yellow]Redis unavailable: REDIS_URL not configured or could not be resolved[/yellow]")
-    redis_client = None
+            redis_client.set_client(None)
+
+
+def get_redis_client():
+    if not redis_client:
+        _initialize_redis_client()
+    return redis_client.get_client()
+
+
+if redis_url:
+    redis_url = _resolve_template_url(redis_url)
+
+if not redis_url and redis_host:
+    redis_url = _build_redis_url(redis_user, redis_password, redis_host, redis_port)
+
+_initialize_redis_client()
 
 # === CONFIGURATION CLASS (EXPORTED) ===
 class BotConfig:
@@ -268,7 +305,8 @@ class Shipment(db.Model):
 
 # === REDIS HELPERS ===
 def safe_redis_operation(func, *args, **kwargs):
-    if not redis_client:
+    client = get_redis_client()
+    if not client:
         return None
     try:
         return func(*args, **kwargs)
