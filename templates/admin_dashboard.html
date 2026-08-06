@@ -13,74 +13,148 @@
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
   <style>
-    body { background: #f0f2f5; font-family: 'Segoe UI', system-ui, sans-serif; }
+    :root {
+      --dhl-red: #D40511;
+      --dhl-yellow: #FFCC00;
+      --dhl-dark: #1a1a1a;
+    }
+    
+    body { 
+      background: #f0f2f5; 
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+    
+    /* Modern Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: var(--dhl-red); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #b0040e; }
     
     .stat-card {
       background: white;
       border-radius: 16px;
       padding: 1.5rem;
       box-shadow: 0 4px 20px rgba(0,0,0,0.06);
-      border-left: 4px solid #D40511;
-      transition: transform 0.2s;
+      border-left: 4px solid var(--dhl-red);
+      transition: all 0.3s ease;
+      cursor: default;
+      position: relative;
+      overflow: hidden;
     }
-    .stat-card:hover { transform: translateY(-2px); }
-    .stat-card .icon { font-size: 2rem; color: #D40511; }
-    .stat-card h3 { font-weight: 700; color: #1a1a1a; }
-    .stat-card .label { color: #6b7280; font-size: 0.9rem; font-weight: 500; }
+    .stat-card::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 100px;
+      height: 100px;
+      background: radial-gradient(circle, rgba(212,5,17,0.05) 0%, transparent 70%);
+      border-radius: 50%;
+      transform: translate(30%, -30%);
+    }
+    .stat-card:hover { 
+      transform: translateY(-3px);
+      box-shadow: 0 8px 30px rgba(0,0,0,0.1);
+    }
+    .stat-card .icon { 
+      font-size: 2rem; 
+      color: var(--dhl-red); 
+      opacity: 0.7;
+      z-index: 1;
+      position: relative;
+    }
+    .stat-card h3 { 
+      font-weight: 700; 
+      color: var(--dhl-dark);
+      z-index: 1;
+      position: relative;
+    }
+    .stat-card .label { 
+      color: #6b7280; 
+      font-size: 0.85rem; 
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      z-index: 1;
+      position: relative;
+    }
+    .stat-card .stat-change {
+      font-size: 0.75rem;
+      font-weight: 600;
+      z-index: 1;
+      position: relative;
+    }
+    .stat-card .stat-change.up { color: #22c55e; }
+    .stat-card .stat-change.down { color: #dc2626; }
     
     .status-badge {
       padding: 4px 12px;
       border-radius: 20px;
       font-weight: 600;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       letter-spacing: 0.3px;
       display: inline-flex;
       align-items: center;
       gap: 4px;
+      white-space: nowrap;
     }
-    .status-badge i { font-size: 0.7rem; }
+    .status-badge i { font-size: 0.65rem; }
     
     .stage-badge {
       font-size: 0.6rem;
       padding: 2px 10px;
       border-radius: 12px;
-      font-weight: 600;
+      font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+      white-space: nowrap;
     }
     .stage-badge.pickup { background: #dbeafe; color: #1e40af; }
     .stage-badge.transit { background: #fef3c7; color: #92400e; }
     .stage-badge.delivery { background: #fce7f3; color: #be185d; }
     .stage-badge.delivered { background: #dcfce7; color: #16a34a; }
+    .stage-badge.exception { background: #fee2e2; color: #dc2626; }
     
     .table th {
       background: #f8f9fa;
       font-weight: 600;
       color: #4a5568;
-      font-size: 0.8rem;
+      font-size: 0.7rem;
       text-transform: uppercase;
       letter-spacing: 0.5px;
       border-bottom: 2px solid #e2e8f0;
+      white-space: nowrap;
+      padding: 10px 8px;
     }
-    .table td { vertical-align: middle; padding: 12px 8px; }
+    .table td { 
+      vertical-align: middle; 
+      padding: 10px 8px;
+      font-size: 0.85rem;
+    }
+    .table tr:hover { background: #f8fafc; }
     
-    .btn-pause, .btn-resume, .btn-create {
-      font-size: 0.75rem;
-      padding: 4px 12px;
+    .btn-pause, .btn-resume, .btn-create, .btn-view, .btn-email {
+      font-size: 0.7rem;
+      padding: 4px 10px;
       border-radius: 20px;
       font-weight: 600;
       border: none;
       transition: all 0.2s;
+      white-space: nowrap;
     }
     .btn-pause { background: #fee2e2; color: #dc2626; }
-    .btn-pause:hover { background: #fecaca; }
+    .btn-pause:hover { background: #fecaca; transform: scale(1.05); }
     .btn-resume { background: #dcfce7; color: #16a34a; }
-    .btn-resume:hover { background: #bbf7d0; }
-    .btn-create { background: #D40511; color: white; padding: 8px 20px; }
-    .btn-create:hover { background: #b0040e; color: white; }
+    .btn-resume:hover { background: #bbf7d0; transform: scale(1.05); }
+    .btn-view { background: #f1f5f9; color: #475569; }
+    .btn-view:hover { background: #e2e8f0; transform: scale(1.05); }
+    .btn-email { background: #dbeafe; color: #2563eb; }
+    .btn-email:hover { background: #bfdbfe; transform: scale(1.05); }
+    .btn-create { background: var(--dhl-red); color: white; padding: 8px 20px; }
+    .btn-create:hover { background: #b0040e; color: white; transform: scale(1.02); }
     
     .speed-slider {
-      width: 80px;
+      width: 70px;
       height: 4px;
       -webkit-appearance: none;
       appearance: none;
@@ -94,42 +168,58 @@
       width: 14px;
       height: 14px;
       border-radius: 50%;
-      background: #D40511;
+      background: var(--dhl-red);
       cursor: pointer;
+      box-shadow: 0 2px 4px rgba(212,5,17,0.3);
+      transition: all 0.2s;
+    }
+    .speed-slider::-webkit-slider-thumb:hover {
+      transform: scale(1.15);
+      box-shadow: 0 2px 8px rgba(212,5,17,0.4);
     }
     
     .dhl-header {
-      background: linear-gradient(135deg, #D40511 0%, #b0040e 100%);
+      background: linear-gradient(135deg, var(--dhl-red) 0%, #b0040e 100%);
       color: white;
-      padding: 1.5rem 0;
+      padding: 1.5rem 2rem;
       border-radius: 16px 16px 0 0;
+      box-shadow: 0 4px 20px rgba(212,5,17,0.2);
     }
     
     #map {
       height: 400px;
       border-radius: 16px;
       box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+      z-index: 0;
     }
     
     .modal-content {
       border-radius: 16px;
       border: none;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.15);
     }
     .modal-header {
       border-radius: 16px 16px 0 0;
+      padding: 1rem 1.5rem;
     }
+    .modal-body { padding: 1.5rem; }
+    .modal-footer { padding: 1rem 1.5rem; }
     
     .select2-container--bootstrap-5 .select2-selection {
       border-radius: 8px;
       border-color: #d1d5db;
     }
+    .select2-container--bootstrap-5 .select2-selection:hover {
+      border-color: var(--dhl-red);
+    }
     
     .form-control, .form-select {
       border-radius: 8px;
       border-color: #d1d5db;
+      transition: all 0.2s;
     }
     .form-control:focus, .form-select:focus {
-      border-color: #D40511;
+      border-color: var(--dhl-red);
       box-shadow: 0 0 0 0.25rem rgba(212, 5, 17, 0.15);
     }
     
@@ -139,6 +229,7 @@
       padding: 12px 16px;
       border-radius: 8px;
       margin-bottom: 8px;
+      animation: slideIn 0.3s ease;
     }
     
     .live-indicator {
@@ -152,88 +243,176 @@
     }
     
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+    
+    @keyframes slideIn {
+      from { transform: translateX(20px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
     }
     
     .service-level-badge {
-      font-size: 0.65rem;
+      font-size: 0.6rem;
       padding: 2px 8px;
       border-radius: 12px;
       background: #f1f5f9;
       color: #334155;
       font-weight: 600;
       letter-spacing: 0.3px;
+      white-space: nowrap;
     }
     .service-level-badge.premium { background: #fef3c7; color: #92400e; }
+    .service-level-badge.express { background: #dbeafe; color: #1e40af; }
+    .service-level-badge.economy { background: #f1f5f9; color: #64748b; }
     
     .toast-container {
       position: fixed;
       top: 20px;
       right: 20px;
       z-index: 9999;
-    }
-    
-    /* Responsive */
-    @media (max-width: 768px) {
-      .dhl-header { padding: 1rem 0; }
-      .stat-card { padding: 1rem; }
-      .stat-card h3 { font-size: 1.25rem; }
-      .table td, .table th { padding: 0.5rem; font-size: 0.75rem; }
-      #map { height: 280px; }
-      .speed-slider { width: 50px; }
-    }
-    @media (max-width: 480px) {
-      .dhl-header .logo-text { font-size: 1rem; }
-      .table-container .table-header { flex-direction: column; align-items: stretch; text-align: center; }
-    }
-    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    .truck-marker { background: transparent; border: none; font-size: 22px; }
-    
-    .pagination .page-link {
-      color: #D40511;
-      border-radius: 8px;
-      margin: 0 2px;
-      border: none;
-      padding: 0.5rem 0.9rem;
-      font-weight: 500;
-      font-size: 0.85rem;
-    }
-    .pagination .page-link:hover {
-      background: #f1f5f9;
-      color: #D40511;
-    }
-    .pagination .page-item.active .page-link {
-      background: #D40511;
-      color: white;
-      border-radius: 8px;
-    }
-    
-    /* Toast */
-    .toast-container {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 9999;
+      max-width: 380px;
     }
     .toast-custom {
       background: white;
       border-radius: 12px;
       padding: 16px 20px;
       box-shadow: 0 8px 30px rgba(0,0,0,0.12);
-      border-left: 4px solid #D40511;
+      border-left: 4px solid var(--dhl-red);
       margin-bottom: 10px;
-      min-width: 280px;
-      animation: slideIn 0.3s ease;
+      animation: toastSlide 0.3s ease;
+      backdrop-filter: blur(10px);
     }
     .toast-custom.success { border-left-color: #22c55e; }
     .toast-custom.error { border-left-color: #dc2626; }
-    .toast-custom .toast-title { font-weight: 600; font-size: 0.95rem; }
+    .toast-custom.warning { border-left-color: #f59e0b; }
+    .toast-custom .toast-title { font-weight: 600; font-size: 0.9rem; }
     .toast-custom .toast-message { font-size: 0.85rem; color: #6b7280; }
     
-    @keyframes slideIn {
+    @keyframes toastSlide {
       from { transform: translateX(100px); opacity: 0; }
       to { transform: translateX(0); opacity: 1; }
+    }
+    
+    .pagination .page-link {
+      color: var(--dhl-red);
+      border-radius: 8px;
+      margin: 0 2px;
+      border: none;
+      padding: 0.5rem 0.9rem;
+      font-weight: 500;
+      font-size: 0.8rem;
+      transition: all 0.2s;
+    }
+    .pagination .page-link:hover {
+      background: #f1f5f9;
+      color: var(--dhl-red);
+      transform: translateY(-1px);
+    }
+    .pagination .page-item.active .page-link {
+      background: var(--dhl-red);
+      color: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(212,5,17,0.3);
+    }
+    
+    .progress {
+      height: 5px;
+      border-radius: 4px;
+      background: #e2e8f0;
+      overflow: hidden;
+    }
+    .progress-bar {
+      background: linear-gradient(90deg, var(--dhl-red), #ff4444);
+      transition: width 0.5s ease;
+      border-radius: 4px;
+    }
+    
+    .proof-signature {
+      font-size: 0.7rem;
+      background: #f1f5f9;
+      padding: 2px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      max-width: 120px;
+      display: inline-block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    
+    .delivery-window {
+      font-size: 0.7rem;
+      color: #059669;
+      white-space: nowrap;
+    }
+    
+    .table-responsive {
+      border-radius: 0 0 16px 16px;
+    }
+    
+    /* Responsive */
+    @media (max-width: 992px) {
+      .dhl-header { padding: 1rem; }
+      .dhl-header .btn { font-size: 0.75rem; padding: 0.25rem 0.5rem; }
+      .stat-card { padding: 1rem; }
+      .stat-card h3 { font-size: 1.25rem; }
+    }
+    
+    @media (max-width: 768px) {
+      .dhl-header .row { flex-direction: column; text-align: center; gap: 0.5rem; }
+      .dhl-header .col-md-6.text-end { text-align: center !important; }
+      .stat-card { padding: 0.75rem; }
+      .stat-card h3 { font-size: 1.1rem; }
+      .table td, .table th { padding: 0.4rem; font-size: 0.7rem; }
+      #map { height: 250px; }
+      .speed-slider { width: 40px; }
+      .toast-container { max-width: 300px; right: 10px; }
+      .btn-pause, .btn-resume, .btn-view, .btn-email { 
+        font-size: 0.6rem; 
+        padding: 2px 6px; 
+      }
+    }
+    
+    @media (max-width: 480px) {
+      .dhl-header .logo-text { font-size: 1rem; }
+      .table td, .table th { padding: 0.3rem; font-size: 0.65rem; }
+      .status-badge { font-size: 0.65rem; padding: 2px 8px; }
+      .stage-badge { font-size: 0.5rem; padding: 1px 6px; }
+      .service-level-badge { font-size: 0.5rem; padding: 1px 6px; }
+    }
+    
+    .truck-marker { 
+      background: transparent; 
+      border: none; 
+      font-size: 22px;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+    }
+    
+    /* Dark Mode Support */
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a2e; }
+      .stat-card { background: #16213e; border-left-color: var(--dhl-red); }
+      .stat-card .label { color: #94a3b8; }
+      .stat-card h3 { color: #f1f5f9; }
+      .card { background: #16213e; border-color: #1e293b; }
+      .card-header { background: transparent; }
+      .table th { background: #1a1a2e; color: #94a3b8; border-bottom-color: #1e293b; }
+      .table td { color: #e2e8f0; }
+      .table tr:hover { background: #1e293b; }
+      .form-control, .form-select { background: #1e293b; color: #e2e8f0; border-color: #334155; }
+      .form-control:focus, .form-select:focus { border-color: var(--dhl-red); }
+      .modal-content { background: #16213e; color: #e2e8f0; }
+      .modal-header { border-bottom-color: #1e293b; }
+      .modal-footer { border-top-color: #1e293b; }
+      .toast-custom { background: #1e293b; color: #e2e8f0; }
+      .created-shipment { background: #0f172a; }
+      .pagination .page-link { background: #1e293b; color: #94a3b8; }
+      .pagination .page-link:hover { background: #334155; color: white; }
+      .bg-light { background: #1e293b !important; }
+      .text-muted { color: #94a3b8 !important; }
+      .alert-light { background: #1e293b; color: #e2e8f0; border-color: #334155; }
+      .btn-outline-secondary { color: #94a3b8; border-color: #334155; }
+      .btn-outline-secondary:hover { background: #334155; color: white; }
     }
   </style>
 </head>
@@ -251,6 +430,7 @@
         </div>
         <div class="col-md-6 text-end">
           <span class="text-white-50 me-3"><span class="live-indicator"></span>Live</span>
+          <span class="text-white-50 me-3" id="clock-display" style="font-family: monospace; font-size: 0.9rem;"></span>
           <button class="btn btn-light btn-sm me-2" onclick="showCreateModal()">
             <i class="bi bi-plus-lg"></i> New Shipment
           </button>
@@ -268,7 +448,12 @@
     <div class="card border-0 shadow-sm mb-4">
       <div class="card-header bg-transparent d-flex justify-content-between align-items-center border-0 pt-3">
         <h6 class="mb-0 fw-bold"><i class="bi bi-map me-2 text-danger"></i>Live Tracking</h6>
-        <small class="text-muted" id="map-status">Loading shipments...</small>
+        <div>
+          <small class="text-muted me-3" id="map-status">Loading shipments...</small>
+          <button class="btn btn-outline-secondary btn-sm" onclick="refreshMap()">
+            <i class="bi bi-arrow-clockwise"></i>
+          </button>
+        </div>
       </div>
       <div class="card-body p-0">
         <div id="map"></div>
@@ -277,47 +462,51 @@
 
     <!-- Stats -->
     <div class="row g-3 mb-4">
-      <div class="col-md-3">
+      <div class="col-md-3 col-sm-6">
         <div class="stat-card">
-          <div class="d-flex justify-content-between">
+          <div class="d-flex justify-content-between align-items-start">
             <div>
               <div class="label">Total Shipments</div>
-              <h3 class="mb-0">{{ total }}</h3>
+              <h3 class="mb-1">{{ total }}</h3>
+              <span class="stat-change up"><i class="bi bi-arrow-up"></i> 12%</span>
             </div>
             <div class="icon"><i class="bi bi-box-seam"></i></div>
           </div>
         </div>
       </div>
-      <div class="col-md-3">
+      <div class="col-md-3 col-sm-6">
         <div class="stat-card">
-          <div class="d-flex justify-content-between">
+          <div class="d-flex justify-content-between align-items-start">
             <div>
               <div class="label">In Transit</div>
-              <h3 class="mb-0" id="in-transit-count">0</h3>
+              <h3 class="mb-1" id="in-transit-count">0</h3>
+              <span class="stat-change up"><i class="bi bi-arrow-up"></i> 8%</span>
             </div>
             <div class="icon"><i class="bi bi-truck"></i></div>
           </div>
         </div>
       </div>
-      <div class="col-md-3">
+      <div class="col-md-3 col-sm-6">
         <div class="stat-card">
-          <div class="d-flex justify-content-between">
+          <div class="d-flex justify-content-between align-items-start">
             <div>
               <div class="label">Delivered</div>
-              <h3 class="mb-0" id="delivered-count">0</h3>
+              <h3 class="mb-1" id="delivered-count">0</h3>
+              <span class="stat-change up"><i class="bi bi-arrow-up"></i> 24%</span>
             </div>
             <div class="icon"><i class="bi bi-check-circle"></i></div>
           </div>
         </div>
       </div>
-      <div class="col-md-3">
-        <div class="stat-card">
-          <div class="d-flex justify-content-between">
+      <div class="col-md-3 col-sm-6">
+        <div class="stat-card" style="border-left-color: #dc2626;">
+          <div class="d-flex justify-content-between align-items-start">
             <div>
               <div class="label">Exceptions</div>
-              <h3 class="mb-0 text-danger" id="exception-count">0</h3>
+              <h3 class="mb-1 text-danger" id="exception-count">0</h3>
+              <span class="stat-change down"><i class="bi bi-arrow-down"></i> 3%</span>
             </div>
-            <div class="icon"><i class="bi bi-exclamation-triangle"></i></div>
+            <div class="icon" style="color: #dc2626;"><i class="bi bi-exclamation-triangle"></i></div>
           </div>
         </div>
       </div>
@@ -356,9 +545,10 @@
                   data-status="{{ s.status }}"
                   data-stage="{{ s.stage|default('pickup') }}"
                   data-delivered="{{ s.status == 'Delivered' }}"
-                  data-exception="{{ s.status == 'Exception' }}">
+                  data-exception="{{ s.status == 'Exception' }}"
+                  data-paused="{{ s.paused|default(false)|lower }}">
                 <td>
-                  <code style="font-size:0.8rem; background:#f1f5f9; padding:2px 8px; border-radius:4px;">
+                  <code style="font-size:0.75rem; background:#f1f5f9; padding:2px 8px; border-radius:4px;">
                     {{ s.tracking_number }}
                   </code>
                 </td>
@@ -374,65 +564,70 @@
                     {%- elif s.stage == 'transit' %} transit
                     {%- elif s.stage == 'delivery' %} delivery
                     {%- elif s.stage == 'delivered' %} delivered
+                    {%- elif s.stage == 'exception' %} exception
                     {%- else %} pickup{%- endif %}">
                     {{ s.stage|default('Pickup')|replace('_', ' ')|title }}
                   </span>
                 </td>
                 <td>
-                  <span class="service-level-badge {% if s.service_level and 'Express' in s.service_level %}premium{% endif %}">
+                  <span class="service-level-badge 
+                    {%- if '9:00' in s.service_level or '12:00' in s.service_level %} premium
+                    {%- elif 'Express' in s.service_level %} express
+                    {%- elif 'Economy' in s.service_level %} economy
+                    {%- endif %}">
                     {{ s.service_level or 'DHL Express' }}
                   </span>
                 </td>
                 <td>
-                  <span class="delivery-window" style="font-size:0.75rem; color:#059669;">
+                  <span class="delivery-window">
                     <i class="bi bi-calendar-event me-1"></i>{{ s.delivery_window or 'Calculating...' }}
                   </span>
                 </td>
                 <td>
                   {% if s.proof_of_delivery %}
-                  <span class="proof-signature" style="font-size:0.75rem; background:#f1f5f9; padding:2px 8px; border-radius:4px;">
+                  <span class="proof-signature" title="{{ s.proof_of_delivery }}">
                     <i class="bi bi-pen me-1"></i>{{ s.proof_of_delivery }}
                   </span>
                   {% else %}
-                  <span class="text-muted" style="font-size:0.75rem;">Pending</span>
+                  <span class="text-muted" style="font-size:0.7rem;">Pending</span>
                   {% endif %}
                 </td>
                 <td>
-                  <div style="width: 100px;">
-                    <div class="progress" style="height: 4px;">
-                      <div class="progress-bar bg-danger" role="progressbar" 
+                  <div style="min-width: 80px;">
+                    <div class="progress">
+                      <div class="progress-bar" role="progressbar" 
                            style="width: {{ s.progress_percent|default(0) }}%;" 
                            aria-valuenow="{{ s.progress_percent|default(0) }}" 
                            aria-valuemin="0" aria-valuemax="100">
                       </div>
                     </div>
-                    <small class="text-muted" style="font-size:0.65rem;">{{ "%.0f"|format(s.progress_percent|default(0)) }}%</small>
+                    <small class="text-muted" style="font-size:0.6rem;">{{ "%.0f"|format(s.progress_percent|default(0)) }}%</small>
                   </div>
                 </td>
                 <td>
-                  <div class="d-flex align-items-center gap-2">
+                  <div class="d-flex align-items-center gap-1">
                     <input type="range" class="speed-slider" min="1" max="50" 
                            value="{{ (s.speed[:-1]|float * 10)|int }}" 
                            onchange="updateSpeed('{{ s.tracking_number }}', this.value / 10)">
-                    <span class="speed-value" style="font-family: monospace; font-weight:700; font-size:0.85rem;">{{ s.speed }}</span>
+                    <span class="speed-value" style="font-family: monospace; font-weight:700; font-size:0.75rem; min-width: 30px;">{{ s.speed }}</span>
                   </div>
                 </td>
                 <td>
                   <div class="d-flex gap-1 flex-wrap">
                     {% if s.paused %}
                     <button class="btn btn-resume btn-sm" onclick="togglePause('{{ s.tracking_number }}', false)">
-                      <i class="bi bi-play-fill me-1"></i>Resume
+                      <i class="bi bi-play-fill"></i>
                     </button>
                     {% else %}
                     <button class="btn btn-pause btn-sm" onclick="togglePause('{{ s.tracking_number }}', true)">
-                      <i class="bi bi-pause-fill me-1"></i>Pause
+                      <i class="bi bi-pause-fill"></i>
                     </button>
                     {% endif %}
-                    <button class="btn btn-view btn-sm" onclick="showDetails('{{ s.tracking_number }}')">
+                    <button class="btn btn-view btn-sm" onclick="showDetails('{{ s.tracking_number }}')" title="View Details">
                       <i class="bi bi-eye"></i>
                     </button>
                     {% if s.recipient_email and s.recipient_email != '-' %}
-                    <button class="btn btn-outline-primary btn-sm" onclick="showEmailModal('{{ s.tracking_number }}')">
+                    <button class="btn btn-email btn-sm" onclick="showEmailModal('{{ s.tracking_number }}')" title="Send Email">
                       <i class="bi bi-envelope"></i>
                     </button>
                     {% endif %}
@@ -448,11 +643,15 @@
         <nav>
           <ul class="pagination justify-content-center mb-0">
             {% if page > 1 %}
-            <li class="page-item"><a class="page-link" href="?page={{ page - 1 }}">Previous</a></li>
+            <li class="page-item"><a class="page-link" href="?page={{ page - 1 }}"><i class="bi bi-chevron-left"></i></a></li>
             {% endif %}
-            <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ total_pages }}</span></li>
+            {% for p in range(max(1, page-2), min(total_pages, page+2) + 1) %}
+            <li class="page-item {% if p == page %}active{% endif %}">
+              <a class="page-link" href="?page={{ p }}">{{ p }}</a>
+            </li>
+            {% endfor %}
             {% if page < total_pages %}
-            <li class="page-item"><a class="page-link" href="?page={{ page + 1 }}">Next</a></li>
+            <li class="page-item"><a class="page-link" href="?page={{ page + 1 }}"><i class="bi bi-chevron-right"></i></a></li>
             {% endif %}
           </ul>
         </nav>
@@ -464,7 +663,7 @@
   <div class="modal fade" id="emailModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
       <div class="modal-content">
-        <div class="modal-header" style="background: #D40511; color: white;">
+        <div class="modal-header" style="background: var(--dhl-red); color: white;">
           <h5 class="modal-title"><i class="bi bi-envelope me-2"></i>Send Email Update</h5>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
@@ -543,7 +742,7 @@
   <div class="modal fade" id="createModal" tabindex="-1" data-bs-backdrop="static">
     <div class="modal-dialog modal-lg">
       <div class="modal-content">
-        <div class="modal-header" style="background:#D40511;color:white;">
+        <div class="modal-header" style="background:var(--dhl-red);color:white;">
           <h5 class="modal-title"><i class="bi bi-plus-circle me-2"></i>Create New Shipment</h5>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
@@ -614,7 +813,7 @@
   <div class="modal fade" id="detailModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
       <div class="modal-content">
-        <div class="modal-header" style="background:#D40511;color:white;">
+        <div class="modal-header" style="background:var(--dhl-red);color:white;">
           <h5 class="modal-title"><i class="bi bi-truck me-2"></i>Shipment Details</h5>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
         </div>
@@ -640,12 +839,14 @@
       const icons = {
         success: 'bi-check-circle-fill text-success',
         error: 'bi-exclamation-circle-fill text-danger',
+        warning: 'bi-exclamation-triangle-fill text-warning',
         info: 'bi-info-circle-fill text-primary'
       };
       const icon = icons[type] || icons.info;
       const titles = {
         success: 'Success',
         error: 'Error',
+        warning: 'Warning',
         info: 'Info'
       };
       toast.innerHTML = `
@@ -661,8 +862,18 @@
       container.appendChild(toast);
       setTimeout(() => {
         if (toast.parentElement) toast.remove();
-      }, 5000);
+      }, 6000);
     }
+
+    // ============================================================
+    // CLOCK
+    // ============================================================
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('clock-display').textContent = now.toLocaleTimeString();
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
 
     // ============================================================
     // MODALS
@@ -674,7 +885,7 @@
     let currentEmailTn = null;
 
     // ============================================================
-    // CREATE SHIPMENT (FIXED)
+    // CREATE SHIPMENT
     // ============================================================
     function loadCities() {
       fetch('/admin/api/cities')
@@ -686,7 +897,8 @@
               dropdownParent: $('#createModal'),
               data: cities.map(c => ({ id: c, text: c })),
               placeholder: 'Search for a city...',
-              allowClear: true
+              allowClear: true,
+              width: '100%'
             });
           });
         })
@@ -883,7 +1095,7 @@
             <div class="p-2 mb-1 bg-white rounded border" style="font-size:0.8rem;">
               <div class="d-flex justify-content-between">
                 <strong>${h.type || 'Status Update'}</strong>
-                <small class="text-muted">${h.timestamp || 'Unknown time'}</small>
+                <small class="text-muted">${h.timestamp ? new Date(h.timestamp).toLocaleString() : 'Unknown time'}</small>
               </div>
               <div class="text-muted small">To: ${h.recipient}</div>
               ${h.message ? `<div class="mt-1">${h.message}</div>` : ''}
@@ -915,7 +1127,7 @@
 
           let preview = `
             <div style="font-family: system-ui, sans-serif;">
-              <div style="background: #D40511; color: white; padding: 8px 12px; border-radius: 4px 4px 0 0; font-weight: 600;">
+              <div style="background: var(--dhl-red); color: white; padding: 8px 12px; border-radius: 4px 4px 0 0; font-weight: 600;">
                 ${typeLabels[emailType] || 'Shipment Update'}
               </div>
               <div style="padding: 12px; background: white; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 4px 4px;">
@@ -933,7 +1145,7 @@
           }
 
           if (emailType === 'delivery_confirmation') {
-            const proof = 'Signature: J. SMITH';
+            const proof = data.proof_of_delivery || 'Signature: J. SMITH';
             preview += `
               <div style="margin-top:8px; padding:8px; background:#f0fdf4; border-radius:4px; border-left:3px solid #22c55e;">
                 <strong>Proof of Delivery:</strong><br>${proof}
@@ -1005,11 +1217,11 @@
     });
 
     // ============================================================
-    // MAP (unchanged)
+    // MAP
     // ============================================================
     const map = L.map('map').setView([20, 0], 2);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap & Carto'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> & <a href="https://carto.com/">CARTO</a>'
     }).addTo(map);
 
     const markers = {};
@@ -1019,6 +1231,7 @@
       "Abuja, NG": [9.0579, 7.4951],
       "Port Harcourt, NG": [4.8156, 7.0498],
       "New York, NY": [40.7128, -74.0060],
+      "Los Angeles, CA": [34.0522, -118.2437],
       "London, UK": [51.5074, -0.1278],
       "Dubai, UAE": [25.2048, 55.2708],
       "Tokyo, JP": [35.6762, 139.6503],
@@ -1043,7 +1256,10 @@
       "Brussels, BE": [50.8476, 4.3572],
       "Amsterdam, NL": [52.3676, 4.9041],
       "Rome, IT": [41.9028, 12.4964],
-      "Madrid, ES": [40.4168, -3.7038]
+      "Madrid, ES": [40.4168, -3.7038],
+      "Ibadan, NG": [7.3775, 3.9470],
+      "Kano, NG": [12.0001, 8.5167],
+      "Enugu, NG": [6.4584, 7.5170]
     };
 
     function getLocationFromCheckpoint(checkpoint) {
@@ -1073,34 +1289,36 @@
 
       if (!markers[tn]) {
         const icon = L.divIcon({
-          html: `<i class="bi bi-truck" style="color:${status === 'Delivered' ? '#22c55e' : '#D40511'}; font-size:22px;"></i>`,
-          iconSize: [22, 22],
+          html: `<i class="bi bi-truck" style="color:${status === 'Delivered' ? '#22c55e' : status === 'Exception' ? '#dc2626' : '#D40511'}; font-size:24px;"></i>`,
+          iconSize: [24, 24],
           className: 'truck-marker'
         });
         markers[tn] = L.marker(cityCoords[currentLoc], { icon }).addTo(map)
           .bindPopup(`
             <div style="min-width:150px;">
-              <strong style="color:#D40511;">${tn}</strong><br>
+              <strong style="color:var(--dhl-red);">${tn}</strong><br>
               <span class="badge bg-${status === 'Delivered' ? 'success' : status === 'Exception' ? 'danger' : status === 'Delayed' ? 'warning' : 'primary'}">${status}</span><br>
               <small>📍 ${currentLoc}</small><br>
               <small>📊 ${Math.round(progress * 100)}% complete</small>
+              ${paused ? '<br><span class="badge bg-secondary">⏸ Paused</span>' : ''}
             </div>
           `);
       } else {
         markers[tn].setLatLng(cityCoords[currentLoc]);
         markers[tn].setPopupContent(`
           <div style="min-width:150px;">
-            <strong style="color:#D40511;">${tn}</strong><br>
+            <strong style="color:var(--dhl-red);">${tn}</strong><br>
             <span class="badge bg-${status === 'Delivered' ? 'success' : status === 'Exception' ? 'danger' : status === 'Delayed' ? 'warning' : 'primary'}">${status}</span><br>
             <small>📍 ${currentLoc}</small><br>
             <small>📊 ${Math.round(progress * 100)}% complete</small>
+            ${paused ? '<br><span class="badge bg-secondary">⏸ Paused</span>' : ''}
           </div>
         `);
       }
 
       if (!polylines[tn]) {
         polylines[tn] = L.polyline([], { 
-          color: '#D40511', 
+          color: status === 'Delivered' ? '#22c55e' : '#D40511', 
           weight: 3, 
           opacity: 0.6,
           dashArray: '5, 10'
@@ -1121,6 +1339,30 @@
       if (path.length > 1) {
         polylines[tn].setLatLngs(path);
       }
+    }
+
+    function refreshMap() {
+      // Remove all markers and polylines
+      Object.keys(markers).forEach(key => {
+        map.removeLayer(markers[key]);
+        delete markers[key];
+      });
+      Object.keys(polylines).forEach(key => {
+        map.removeLayer(polylines[key]);
+        delete polylines[key];
+      });
+      
+      // Reload shipment data
+      const rows = document.querySelectorAll('#shipment-table tbody tr');
+      rows.forEach(row => {
+        const tn = row.dataset.tn;
+        fetch(`/admin/api/shipment/${tn}`)
+          .then(r => r.json())
+          .then(data => updateMap(data))
+          .catch(err => console.error('Failed to load shipment for map:', err));
+      });
+      
+      showToast('Map refreshed', 'info');
     }
 
     // ============================================================
@@ -1170,7 +1412,8 @@
           'pickup': 'pickup',
           'transit': 'transit',
           'delivery': 'delivery',
-          'delivered': 'delivered'
+          'delivered': 'delivered',
+          'exception': 'exception'
         };
         stageEl.className = `stage-badge ${stageMap[data.stage] || 'pickup'}`;
         stageEl.textContent = (data.stage || 'Pickup').replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
@@ -1194,15 +1437,15 @@
 
     function updateStats(data) {
       const status = data.status;
-      if (status === 'In_Transit' || status === 'Out_for_Delivery') {
-        document.getElementById('in-transit-count').textContent = 
-          parseInt(document.getElementById('in-transit-count').textContent) + 1;
-      } else if (status === 'Delivered') {
-        document.getElementById('delivered-count').textContent = 
-          parseInt(document.getElementById('delivered-count').textContent) + 1;
-      } else if (status === 'Exception') {
-        document.getElementById('exception-count').textContent = 
-          parseInt(document.getElementById('exception-count').textContent) + 1;
+      const countMap = {
+        'In_Transit': 'in-transit-count',
+        'Out_for_Delivery': 'in-transit-count',
+        'Delivered': 'delivered-count',
+        'Exception': 'exception-count'
+      };
+      if (countMap[status]) {
+        const el = document.getElementById(countMap[status]);
+        el.textContent = parseInt(el.textContent) + 1;
       }
     }
 
@@ -1221,7 +1464,10 @@
       })
       .then(r => r.json())
       .then(d => { 
-        if (d.success) location.reload(); 
+        if (d.success) {
+          showToast(`Shipment ${pause ? 'paused' : 'resumed'} successfully`, 'success');
+          setTimeout(() => location.reload(), 1000);
+        }
       })
       .finally(() => {
         btn.disabled = false;
@@ -1239,6 +1485,10 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tracking_number: tn, speed })
+      })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) showToast(`Speed updated to ${speed}x`, 'success');
       });
     }
 
@@ -1256,7 +1506,7 @@
         .then(r => r.json())
         .then(data => {
           const content = document.getElementById('detailContent');
-          const checkpoints = (data.checkpoints || []).slice(-5).reverse();
+          const checkpoints = (data.checkpoints || []).slice(-10).reverse();
           content.innerHTML = `
             <div class="row g-3">
               <div class="col-md-6">
@@ -1268,7 +1518,9 @@
                   ['Destination', data.delivery_location],
                   ['Carrier', data.carrier || 'DHL'],
                   ['Service', data.service_level || 'DHL Express'],
-                  ['Delivery Window', data.delivery_window || 'Calculating...']
+                  ['Delivery Window', data.delivery_window || 'Calculating...'],
+                  ['Speed', data.speed_multiplier ? data.speed_multiplier.toFixed(1) + 'x' : '1.0x'],
+                  ['Mode', data.mode || 'Ground']
                 ].map(([label, val]) => `
                   <div class="d-flex justify-content-between py-1 border-bottom" style="font-size:0.9rem;">
                     <span class="text-muted">${label}</span>
@@ -1297,7 +1549,7 @@
               <div class="col-md-6">
                 <h6 class="fw-bold mb-3"><i class="bi bi-clock-history me-2 text-danger"></i>Recent Activity</h6>
                 ${checkpoints.length ? checkpoints.map(c => `
-                  <div class="p-2 mb-1 bg-${c.includes('Delivered') ? 'success' : c.includes('Exception') ? 'danger' : 'light'} bg-opacity-10 rounded" style="font-size:0.85rem;border-left:3px solid ${c.includes('Delivered') ? '#22c55e' : c.includes('Exception') ? '#dc2626' : '#D40511'};">
+                  <div class="p-2 mb-1 rounded" style="font-size:0.85rem;border-left:3px solid ${c.includes('Delivered') ? '#22c55e' : c.includes('Exception') ? '#dc2626' : '#D40511'}; background: ${c.includes('Delivered') ? '#f0fdf4' : c.includes('Exception') ? '#fef2f2' : '#f8fafc'};">
                     ${c}
                   </div>
                 `).join('') : '<div class="text-muted">No checkpoints yet</div>'}
@@ -1308,6 +1560,7 @@
         .catch(err => {
           document.getElementById('detailContent').innerHTML = 
             '<div class="alert alert-danger">Error loading details</div>';
+          showToast('Failed to load shipment details', 'error');
         });
     }
 
@@ -1326,14 +1579,26 @@
         if (status === 'In_Transit' || status === 'Out_for_Delivery') inTransit++;
         else if (status === 'Delivered') delivered++;
         else if (status === 'Exception') exceptions++;
+        
+        // Update map for each shipment
+        const tn = row.dataset.tn;
+        fetch(`/admin/api/shipment/${tn}`)
+          .then(r => r.json())
+          .then(data => updateMap(data))
+          .catch(err => console.error('Failed to load shipment for map:', err));
       });
       document.getElementById('in-transit-count').textContent = inTransit;
       document.getElementById('delivered-count').textContent = delivered;
       document.getElementById('exception-count').textContent = exceptions;
+      
+      // Set map status
+      setTimeout(() => {
+        document.getElementById('map-status').textContent = `Live (${Object.keys(markers).length} active)`;
+      }, 2000);
     });
 
-    document.getElementById('map-status').textContent = `Live (${Object.keys(markers).length} active)`;
     console.log('✅ Admin Dashboard loaded');
+    showToast('Dashboard loaded successfully', 'success');
   </script>
 </body>
 </html>
