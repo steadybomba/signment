@@ -75,7 +75,7 @@ load_dotenv()
 
 # Local imports
 from utils import (
-    BotConfig, redis_client, console, enqueue_notification,
+    BotConfig, redis_client, get_redis_client, console, enqueue_notification,
     get_cached_route_templates, sanitize_tracking_number, validate_email,
     validate_location, validate_webhook_url,
     cache_route_templates, get_bot, get_shipment_list,
@@ -120,7 +120,7 @@ try:
         TAWK_PROPERTY_ID=os.getenv("TAWK_PROPERTY_ID", ""),
         TAWK_WIDGET_ID=os.getenv("TAWK_WIDGET_ID", ""),
         RATELIMIT_DEFAULTS=['200 per day', '50 per hour'],
-        RATELIMIT_STORAGE_URI=(os.getenv("RATELIMIT_STORAGE_URI") or ("redis://" + config.redis_url if config.redis_url and redis_client is not None else "memory://")),
+        RATELIMIT_STORAGE_URI=(os.getenv("RATELIMIT_STORAGE_URI") or ("redis://" + config.redis_url if config.redis_url and bool(redis_client) else "memory://")),
         GLOBAL_WEBHOOK_URL=os.getenv("GLOBAL_WEBHOOK_URL", config.websocket_server),
         ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD", "admin123")
     )
