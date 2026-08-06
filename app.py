@@ -1591,10 +1591,101 @@ def generate_dhl_tracking():
     digits = ''.join(random.choices(string.digits, k=10))
     return f"{prefix}{digits}"
 
+# ============================================================
+# ADMIN API ENDPOINTS
+# ============================================================
+
+# ============================================================
+# 1. GET SHIPMENT DETAILS (for detail modal)
+# ============================================================
+@app.route('/admin/api/shipment/<tn>')
+@admin_required
+def api_shipment_detail(tn):
+    """Get detailed shipment information for the admin dashboard."""
+    shipment = Shipment.query.filter_by(tracking_number=tn).first()
+    if not shipment:
+        return jsonify({'error': 'Not found'}), 404
+    
+    # Get additional data from Redis
+    speed = float(redis_client.hget("sim_speed_multipliers", tn) or "1.0") if redis_client else 1.0
+    paused = redis_client and redis_client.hget("paused_simulations", tn) == "true"
+    mode = redis_client.hget("transport_mode", tn) or "ground"
+    delivery_attempt = int(redis_client.hget("delivery_attempts", tn) or "0") if redis_client else 0
+    max_attempts = int(redis_client.hget("max_attempts", tn) or "3") if redis_client else 3
+    progress = float(redis_client.hget("progress", tn) or "0") if redis_client else 0
+    
+    checkpoints = (shipment.checkpoints or "").split(";") if shipment.checkpoints else []
+    
+    # Get service level and delivery window
+    service_level = redis_client.hget("service_level", tn) or "DHL Express"
+    if isinstance(service_level, bytes):
+        service_level = service_level.decode('utf-8')
+    
+    delivery_window = redis_client.hget("delivery_window", tn)
+    if isinstance(delivery_window, bytes):
+        delivery_window = delivery_window.decode('utf-8')
+    
+    proof_of_delivery = redis_client.hget("proof_of_delivery", tn)
+    if isinstance(proof_of_delivery, bytes):
+        proof_of_delivery = proof_of_delivery.decode('utf-8')
+    
+    temperature = redis_client.hget("temperature", tn)
+    if isinstance(temperature, bytes):
+        temperature = temperature.decode('utf-8')
+    
+    return jsonify({
+        'tracking_number': shipment.tracking_number,
+        'status': shipment.status,
+        'origin_location': shipment.origin_location,
+        'delivery_location': shipment.delivery_location,
+        'carrier': shipment.carrier,
+        'recipient_email': shipment.recipient_email,
+        'checkpoints': checkpoints,
+        'last_updated': shipment.last_updated.isoformat(),
+        'speed_multiplier': speed,
+        'paused': paused,
+        'mode': mode,
+        'delivery_attempt': delivery_attempt,
+        'max_attempts': max_attempts,
+        'service_level': service_level,
+        'delivery_window': delivery_window,
+        'proof_of_delivery': proof_of_delivery,
+        'temperature': temperature,
+        'progress': progress
+    })
+
+
+# ============================================================
+# 2. GET CITIES LIST (for Select2 autocomplete)
+# ============================================================
+@app.route('/admin/api/cities')
+@admin_required
+def api_cities():
+    """Return list of available cities for autocomplete."""
+    cities = sorted(list(DHLRealisticSimulator.DHL_HUBS.keys()) + [
+        "Lagos, NG", "Abuja, NG", "Port Harcourt, NG", "Kano, NG", "Ibadan, NG",
+        "New York, NY", "Los Angeles, CA", "London, UK", "Dubai, UAE",
+        "Tokyo, JP", "Sydney, AU", "Paris, FR", "Berlin, DE", "Mumbai, IN",
+        "Singapore, SG", "Hong Kong, HK", "São Paulo, BR", "Johannesburg, ZA",
+        "Cairo, EG", "Moscow, RU", "Toronto, CA", "Mexico City, MX", "Seoul, KR",
+        "Bangkok, TH", "Jakarta, ID", "Delhi, IN", "Beijing, CN", "Shanghai, CN",
+        "Istanbul, TR", "Karachi, PK", "Buenos Aires, AR", "Rio de Janeiro, BR",
+        "Tel Aviv, IL", "Athens, GR", "Lisbon, PT", "Stockholm, SE", "Oslo, NO",
+        "Helsinki, FI", "Warsaw, PL", "Prague, CZ", "Budapest, HU", "Vienna, AT",
+        "Zurich, CH", "Amsterdam, NL", "Brussels, BE", "Dublin, IE", "Madrid, ES",
+        "Rome, IT", "Milan, IT", "Barcelona, ES", "Cincinnati, OH", "Miami, FL",
+        "Frankfurt, DE", "Leipzig, DE"
+    ])
+    return jsonify(cities)
+
+
+# ============================================================
+# 3. CREATE SHIPMENT (for create modal)
+# ============================================================
 @app.route('/admin/api/create_shipment', methods=['POST'])
 @admin_required
 def api_create_shipment():
-    """Create a new shipment and start simulation"""
+    """Create a new shipment and start simulation."""
     data = request.get_json() or {}
     origin = data.get('origin')
     destination = data.get('destination')
@@ -1668,22 +1759,447 @@ def api_create_shipment():
         flask_logger.error(f"Failed to create shipment: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/admin/api/cities')
-@admin_required
-def api_cities():
-    """Return list of available cities for autocomplete"""
-    cities = sorted(list(DHLRealisticSimulator.DHL_HUBS.keys()) + [
-        "Lagos, NG", "Abuja, NG", "Port Harcourt, NG", "Kano, NG", "Ibadan, NG",
-        "New York, NY", "Los Angeles, CA", "London, UK", "Dubai, UAE",
-        "Tokyo, JP", "Sydney, AU", "Paris, FR", "Berlin, DE", "Mumbai, IN",
-        "Singapore, SG", "Hong Kong, HK", "São Paulo, BR", "Johannesburg, ZA",
-        "Cairo, EG", "Moscow, RU", "Toronto, CA", "Mexico City, MX", "Seoul, KR",
-        "Bangkok, TH", "Jakarta, ID", "Delhi, IN", "Beijing, CN", "Shanghai, CN",
-        "Istanbul, TR", "Karachi, PK", "Buenos Aires, AR", "Rio de Janeiro, BR"
-    ])
-    return jsonify(cities)
 
-# ... rest of admin API endpoints (they remain the same)
+# ============================================================
+# 4. SEND EMAIL (for email modal)
+# ============================================================
+@app.route('/admin/api/send_email', methods=['POST'])
+@admin_required
+def api_send_email():
+    """Manually trigger an email update for a shipment."""
+    data = request.get_json() or {}
+    tracking_number = data.get('tracking_number')
+    custom_message = data.get('custom_message', '')
+    email_type = data.get('email_type', 'status_update')
+
+    if not tracking_number:
+        return jsonify({'error': 'Tracking number required'}), 400
+    
+    shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+    if not shipment:
+        return jsonify({'error': 'Shipment not found'}), 404
+    
+    if not shipment.recipient_email:
+        return jsonify({'error': 'No recipient email on file'}), 400
+    
+    distance_km = estimate_distance(shipment.origin_location or "Lagos, NG", shipment.delivery_location)
+    service_level = redis_client.hget("service_level", tracking_number) or "DHL Express"
+    if isinstance(service_level, bytes):
+        service_level = service_level.decode('utf-8')
+    
+    delivery_window = redis_client.hget("delivery_window", tracking_number)
+    if isinstance(delivery_window, bytes):
+        delivery_window = delivery_window.decode('utf-8')
+    
+    checkpoints = (shipment.checkpoints or "").split(";") if shipment.checkpoints else []
+    latest = checkpoints[-1] if checkpoints else f"Current status: {shipment.status}"
+    location = latest.split(' - ')[1] if ' - ' in latest else shipment.delivery_location
+    
+    # Build email content
+    if email_type == 'status_update':
+        subject = f"DHL Shipment {tracking_number} - {shipment.status}"
+        html_body = build_dhl_email_html(
+            tracking_number, 
+            shipment.status, 
+            latest,
+            shipment.delivery_location,
+            service_level,
+            delivery_window
+        )
+        plain_body = f"""DHL Shipment Update
+
+Tracking Number: {tracking_number}
+Status: {shipment.status}
+Location: {location}
+Destination: {shipment.delivery_location}
+Service: {service_level}
+Estimated Delivery: {delivery_window or 'Pending'}
+
+Track your shipment: {app.config['WEBSOCKET_SERVER']}/track/{tracking_number}
+
+{custom_message if custom_message else ''}
+"""
+        
+    elif email_type == 'delivery_confirmation':
+        subject = f"DHL Shipment {tracking_number} - Delivered"
+        proof = DHLRealisticSimulator.generate_pod_info()
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; border-radius: 8px; overflow: hidden;">
+            <div style="background: #D40511; padding: 1rem; text-align: center;">
+                <img src="{DHL_CONFIG['logo_url']}" alt="DHL" width="120">
+            </div>
+            <div style="padding: 1.5rem; background: #fff;">
+                <h3 style="color: #22c55e; margin-top: 0;">✅ Shipment Delivered</h3>
+                <p><strong>Waybill:</strong> <code style="background:#f5f5f5;padding:2px 6px;border-radius:4px;">{tracking_number}</code></p>
+                <p><strong>Delivered to:</strong> {shipment.delivery_location}</p>
+                <p><strong>Service:</strong> {service_level}</p>
+                <div style="background:#f0fdf4;padding:1rem;border-radius:8px;margin:1rem 0;border-left:4px solid #22c55e;">
+                    <strong>Proof of Delivery:</strong><br>
+                    {proof}
+                </div>
+                {custom_message if custom_message else ''}
+                <hr style="border:0;border-top:1px solid #eee;margin:1.5rem 0;">
+                <p style="font-size:0.9rem;color:#666;">
+                    Thank you for choosing DHL Express.
+                </p>
+            </div>
+            <div style="background:#FFCC00;padding:0.8rem;text-align:center;font-size:0.8rem;color:#000;">
+                © {datetime.now().year} DHL International GmbH. All rights reserved.
+            </div>
+        </div>
+        """
+        plain_body = f"""DHL Shipment Delivered
+
+Tracking Number: {tracking_number}
+Delivered to: {shipment.delivery_location}
+Service: {service_level}
+Proof of Delivery: {proof}
+
+{custom_message if custom_message else ''}
+
+Track your shipment: {app.config['WEBSOCKET_SERVER']}/track/{tracking_number}
+"""
+        
+    elif email_type == 'exception_alert':
+        subject = f"DHL Shipment {tracking_number} - Action Required"
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; border-radius: 8px; overflow: hidden;">
+            <div style="background: #dc2626; padding: 1rem; text-align: center;">
+                <img src="{DHL_CONFIG['logo_url']}" alt="DHL" width="120" style="filter: brightness(0) invert(1);">
+            </div>
+            <div style="padding: 1.5rem; background: #fff;">
+                <h3 style="color: #dc2626; margin-top: 0;">⚠️ Delivery Exception</h3>
+                <p><strong>Waybill:</strong> <code style="background:#f5f5f5;padding:2px 6px;border-radius:4px;">{tracking_number}</code></p>
+                <p><strong>Status:</strong> {shipment.status}</p>
+                <p><strong>Destination:</strong> {shipment.delivery_location}</p>
+                <div style="background:#fef2f2;padding:1rem;border-radius:8px;margin:1rem 0;border-left:4px solid #dc2626;">
+                    <strong>Action Required:</strong><br>
+                    {custom_message or 'Please contact DHL support for assistance with your delivery.'}
+                </div>
+                <hr style="border:0;border-top:1px solid #eee;margin:1.5rem 0;">
+                <p style="font-size:0.9rem;color:#666;">
+                    Track live: <a href="{app.config['WEBSOCKET_SERVER']}/track/{tracking_number}" style="color:#D40511;">View Shipment</a>
+                </p>
+            </div>
+            <div style="background:#FFCC00;padding:0.8rem;text-align:center;font-size:0.8rem;color:#000;">
+                © {datetime.now().year} DHL International GmbH. All rights reserved.
+            </div>
+        </div>
+        """
+        plain_body = f"""DHL Shipment Exception
+
+Tracking Number: {tracking_number}
+Status: {shipment.status}
+Destination: {shipment.delivery_location}
+
+Action Required: {custom_message or 'Please contact DHL support for assistance.'}
+
+Track your shipment: {app.config['WEBSOCKET_SERVER']}/track/{tracking_number}
+"""
+    
+    elif email_type == 'custom':
+        subject = f"DHL Shipment {tracking_number} - Update"
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; border-radius: 8px; overflow: hidden;">
+            <div style="background: #D40511; padding: 1rem; text-align: center;">
+                <img src="{DHL_CONFIG['logo_url']}" alt="DHL" width="120">
+            </div>
+            <div style="padding: 1.5rem; background: #fff;">
+                <h3 style="color: #D40511; margin-top: 0;">📬 Shipment Update</h3>
+                <p><strong>Waybill:</strong> <code style="background:#f5f5f5;padding:2px 6px;border-radius:4px;">{tracking_number}</code></p>
+                <p><strong>Current Status:</strong> {shipment.status}</p>
+                <div style="background:#f0f9ff;padding:1rem;border-radius:8px;margin:1rem 0;border-left:4px solid #0ea5e9;">
+                    <strong>Message:</strong><br>
+                    {custom_message or 'Your shipment is progressing normally.'}
+                </div>
+                <hr style="border:0;border-top:1px solid #eee;margin:1.5rem 0;">
+                <p style="font-size:0.9rem;color:#666;">
+                    Track live: <a href="{app.config['WEBSOCKET_SERVER']}/track/{tracking_number}" style="color:#D40511;">View Shipment</a>
+                </p>
+            </div>
+            <div style="background:#FFCC00;padding:0.8rem;text-align:center;font-size:0.8rem;color:#000;">
+                © {datetime.now().year} DHL International GmbH. All rights reserved.
+            </div>
+        </div>
+        """
+        plain_body = f"""DHL Shipment Update
+
+Tracking Number: {tracking_number}
+Status: {shipment.status}
+
+Message: {custom_message or 'Your shipment is progressing normally.'}
+
+Track your shipment: {app.config['WEBSOCKET_SERVER']}/track/{tracking_number}
+"""
+    else:
+        return jsonify({'error': 'Invalid email type'}), 400
+    
+    success = send_email_notification(
+        shipment.recipient_email,
+        subject,
+        html_body,
+        plain_body,
+        tracking_number=tracking_number,
+        email_type=email_type,
+        message=custom_message
+    )
+    
+    if success:
+        flask_logger.info(f"Manual email sent for {tracking_number} to {shipment.recipient_email}")
+        return jsonify({
+            'success': True,
+            'message': f'Email sent successfully to {shipment.recipient_email}',
+            'recipient': shipment.recipient_email,
+            'email_type': email_type
+        }), 200
+    else:
+        return jsonify({
+            'error': 'Failed to send email',
+            'recipient': shipment.recipient_email
+        }), 500
+
+
+# ============================================================
+# 5. EMAIL HISTORY (for email modal history view)
+# ============================================================
+@app.route('/admin/api/shipments/email-history/<tn>')
+@admin_required
+def api_email_history(tn):
+    """Get email history for a shipment."""
+    if not redis_client:
+        return jsonify([])
+    
+    history_key = f"email_history:{tn}"
+    emails = redis_client.lrange(history_key, 0, 99)
+    result = []
+    for email_json in emails:
+        try:
+            if isinstance(email_json, bytes):
+                email_json = email_json.decode('utf-8')
+            email_data = json.loads(email_json)
+            result.append(email_data)
+        except Exception:
+            continue
+    
+    return jsonify(result)
+
+
+# ============================================================
+# 6. PAUSE/RESUME SIMULATION
+# ============================================================
+@app.route('/admin/api/pause', methods=['POST'])
+@admin_required
+def admin_api_pause():
+    data = request.get_json()
+    tn = data.get('tracking_number')
+    pause = data.get('pause')
+    if not tn or pause is None:
+        return jsonify({"error": "Invalid"}), 400
+    if not redis_client:
+        return jsonify({"error": "Redis down"}), 500
+    if pause:
+        redis_client.hset("paused_simulations", tn, "true")
+    else:
+        redis_client.hdel("paused_simulations", tn)
+        eventlet.spawn(simulate_tracking, tn)
+    invalidate_cache(tn)
+    broadcast_update(tn)
+    return jsonify({"success": True})
+
+
+# ============================================================
+# 7. CHANGE SIMULATION SPEED
+# ============================================================
+@app.route('/admin/api/speed', methods=['POST'])
+@admin_required
+def admin_api_speed():
+    data = request.get_json()
+    tn = data.get('tracking_number')
+    speed = data.get('speed')
+    if not tn or not (0.1 <= speed <= 10.0):
+        return jsonify({"error": "Invalid"}), 400
+    if not redis_client:
+        return jsonify({"error": "Redis down"}), 500
+    redis_client.hset("sim_speed_multipliers", tn, str(speed))
+    invalidate_cache(tn)
+    broadcast_update(tn)
+    return jsonify({"success": True})
+
+
+# ============================================================
+# 8. CHANGE TRANSPORT MODE
+# ============================================================
+@app.route('/admin/api/mode', methods=['POST'])
+@admin_required
+def admin_api_mode():
+    data = request.get_json()
+    tn = data.get('tracking_number')
+    mode = data.get('mode')
+    if not tn or mode not in ["air", "ground"]:
+        return jsonify({"error": "Invalid"}), 400
+    if not redis_client:
+        return jsonify({"error": "Redis down"}), 500
+    redis_client.hset("transport_mode", tn, mode)
+    invalidate_cache(tn)
+    broadcast_update(tn)
+    return jsonify({"success": True, "mode": mode})
+
+
+# ============================================================
+# 9. BULK CREATE
+# ============================================================
+@app.route('/admin/api/bulk_create', methods=['POST'])
+@admin_required
+def api_bulk_create():
+    """Create multiple shipments at once."""
+    data = request.get_json() or {}
+    shipments_data = data.get('shipments', [])
+    
+    if not shipments_data:
+        return jsonify({'error': 'No shipments provided'}), 400
+    
+    created = []
+    errors = []
+    
+    valid_service_levels = set(DHLRealisticSimulator.SERVICE_LEVELS.keys())
+    
+    for idx, shipment_data in enumerate(shipments_data):
+        try:
+            origin = shipment_data.get('origin')
+            destination = shipment_data.get('destination')
+            service_level = shipment_data.get('service_level', 'DHL Express')
+            recipient_email = shipment_data.get('recipient_email', '')
+            
+            if not origin or not destination:
+                errors.append({
+                    'index': idx,
+                    'error': 'Origin and destination required',
+                    'data': shipment_data
+                })
+                continue
+            
+            if service_level not in valid_service_levels:
+                errors.append({
+                    'index': idx,
+                    'error': f'Invalid service_level. Allowed: {sorted(valid_service_levels)}',
+                    'data': shipment_data
+                })
+                continue
+            
+            tracking_number = generate_dhl_tracking()
+            while Shipment.query.filter_by(tracking_number=tracking_number).first():
+                tracking_number = generate_dhl_tracking()
+            
+            shipment = Shipment(
+                tracking_number=tracking_number,
+                status='Pending',
+                checkpoints=f"{datetime.now():%Y-%m-%d %H:%M} - {origin} - Shipment information received",
+                delivery_location=destination,
+                last_updated=datetime.now(),
+                recipient_email=recipient_email or '',
+                created_at=datetime.now(),
+                origin_location=origin,
+                carrier='DHL',
+                email_notifications=bool(recipient_email)
+            )
+            
+            db.session.add(shipment)
+            
+            if redis_client:
+                redis_client.hset("service_level", tracking_number, service_level)
+                distance = estimate_distance(origin, destination)
+                mode = "air" if distance > 1000 else "ground"
+                redis_client.hset("transport_mode", tracking_number, mode)
+                redis_client.hset("delivery_attempts", tracking_number, "0")
+                max_attempts = 3 if random.random() < 0.15 else 1
+                redis_client.hset("max_attempts", tracking_number, str(max_attempts))
+                redis_client.hset("progress", tracking_number, "0")
+                delivery_window = DHLRealisticSimulator.get_delivery_window(service_level, distance)
+                redis_client.hset("delivery_window", tracking_number, delivery_window)
+            
+            created.append(tracking_number)
+            
+            eventlet.spawn(simulate_tracking, tracking_number)
+            
+        except Exception as e:
+            errors.append({
+                'index': idx,
+                'error': str(e),
+                'data': shipment_data
+            })
+            flask_logger.error(f"Bulk create error at index {idx}: {e}")
+    
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        flask_logger.error(f"Bulk create commit failed: {e}")
+        return jsonify({'error': 'Database commit failed', 'details': str(e)}), 500
+    
+    return jsonify({
+        'success': True,
+        'created': created,
+        'errors': errors,
+        'total_created': len(created),
+        'total_errors': len(errors)
+    }), 201 if created else 400
+
+
+# ============================================================
+# 10. ACTIVE SHIPMENTS (for admin dashboard stats)
+# ============================================================
+@app.route('/admin/api/shipments/active')
+@admin_required
+def api_active_shipments():
+    """Get list of active shipments with email addresses."""
+    shipments = Shipment.query.filter(
+        Shipment.status.in_(['Pending', 'In_Transit', 'Out_for_Delivery', 'Delayed']),
+        Shipment.recipient_email.isnot(None)
+    ).order_by(Shipment.last_updated.desc()).limit(50).all()
+    
+    result = []
+    for s in shipments:
+        checkpoints = (s.checkpoints or "").split(";") if s.checkpoints else []
+        latest = checkpoints[-1] if checkpoints else None
+        distance_km = estimate_distance(s.origin_location or "Lagos, NG", s.delivery_location)
+        service_level = redis_client.hget("service_level", s.tracking_number)
+        if isinstance(service_level, bytes):
+            service_level = service_level.decode('utf-8')
+        
+        result.append({
+            'tracking_number': s.tracking_number,
+            'status': s.status,
+            'recipient_email': s.recipient_email,
+            'delivery_location': s.delivery_location,
+            'origin_location': s.origin_location,
+            'last_updated': s.last_updated.isoformat(),
+            'latest_checkpoint': latest,
+            'service_level': service_level or 'DHL Express',
+            'has_email': bool(s.recipient_email)
+        })
+    
+    return jsonify(result)
+
+
+# ============================================================
+# 11. CHANGE CARRIER
+# ============================================================
+@app.route('/admin/api/carrier', methods=['POST'])
+@admin_required
+def admin_api_carrier():
+    data = request.get_json()
+    tn = data.get('tracking_number')
+    carrier = data.get('carrier')
+    if not tn or carrier != "DHL":
+        return jsonify({"error": "Invalid"}), 400
+    shipment = Shipment.query.filter_by(tracking_number=tn).first()
+    if not shipment:
+        return jsonify({"error": "Not found"}), 404
+    shipment.carrier = "DHL"
+    db.session.commit()
+    invalidate_cache(tn)
+    broadcast_update(tn)
+    return jsonify({"success": True, "carrier": "DHL"})
 
 # SocketIO
 @socketio.on('connect')
