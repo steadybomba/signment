@@ -13,7 +13,7 @@ from rich.console import Console
 from urllib.parse import quote_plus, urlparse
 from sqlalchemy import text
 
-# IMPORTANT: Import app first, then get bot from utils
+# Import app first, then get bot from utils
 from app import app, db, Shipment
 from utils import (
     BotConfig, config, get_bot, is_admin, send_dynamic_menu, get_shipment_details,
@@ -61,41 +61,93 @@ def get_shipment_with_context(tracking_number):
 def get_all_shipments_with_context(page=1, per_page=10):
     """Get all shipments with proper app context."""
     with app.app_context():
-        tracking_numbers, total = get_shipment_list(page=page, per_page=per_page)
-        shipments = []
-        for tn in tracking_numbers:
-            s = Shipment.query.filter_by(tracking_number=tn).first()
-            if s:
-                shipments.append(s.to_dict())
+        # Use Shipment.query directly instead of get_shipment_list
+        shipments_query = Shipment.query.order_by(
+            Shipment.created_at.desc()
+        ).offset((page - 1) * per_page).limit(per_page).all()
+        
+        total = Shipment.query.count()
+        shipments = [s.to_dict() for s in shipments_query]
         return shipments, total
 
 def update_shipment_with_context(tracking_number, **kwargs):
     """Update shipment with proper app context."""
     with app.app_context():
-        return update_shipment(tracking_number, **kwargs)
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            return False
+        for key, value in kwargs.items():
+            if hasattr(shipment, key):
+                setattr(shipment, key, value)
+        db.session.commit()
+        return True
 
 def save_shipment_with_context(tracking_number, status, checkpoints, delivery_location, 
                                recipient_email=None, origin_location=None, 
                                webhook_url=None, carrier="DHL"):
     """Save shipment with proper app context."""
     with app.app_context():
-        return save_shipment(tracking_number, status, checkpoints, delivery_location, 
-                            recipient_email, origin_location, webhook_url, carrier)
+        try:
+            shipment = Shipment(
+                tracking_number=tracking_number,
+                status=status,
+                checkpoints=checkpoints,
+                delivery_location=delivery_location,
+                last_updated=datetime.now(),
+                recipient_email=recipient_email or '',
+                created_at=datetime.now(),
+                origin_location=origin_location or 'Lagos, NG',
+                webhook_url=webhook_url,
+                email_notifications=bool(recipient_email),
+                carrier=carrier or 'DHL'
+            )
+            db.session.add(shipment)
+            db.session.commit()
+            return True
+        except Exception as e:
+            db.session.rollback()
+            bot_logger.error(f"Error saving shipment: {e}")
+            return False
 
 def search_shipments_with_context(query, page=1):
     """Search shipments with proper app context."""
     with app.app_context():
-        return search_shipments(query, page)
+        search = f"%{query}%"
+        results = Shipment.query.filter(
+            db.or_(
+                Shipment.tracking_number.like(search),
+                Shipment.delivery_location.like(search),
+                Shipment.origin_location.like(search)
+            )
+        ).order_by(Shipment.created_at.desc()).offset((page - 1) * 10).limit(10).all()
+        total = Shipment.query.filter(
+            db.or_(
+                Shipment.tracking_number.like(search),
+                Shipment.delivery_location.like(search),
+                Shipment.origin_location.like(search)
+            )
+        ).count()
+        return [s.tracking_number for s in results], total
 
 def export_shipments_with_context():
     """Export shipments with proper app context."""
     with app.app_context():
-        return export_shipments()
+        shipments = Shipment.query.all()
+        return json.dumps([s.to_dict() for s in shipments])
 
 def get_recent_logs_with_context(limit=10):
     """Get recent logs with proper app context."""
-    with app.app_context():
-        return get_recent_logs(limit)
+    # This doesn't need database access, just returns file logs
+    try:
+        log_file = 'flask_app.log'
+        if os.path.exists(log_file):
+            with open(log_file, 'r') as f:
+                lines = f.readlines()[-limit:]
+                return [line.strip() for line in lines]
+        return []
+    except Exception as e:
+        bot_logger.error(f"Error reading logs: {e}")
+        return []
 
 # === COMMAND HANDLERS ===
 @bot.message_handler(commands=['myid'])
@@ -104,7 +156,6 @@ def get_my_id(message):
     """Handle /myid command to return the user's Telegram ID."""
     bot.reply_to(message, f"Your Telegram user ID: `{message.from_user.id}`", parse_mode='Markdown')
     bot_logger.info(f"User requested their ID")
-    console.print(f"[info]User {message.from_user.id} requested their ID[/info]")
 
 @bot.message_handler(commands=['start', 'menu'])
 @rate_limit
@@ -124,24 +175,20 @@ def track_shipment(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         bot.reply_to(message, "Usage: /track <tracking_number>\nExample: /track JD1234567890")
-        bot_logger.warning("Invalid /track command format")
         return
     tracking_number = sanitize_tracking_number(parts[1].strip())
     if not tracking_number:
         bot.reply_to(message, "Invalid tracking number. Must be DHL format: JDxxxxxxxxxx")
-        bot_logger.error(f"Invalid tracking number: {parts[1]}")
         return
     try:
         shipment = get_shipment_with_context(tracking_number)
         if not shipment:
             bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
-            bot_logger.warning(f"Shipment not found: {tracking_number}")
             return
         paused = safe_redis_operation(redis_client.hget, "paused_simulations", tracking_number) == "true" if redis_client else False
         speed = float(safe_redis_operation(redis_client.hget, "sim_speed_multipliers", tracking_number) or 1.0) if redis_client else 1.0
         distance = estimate_distance(shipment.get('origin_location') or "Lagos, NG", shipment.get('delivery_location', ''))
         
-        # Get service level and delivery window from Redis
         service_level = safe_redis_operation(redis_client.hget, "service_level", tracking_number) if redis_client else None
         if service_level and isinstance(service_level, bytes):
             service_level = service_level.decode('utf-8')
@@ -176,7 +223,6 @@ def track_shipment(message):
             InlineKeyboardButton("🏠 Home", callback_data="menu_page_1")
         )
         bot.reply_to(message, response, parse_mode='Markdown', reply_markup=markup)
-        bot_logger.info(f"Sent tracking details for {tracking_number}")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in track command: {e}")
@@ -187,17 +233,18 @@ def system_stats(message):
     """Handle /stats command to display system statistics."""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for /stats by {message.from_user.id}")
         return
     try:
         with app.app_context():
-            shipments, total = get_all_shipments_with_context()
-            active_shipments = len([s for s in shipments if s['status'] not in ['Delivered', 'Returned']])
+            total = Shipment.query.count()
+            active = Shipment.query.filter(
+                Shipment.status.in_(['Pending', 'In_Transit', 'Out_for_Delivery', 'Delayed'])
+            ).count()
         paused_count = len(safe_redis_operation(redis_client.hgetall, "paused_simulations") or {}) if redis_client else 0
         response = (
             f"*📊 System Statistics*\n\n"
             f"*Total Shipments*: `{total}`\n"
-            f"*Active Shipments*: `{active_shipments}`\n"
+            f"*Active Shipments*: `{active}`\n"
             f"*Paused Simulations*: `{paused_count}`\n"
             f"*Redis*: `{'✅ Connected' if redis_client else '❌ Disconnected'}`"
         )
@@ -207,7 +254,6 @@ def system_stats(message):
             InlineKeyboardButton("🏠 Home", callback_data="menu_page_1")
         )
         bot.reply_to(message, response, parse_mode='Markdown', reply_markup=markup)
-        bot_logger.info(f"Sent system stats to admin {message.from_user.id}")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in stats command: {e}")
@@ -218,23 +264,19 @@ def manual_notification(message):
     """Handle /notify command to send manual email or webhook notification."""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for /notify by {message.from_user.id}")
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         bot.reply_to(message, "Usage: /notify <tracking_number>\nExample: /notify JD1234567890")
-        bot_logger.warning("Invalid /notify command format")
         return
     tracking_number = sanitize_tracking_number(parts[1].strip())
     if not tracking_number:
         bot.reply_to(message, "Invalid tracking number.")
-        bot_logger.error(f"Invalid tracking number: {parts[1]}")
         return
     try:
         shipment = get_shipment_with_context(tracking_number)
         if not shipment:
             bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
-            bot_logger.warning(f"Shipment not found: {tracking_number}")
             return
         markup = InlineKeyboardMarkup(row_width=2)
         if shipment.get('recipient_email') and shipment.get('email_notifications'):
@@ -243,7 +285,6 @@ def manual_notification(message):
             markup.add(InlineKeyboardButton("🔗 Send Webhook", callback_data=f"send_webhook_{tracking_number}"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="menu_page_1"))
         bot.reply_to(message, f"Select notification type for `{tracking_number}`:", parse_mode='Markdown', reply_markup=markup)
-        bot_logger.info(f"Sent notification options for {tracking_number}")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in notify command: {e}")
@@ -254,19 +295,16 @@ def search_command(message):
     """Handle /search command to find shipments by query."""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for /search by {message.from_user.id}")
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         bot.reply_to(message, "Usage: /search <query>\nExample: /search Lagos")
-        bot_logger.warning("Invalid /search command format")
         return
     query = parts[1].strip()
     try:
         shipments, total = search_shipments_with_context(query, page=1)
         if not shipments:
             bot.reply_to(message, f"No shipments found for query: `{query}`", parse_mode='Markdown')
-            bot_logger.debug(f"No shipments found for query: {query}")
             return
         markup = InlineKeyboardMarkup(row_width=1)
         for tn in shipments:
@@ -275,7 +313,6 @@ def search_command(message):
             markup.add(InlineKeyboardButton("Next", callback_data=f"search_page_{query}_2"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="menu_page_1"))
         bot.reply_to(message, f"*Search Results for '{query}'* (Page 1, {total} total):", parse_mode='Markdown', reply_markup=markup)
-        bot_logger.info(f"Sent search results for query: {query}")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in search command: {e}")
@@ -286,7 +323,6 @@ def bulk_action_command(message):
     """Handle /bulk_action command to perform bulk operations."""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for /bulk_action by {message.from_user.id}")
         return
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -296,7 +332,6 @@ def bulk_action_command(message):
         InlineKeyboardButton("🏠 Home", callback_data="menu_page_1")
     )
     bot.reply_to(message, "*Select bulk action*:", parse_mode='Markdown', reply_markup=markup)
-    bot_logger.info(f"Sent bulk action menu to admin {message.from_user.id}")
 
 @bot.message_handler(commands=['stop'])
 @rate_limit
@@ -305,21 +340,18 @@ def stop_simulation(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         bot.reply_to(message, "Usage: /stop <tracking_number>\nExample: /stop JD1234567890")
-        bot_logger.warning("Invalid /stop command format")
         return
     tracking_number = sanitize_tracking_number(parts[1].strip())
     if not tracking_number:
         bot.reply_to(message, "Invalid tracking number.")
-        bot_logger.error(f"Invalid tracking number: {parts[1]}")
         return
     try:
         shipment = get_shipment_with_context(tracking_number)
         if not shipment:
             bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
-            bot_logger.warning(f"Shipment not found: {tracking_number}")
             return
         if shipment['status'] in ['Delivered', 'Returned']:
-            bot.reply_to(message, f"Shipment `{tracking_number}` is already completed (`{shipment['status']}`).", parse_mode='Markdown')
+            bot.reply_to(message, f"Shipment `{tracking_number}` is already completed.", parse_mode='Markdown')
             return
         if redis_client and safe_redis_operation(redis_client.hget, "paused_simulations", tracking_number) == "true":
             bot.reply_to(message, f"Simulation for `{tracking_number}` is already paused.", parse_mode='Markdown')
@@ -327,7 +359,6 @@ def stop_simulation(message):
         if redis_client:
             safe_redis_operation(redis_client.hset, "paused_simulations", tracking_number, "true")
         bot.reply_to(message, f"⏸ Simulation paused for `{tracking_number}`.", parse_mode='Markdown')
-        bot_logger.info(f"Paused simulation for {tracking_number}")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in stop command: {e}")
@@ -339,21 +370,18 @@ def continue_simulation(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         bot.reply_to(message, "Usage: /continue <tracking_number>\nExample: /continue JD1234567890")
-        bot_logger.warning("Invalid /continue command format")
         return
     tracking_number = sanitize_tracking_number(parts[1].strip())
     if not tracking_number:
         bot.reply_to(message, "Invalid tracking number.")
-        bot_logger.error(f"Invalid tracking number: {parts[1]}")
         return
     try:
         shipment = get_shipment_with_context(tracking_number)
         if not shipment:
             bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
-            bot_logger.warning(f"Shipment not found: {tracking_number}")
             return
         if shipment['status'] in ['Delivered', 'Returned']:
-            bot.reply_to(message, f"Shipment `{tracking_number}` is already completed (`{shipment['status']}`).", parse_mode='Markdown')
+            bot.reply_to(message, f"Shipment `{tracking_number}` is already completed.", parse_mode='Markdown')
             return
         if redis_client and safe_redis_operation(redis_client.hget, "paused_simulations", tracking_number) != "true":
             bot.reply_to(message, f"Simulation for `{tracking_number}` is not paused.", parse_mode='Markdown')
@@ -361,7 +389,6 @@ def continue_simulation(message):
         if redis_client:
             safe_redis_operation(redis_client.hdel, "paused_simulations", tracking_number)
         bot.reply_to(message, f"▶️ Simulation resumed for `{tracking_number}`.", parse_mode='Markdown')
-        bot_logger.info(f"Resumed simulation for {tracking_number}")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in continue command: {e}")
@@ -373,28 +400,23 @@ def set_simulation_speed(message):
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
         bot.reply_to(message, "Usage: /setspeed <tracking_number> <speed>\nExample: /setspeed JD1234567890 2.0")
-        bot_logger.warning("Invalid /setspeed command format")
         return
     tracking_number = sanitize_tracking_number(parts[1].strip())
     if not tracking_number:
         bot.reply_to(message, "Invalid tracking number.")
-        bot_logger.error(f"Invalid tracking number: {parts[1]}")
         return
     try:
         speed = float(parts[2].strip())
         if speed < 0.1 or speed > 10:
             bot.reply_to(message, "Speed must be between 0.1 and 10.0.")
-            bot_logger.warning(f"Invalid speed value: {speed}")
             return
         shipment = get_shipment_with_context(tracking_number)
         if not shipment:
             bot.reply_to(message, f"Shipment `{tracking_number}` not found.", parse_mode='Markdown')
-            bot_logger.warning(f"Shipment not found: {tracking_number}")
             return
         if redis_client:
             safe_redis_operation(redis_client.hset, "sim_speed_multipliers", tracking_number, str(speed))
         bot.reply_to(message, f"⚡ Simulation speed set to `{speed}x` for `{tracking_number}`.", parse_mode='Markdown')
-        bot_logger.info(f"Set simulation speed for {tracking_number} to {speed}x")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in setspeed command: {e}")
@@ -405,7 +427,6 @@ def handle_generate(message):
     """Handle /generate command to create a tracking ID."""
     tracking_id = generate_unique_id()
     bot.reply_to(message, f"Generated Tracking ID: `{tracking_id}`", parse_mode='Markdown')
-    bot_logger.info(f"Generated tracking ID {tracking_id} for user {message.from_user.id}")
 
 @bot.message_handler(commands=['list'])
 @rate_limit
@@ -413,26 +434,21 @@ def list_shipments(message):
     """Handle /list command to display a paginated list of shipments."""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for /list by {message.from_user.id}")
         return
     try:
         shipments, total = get_all_shipments_with_context(page=1)
         if not shipments:
             bot.reply_to(message, "No shipments available.", parse_mode='Markdown')
-            bot_logger.debug("No shipments available for /list")
             return
         markup = InlineKeyboardMarkup(row_width=1)
         for s in shipments:
             tn = s['tracking_number']
             label = f"{tn} [{s['status']}]"
-            if s.get('carrier') == 'DHL':
-                label = f"{tn} [DHL]"
             markup.add(InlineKeyboardButton(label, callback_data=f"view_{tn}"))
         if total > 10:
             markup.add(InlineKeyboardButton("Next", callback_data="list_2"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="menu_page_1"))
         bot.reply_to(message, f"*📋 Shipment List* (Page 1, {total} total):", parse_mode='Markdown', reply_markup=markup)
-        bot_logger.info(f"Sent shipment list to admin {message.from_user.id}")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in list command: {e}")
@@ -443,13 +459,10 @@ def add_shipment(message):
     """Handle /add command to create a new shipment."""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for /add by {message.from_user.id}")
         return
     parts = message.text.strip().split(maxsplit=3)
     if len(parts) < 4:
-        bot.reply_to(message, "Usage: /add <tracking_number> <status> <delivery_location> [origin_location] [recipient_email] [webhook_url]\n"
-                            "Example: /add JD1234567890 Pending 'Lagos, NG' 'Abuja, NG' user@example.com https://example.com")
-        bot_logger.warning("Invalid /add command format")
+        bot.reply_to(message, "Usage: /add <tracking_number> <status> <delivery_location> [origin_location] [recipient_email] [webhook_url]")
         return
     tracking_number = sanitize_tracking_number(parts[1].strip())
     status = parts[2].strip()
@@ -468,7 +481,6 @@ def add_shipment(message):
         if save_shipment_with_context(tracking_number, status, '', delivery_location, 
                                      recipient_email, origin_location, webhook_url, "DHL"):
             bot.reply_to(message, f"✅ Shipment `{tracking_number}` added.", parse_mode='Markdown')
-            bot_logger.info(f"Added shipment {tracking_number} by admin {message.from_user.id}")
         else:
             bot.reply_to(message, "❌ Failed to add shipment.")
     except Exception as e:
@@ -481,12 +493,11 @@ def export_shipments_command(message):
     """Handle /export command to export shipment data as JSON."""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for /export by {message.from_user.id}")
         return
     try:
         export_data = export_shipments_with_context()
         if not export_data:
-            bot.reply_to(message, "No shipments to export or error occurred.", parse_mode='Markdown')
+            bot.reply_to(message, "No shipments to export.", parse_mode='Markdown')
             return
         max_length = 4096
         if len(export_data) <= max_length:
@@ -495,7 +506,6 @@ def export_shipments_command(message):
             parts = [export_data[i:i+max_length] for i in range(0, len(export_data), max_length)]
             for i, part in enumerate(parts, 1):
                 bot.reply_to(message, f"```json\nPart {i}/{len(parts)}:\n{part}\n```", parse_mode='Markdown')
-        bot_logger.info(f"Exported shipments for admin {message.from_user.id}")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in export command: {e}")
@@ -506,7 +516,6 @@ def get_logs_command(message):
     """Handle /logs command to retrieve recent bot logs."""
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Access denied.")
-        bot_logger.warning(f"Access denied for /logs by {message.from_user.id}")
         return
     try:
         logs = get_recent_logs_with_context(limit=5)
@@ -515,7 +524,6 @@ def get_logs_command(message):
             return
         response = "*📋 Recent Logs*:\n" + "\n".join([f"`{log}`" for log in logs])
         bot.reply_to(message, response, parse_mode='Markdown')
-        bot_logger.info(f"Sent recent logs to admin {message.from_user.id}")
     except Exception as e:
         bot.reply_to(message, f"Error: {e}")
         bot_logger.error(f"Error in logs command: {e}")
@@ -683,7 +691,6 @@ def handle_callback(call):
                                  parse_mode='Markdown', reply_markup=InlineKeyboardMarkup().add(
                                      InlineKeyboardButton("🏠 Home", callback_data="menu_page_1")))
         bot.answer_callback_query(call.id)
-        bot_logger.info(f"Processed callback {data}")
     except Exception as e:
         bot.answer_callback_query(call.id, f"Error: {e}", show_alert=True)
         bot_logger.error(f"Callback error: {e}")
@@ -847,7 +854,7 @@ def keep_alive_loop():
             bot_logger.debug("Health check passed")
         except Exception as e:
             bot_logger.error(f"Health check failed: {e}")
-        time.sleep(300)  # 5 minutes
+        time.sleep(300)
 
 def main():
     """Main entry point for the bot."""
