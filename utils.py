@@ -115,40 +115,39 @@ if redis_url:
     hostname = parsed_url.hostname
 
     if hostname and not _is_hostname_resolvable(hostname):
-        console.print(f"[yellow]Redis unavailable: host not resolvable: {hostname}[/yellow]")
-        redis_client = None
-    else:
-        try:
-            if scheme in ("https", "http") or "upstash" in redis_url.lower() or scheme.startswith("upstash"):
-                from upstash_redis import Redis as UpstashRedis
+        console.print(f"[yellow]Redis hostname lookup warning: {hostname}[/yellow]")
 
-                redis_client = UpstashRedis(url=redis_url, token=redis_token)
-                redis_client.set("health_check", "ok", ex=10)
-                redis_client.delete("health_check")
-                console.print("[green]Upstash Redis connected[/green]")
-            elif scheme in ("redis", "rediss"):
+    try:
+        if scheme in ("https", "http") or "upstash" in redis_url.lower() or scheme.startswith("upstash"):
+            from upstash_redis import Redis as UpstashRedis
+
+            redis_client = UpstashRedis(url=redis_url, token=redis_token)
+            redis_client.set("health_check", "ok", ex=10)
+            redis_client.delete("health_check")
+            console.print("[green]Upstash Redis connected[/green]")
+        elif scheme in ("redis", "rediss"):
+            from redis import Redis as RedisClient
+
+            redis_client = RedisClient.from_url(redis_url, decode_responses=True)
+            redis_client.ping()
+            console.print("[green]Redis connected[/green]")
+        else:
+            console.print(f"[yellow]Redis unavailable: unsupported Redis scheme '{scheme}'[/yellow]")
+            redis_client = None
+    except Exception as e:
+        if scheme in ("redis", "rediss") or redis_url.lower().startswith("redis://"):
+            try:
                 from redis import Redis as RedisClient
 
                 redis_client = RedisClient.from_url(redis_url, decode_responses=True)
                 redis_client.ping()
-                console.print("[green]Redis connected[/green]")
-            else:
-                console.print(f"[yellow]Redis unavailable: unsupported Redis scheme '{scheme}'[/yellow]")
+                console.print("[green]Redis connected via redis-py fallback[/green]")
+            except Exception as fallback_error:
+                console.print(f"[yellow]Redis unavailable: {fallback_error}[/yellow]")
                 redis_client = None
-        except Exception as e:
-            if scheme in ("redis", "rediss") or redis_url.lower().startswith("redis://"):
-                try:
-                    from redis import Redis as RedisClient
-
-                    redis_client = RedisClient.from_url(redis_url, decode_responses=True)
-                    redis_client.ping()
-                    console.print("[green]Redis connected via redis-py fallback[/green]")
-                except Exception as fallback_error:
-                    console.print(f"[yellow]Redis unavailable: {fallback_error}[/yellow]")
-                    redis_client = None
-            else:
-                console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
-                redis_client = None
+        else:
+            console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
+            redis_client = None
 else:
     console.print("[yellow]Redis unavailable: REDIS_URL not configured or could not be resolved[/yellow]")
     redis_client = None
