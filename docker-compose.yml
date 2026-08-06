@@ -42,12 +42,7 @@ services:
       dockerfile: Dockerfile
     command: python3 telegram_bot.py
     environment:
-      - ALLOWED_ADMINS=1756017918
-      - FLASK_ENV=development
-      - REDIS_TOKEN=ASJvAAImcDIzMjI1Mjg2YjRkYzA0MGVjYjYyYjkxZDY3Yzk0MzlhMHAyODgxNQ
-      - REDIS_URL=redis://redis:6379
-      - SQLALCHEMY_DATABASE_URI=postgresql://biggerboy_user:NgVyXnT7LI42pd9w6QA9FSAQeEYWN7Sb@postgres:5432/biggerboy
-      - TELEGRAM_BOT_TOKEN=7263080325:AAGNBMkFEdfP2jN1kP6MK1RjZZxOc6jLnk8
+      
     depends_on:
       - postgres
       - redis
