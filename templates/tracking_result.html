@@ -209,6 +209,216 @@
         .menu, .back-button, .leaflet-control-custom {
             -webkit-tap-highlight-color: transparent;
         }
+
+        /* ===== FEATURE ADDITIONS - Keep your existing styles above ===== */
+
+        /* Toast notification */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #333;
+            color: white;
+            padding: 14px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 9999;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.4s ease;
+        }
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .toast.success { background: #16a34a; }
+        .toast.error { background: #dc2626; }
+
+        /* Refresh button */
+        .refresh-btn {
+            background: #d32f2f;
+            color: white;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+        .refresh-hint {
+            display: inline-block;
+            font-size: 0.85rem;
+            color: #6b7280;
+            margin-left: 8px;
+        }
+        .refresh-btn:hover {
+            background: #b71c1c;
+        }
+        .refresh-btn:disabled {
+            background: #e57373;
+            cursor: not-allowed;
+        }
+
+        /* Live indicator */
+        .live-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: #22c55e;
+            border-radius: 50%;
+            margin-right: 6px;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* Progress bar for delivery */
+        .progress-container {
+            margin: 16px 0;
+        }
+        .progress-bar {
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .progress-bar .fill {
+            height: 100%;
+            background: #d32f2f;
+            border-radius: 3px;
+            transition: width 1s ease;
+        }
+        .progress-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            color: #666;
+            margin-bottom: 4px;
+        }
+
+        /* ===== FINAL POLISH ===== */
+
+        /* Tracking number display */
+        .tracking-number-display {
+            font-family: 'Courier New', monospace;
+            font-weight: 700;
+            color: #d32f2f;
+            font-size: 1.1rem;
+            background: #fef2f2;
+            padding: 2px 12px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+
+        /* Status badge in header */
+        .status-badge-header {
+            display: inline-block;
+            padding: 4px 14px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+        .status-badge-header.delivered { background: #dcfce7; color: #16a34a; }
+        .status-badge-header.in-transit { background: #dbeafe; color: #1e40af; }
+        .status-badge-header.out-for-delivery { background: #fef3c7; color: #92400e; }
+        .status-badge-header.delayed { background: #fef3c7; color: #d97706; }
+        .status-badge-header.exception { background: #fef2f2; color: #dc2626; }
+        .status-badge-header.pending { background: #f3f4f6; color: #6b7280; }
+
+        /* Connection status dot */
+        .connection-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 4px;
+        }
+        .connection-dot.connected { background: #22c55e; }
+        .connection-dot.disconnected { background: #dc2626; }
+
+        /* Smooth checkpoint transition */
+        .checkpoint {
+            transition: all 0.3s ease;
+        }
+        .checkpoint-new {
+            animation: slideIn 0.5s ease;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-10px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        /* Details grid for better layout */
+        .details-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px 16px;
+            margin: 12px 0;
+        }
+        .details-grid .detail-item {
+            padding: 4px 0;
+        }
+        .details-grid .detail-label {
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+        .details-grid .detail-value {
+            font-weight: 500;
+            color: #1f2937;
+        }
+
+        /* Responsive for details grid */
+        @media (max-width: 480px) {
+            .details-grid {
+                grid-template-columns: 1fr;
+                gap: 4px;
+            }
+            .tracking-number-display {
+                font-size: 0.95rem;
+                padding: 2px 8px;
+            }
+        }
+
+        /* Toast with icon */
+        .toast-icon {
+            margin-right: 8px;
+        }
+
+        /* Status badge enhancements */
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+        .status-badge.delivered { background: #dcfce7; color: #16a34a; }
+        .status-badge.in-transit { background: #dbeafe; color: #1e40af; }
+        .status-badge.out-for-delivery { background: #fef3c7; color: #92400e; }
+        .status-badge.delayed { background: #fef3c7; color: #d97706; }
+        .status-badge.exception { background: #fef2f2; color: #dc2626; }
+        .status-badge.pending { background: #f3f4f6; color: #6b7280; }
+
+        /* Last updated timestamp */
+        .last-updated {
+            font-size: 0.8rem;
+            color: #999;
+            margin-top: 8px;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 480px) {
+            .toast { 
+                left: 10px; 
+                right: 10px; 
+                bottom: 10px; 
+                padding: 12px 16px;
+                font-size: 0.9rem;
+            }
+            .refresh-btn { padding: 4px 10px; font-size: 12px; }
+        }
     </style>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
@@ -242,7 +452,42 @@
             <div id="map"></div>
         </div>
         <div class="details" id="details">
-            <h2 class="text-xl font-semibold">Status: <span id="status">{{ shipment.status }}</span></h2>
+            <div class="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                    <span class="text-sm text-gray-500">Tracking Number:</span>
+                    <span class="tracking-number-display">{{ shipment.tracking_number }}</span>
+                </div>
+                <div>
+                    <span class="text-sm text-gray-500">Status:</span>
+                    <span id="status" class="status-badge-header 
+                        {% if shipment.status == 'Delivered' %}delivered
+                        {% elif shipment.status == 'In_Transit' %}in-transit
+                        {% elif shipment.status == 'Out_for_Delivery' %}out-for-delivery
+                        {% elif shipment.status == 'Delayed' %}delayed
+                        {% elif shipment.status == 'Exception' %}exception
+                        {% else %}pending{% endif %}">
+                        {{ shipment.status }}
+                    </span>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-3 mt-3 flex-wrap">
+                <span class="live-indicator"></span>
+                <span class="text-sm text-gray-500">Live Tracking</span>
+                <span class="connection-dot connected" id="connectionDot"></span>
+                <span id="connectionStatus" class="text-xs text-gray-500">Connected</span>
+                <button class="refresh-btn" onclick="refreshTracking()" id="refreshBtn" disabled>↻ Refresh</button>
+                <span id="refresh-hint" class="refresh-hint">Waiting for connection...</span>
+            </div>
+            <div class="progress-container">
+                <div class="progress-label">
+                    <span>Delivery Progress</span>
+                    <span id="progress-percent">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="fill" id="progress-fill" style="width: 0%;"></div>
+                </div>
+            </div>
             <h3 class="text-lg font-semibold mt-4">Checkpoints:</h3>
             <div id="checkpoints">
                 {% if checkpoints %}
@@ -253,9 +498,44 @@
                     <p class="checkpoint">No checkpoints available</p>
                 {% endif %}
             </div>
-            <h3 class="text-lg font-semibold mt-4">Delivery Location: <span id="delivery_location">{{ shipment.delivery_location }}</span></h3>
+
+            <!-- Details Grid -->
+            <div class="details-grid">
+                <div class="detail-item">
+                    <div class="detail-label">Origin</div>
+                    <div class="detail-value">{{ shipment.origin_location or 'N/A' }}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">Destination</div>
+                    <div class="detail-value" id="delivery_location">{{ shipment.delivery_location }}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">Service Level</div>
+                    <div class="detail-value" id="service_level">{{ service_level | default('DHL Express') }}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">Estimated Delivery</div>
+                    <div class="detail-value" id="delivery_window">{{ delivery_window | default('Calculating...') }}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">Proof of Delivery</div>
+                    <div class="detail-value" id="proof_of_delivery">{{ proof_of_delivery | default('Pending') }}</div>
+                </div>
+                <div class="detail-item">
+                    <div class="detail-label">Carrier</div>
+                    <div class="detail-value">{{ shipment.carrier or 'DHL' }}</div>
+                </div>
+            </div>
+
+            <!-- Last Updated -->
+            <div class="last-updated" id="lastUpdated">
+                Last updated: {{ shipment.last_updated.strftime('%Y-%m-%d %H:%M:%S') if shipment.last_updated else 'N/A' }}
+            </div>
+
             <a href="{{ url_for('index') }}" class="mt-4 inline-block bg-red-600 text-white py-2 px-4 rounded hover:bg-red-700 back-button">Back to Home</a>
         </div>
+        <!-- Toast Notification -->
+        <div id="toast" class="toast"></div>
     {% endif %}
     <div class="footer">
         <div class="footer-content">
@@ -290,16 +570,43 @@
     </div>
 
     <script>
+        // Toast notification
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            if (!toast) return;
+            toast.textContent = message;
+            toast.className = `toast ${type}`;
+            setTimeout(() => toast.classList.add('show'), 10);
+            setTimeout(() => toast.classList.remove('show'), 4000);
+        }
+
+        // Refresh tracking data
+        function refreshTracking() {
+            const btn = document.querySelector('.refresh-btn');
+            if (!btn) return;
+            btn.disabled = true;
+            btn.textContent = '↻ Updating...';
+            showToast('🔄 Refreshing tracking data...', 'success');
+            {% if shipment %}
+            socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
+            {% endif %}
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = '↻ Refresh';
+            }, 3000);
+        }
+
+        // Map setup (keeping your existing code)
         const map = L.map('map', {
             zoomControl: true
         }).setView([0, 0], 2);
         const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            attribution: '&amp;copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         }).addTo(map);
         const esriSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
             maxZoom: 19,
-            attribution: '&copy; <a href="https://www.esri.com/">Esri</a>, USGS, NOAA'
+            attribution: '&amp;copy; <a href="https://www.esri.com/">Esri</a>, USGS, NOAA'
         });
         const baseLayers = {
             "Street Map": osmLayer,
@@ -311,6 +618,7 @@
         let animationFrameId = null;
         let isAnimationEnabled = true;
         let routeBounds = null;
+        let currentData = null;
         function sortCoordsByTimestamp(coords) {
             return coords.slice().sort((a, b) => {
                 const aTime = a.desc.split(' - ')[0];
@@ -417,6 +725,9 @@
             }
             map.fitBounds(routeBounds);
         }
+        const initialCoords = {{ coords | default([]) | tojson }};
+        const initialRouteCoords = {{ route_coords | default([]) | tojson }};
+        const hasInitialRoute = (initialRouteCoords && initialRouteCoords.length) || (initialCoords && initialCoords.length);
         const ToggleAnimationControl = L.Control.extend({
             options: { position: 'topright' },
             onAdd: function(map) {
@@ -426,13 +737,13 @@
                 container.setAttribute('aria-label', 'Toggle route animation');
                 container.setAttribute('aria-pressed', 'true');
                 container.classList.add('active');
-                container.disabled = {{ coords | default([]) | tojson }}.length < 2;
+                container.disabled = !hasInitialRoute;
                 container.onclick = function() {
                     isAnimationEnabled = !isAnimationEnabled;
                     container.setAttribute('aria-pressed', isAnimationEnabled);
                     container.classList.toggle('active');
                     console.log('Animation toggled:', isAnimationEnabled);
-                    updateMap({{ coords | default([]) | tojson }});
+                    updateMap(initialRouteCoords.length ? initialRouteCoords : initialCoords);
                 };
                 return container;
             }
@@ -444,7 +755,7 @@
                 container.id = 'resetView';
                 container.innerHTML = 'Reset View';
                 container.setAttribute('aria-label', 'Reset map view to route');
-                container.disabled = !{{ coords | default([]) | tojson }}.length;
+                container.disabled = !hasInitialRoute;
                 container.onclick = function() {
                     if (routeBounds) {
                         map.fitBounds(routeBounds);
@@ -456,54 +767,70 @@
         });
         map.addControl(new ToggleAnimationControl());
         map.addControl(new ResetViewControl());
-        const initialCoords = {{ coords | default([]) | tojson }};
-        if (initialCoords && initialCoords.length) {
-            updateMap(initialCoords);
+        if (hasInitialRoute) {
+            updateMap(initialRouteCoords.length ? initialRouteCoords : initialCoords);
         } else {
             console.warn('No initial coordinates provided');
             document.getElementById('toggleAnimation').disabled = true;
             document.getElementById('resetView').disabled = true;
         }
         const socket = io();
+        const refreshBtn = document.getElementById('refreshBtn');
+        const refreshHint = document.getElementById('refresh-hint');
+
+        function updateConnectionStatus(connected) {
+            const dot = document.getElementById('connectionDot');
+            const statusText = document.getElementById('connectionStatus');
+            if (dot) {
+                dot.className = `connection-dot ${connected ? 'connected' : 'disconnected'}`;
+            }
+            if (statusText) {
+                statusText.textContent = connected ? 'Connected' : 'Disconnected';
+                statusText.className = `text-xs ${connected ? 'text-green-600' : 'text-red-600'}`;
+            }
+            if (refreshBtn) {
+                refreshBtn.disabled = !connected;
+                refreshBtn.title = connected ? 'Refresh live tracking data' : 'Waiting for connection...';
+            }
+            if (refreshHint) {
+                refreshHint.textContent = connected ? 'Live connection is active.' : 'Waiting for connection...';
+            }
+        }
+
+        function initConnectionStatus() {
+            if (refreshBtn) {
+                refreshBtn.disabled = true;
+                refreshBtn.title = 'Waiting for connection...';
+            }
+            if (refreshHint) {
+                refreshHint.textContent = 'Waiting for connection...';
+            }
+            updateConnectionStatus(socket.connected);
+        }
+
+        initConnectionStatus();
+
+        // Update connection status with dot
         socket.on('connect', () => {
-            console.log('Socket.IO connected');
+            console.log('🔗 Socket.IO connected');
+            updateConnectionStatus(true);
             {% if shipment %}
-                socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
-            {% else %}
-                socket.emit('request_tracking', { tracking_number: '' });
+            socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
             {% endif %}
+            showToast('✅ Connected to live tracking', 'success');
         });
+
+        // Enhanced tracking update with checkpoint animation
         socket.on('tracking_update', (data) => {
-            console.log('Received tracking update:', data);
-            if (data.found) {
-                document.getElementById('status').textContent = data.status || 'Not Found';
-                document.getElementById('delivery_location').textContent = data.delivery_location || 'N/A';
-                const checkpointsDiv = document.getElementById('checkpoints');
-                checkpointsDiv.innerHTML = '';
-                if (data.checkpoints && data.checkpoints.length) {
-                    data.checkpoints.forEach(checkpoint => {
-                        const p = document.createElement('p');
-                        p.className = 'checkpoint';
-                        p.textContent = checkpoint;
-                        checkpointsDiv.appendChild(p);
-                    });
-                } else {
-                    const p = document.createElement('p');
-                    p.className = 'checkpoint';
-                    p.textContent = 'No checkpoints available';
-                    checkpointsDiv.appendChild(p);
-                }
-                if (data.coords && data.coords.length) {
-                    updateMap(data.coords);
-                } else {
-                    console.warn('No coordinates in tracking update');
-                    document.getElementById('toggleAnimation').disabled = true;
-                    document.getElementById('resetView').disabled = true;
-                }
-            } else {
+            console.log('📦 Received tracking update:', data);
+            
+            if (data.error) {
                 document.getElementById('status').textContent = 'Not Found';
+                document.getElementById('status').className = 'status-badge-header pending';
                 document.getElementById('delivery_location').textContent = 'N/A';
                 document.getElementById('checkpoints').innerHTML = '<p class="checkpoint">Shipment not found</p>';
+                showToast('❌ ' + data.error, 'error');
+                
                 map.eachLayer(layer => {
                     if (layer instanceof L.Marker || layer instanceof L.Polyline) {
                         map.removeLayer(layer);
@@ -523,10 +850,94 @@
                 }
                 document.getElementById('toggleAnimation').disabled = true;
                 document.getElementById('resetView').disabled = true;
+                updateConnectionStatus(false);
+                return;
             }
+
+            updateConnectionStatus(true);
+
+            const statusEl = document.getElementById('status');
+            const statusValue = data.status || 'Unknown';
+            statusEl.textContent = statusValue;
+            statusEl.className = 'status-badge-header ' + (
+                statusValue === 'Delivered' ? 'delivered' :
+                statusValue === 'In_Transit' ? 'in-transit' :
+                statusValue === 'Out_for_Delivery' ? 'out-for-delivery' :
+                statusValue === 'Delayed' ? 'delayed' :
+                statusValue === 'Exception' ? 'exception' : 'pending'
+            );
+
+            document.getElementById('delivery_location').textContent = data.delivery_location || 'N/A';
+            if (data.service_level) {
+                document.getElementById('service_level').textContent = data.service_level;
+            }
+            if (data.delivery_window) {
+                document.getElementById('delivery_window').textContent = data.delivery_window;
+            }
+            if (data.proof_of_delivery) {
+                document.getElementById('proof_of_delivery').textContent = data.proof_of_delivery;
+            }
+
+            const checkpointsDiv = document.getElementById('checkpoints');
+            const oldCheckpoints = checkpointsDiv.querySelectorAll('.checkpoint');
+            const oldCount = oldCheckpoints.length;
+            
+            checkpointsDiv.innerHTML = '';
+            if (data.checkpoints && data.checkpoints.length) {
+                data.checkpoints.forEach((checkpoint, index) => {
+                    const p = document.createElement('p');
+                    p.className = 'checkpoint';
+                    if (index >= oldCount) {
+                        p.classList.add('checkpoint-new');
+                    }
+                    p.textContent = checkpoint;
+                    checkpointsDiv.appendChild(p);
+                });
+            } else {
+                const p = document.createElement('p');
+                p.className = 'checkpoint';
+                p.textContent = 'No checkpoints available';
+                checkpointsDiv.appendChild(p);
+            }
+
+            if (data.progress !== undefined) {
+                const percent = Math.round(data.progress * 100);
+                document.getElementById('progress-percent').textContent = percent + '%';
+                document.getElementById('progress-fill').style.width = percent + '%';
+            }
+
+            if (data.last_updated) {
+                const lastUpdated = document.getElementById('lastUpdated');
+                if (lastUpdated) {
+                    const date = new Date(data.last_updated);
+                    lastUpdated.textContent = 'Last updated: ' + date.toLocaleString();
+                }
+            }
+
+            const routeData = (data.route_coords && data.route_coords.length) ? data.route_coords : data.coords;
+            if (routeData && routeData.length) {
+                updateMap(routeData);
+                document.getElementById('toggleAnimation').disabled = routeData.length < 2;
+                document.getElementById('resetView').disabled = false;
+            } else {
+                console.warn('No coordinates in tracking update');
+                document.getElementById('toggleAnimation').disabled = true;
+                document.getElementById('resetView').disabled = true;
+            }
+
+            currentData = data;
+            showToast('📦 Status updated: ' + statusValue, 'success');
         });
+
         socket.on('disconnect', () => {
             console.log('Socket.IO disconnected');
+            updateConnectionStatus(false);
+            showToast('⚠️ Disconnected from live tracking', 'error');
+        });
+        socket.on('connect_error', (error) => {
+            console.error('Socket.IO connection error:', error);
+            updateConnectionStatus(false);
+            showToast('⚠️ Connection error. Retrying...', 'error');
         });
         document.querySelector('.menu').addEventListener('click', function() {
             const menuContent = document.querySelector('.menu-content');
@@ -539,6 +950,14 @@
                 menuContent.style.display = 'none';
             }
         });
+        setInterval(() => {
+            if (socket.connected) {
+                {% if shipment %}
+                socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
+                {% endif %}
+            }
+        }, 30000);
+        console.log('✅ Tracking page initialized');
     </script>
 </body>
 </html>
