@@ -7,11 +7,10 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from flask import Flask, render_template
-from upstash_redis import Redis
 import requests
 from rich.console import Console
 from rich.panel import Panel
-from utils import BotConfig, safe_redis_operation
+from utils import BotConfig, safe_redis_operation, get_redis_client
 
 load_dotenv()
 
@@ -19,20 +18,14 @@ load_dotenv()
 logger = logging.getLogger('worker')
 console = Console()
 
-# Initialize Redis client
-redis_client = None
-try:
-    redis_client = Redis(
-        url=os.getenv("REDIS_URL"),
-        token=os.getenv("REDIS_TOKEN", "")
-    )
-    redis_client.ping()
-    logger.info("Connected to Upstash Redis")
-    console.print("[info]Connected to Upstash Redis[/info]")
-except Exception as e:
-    logger.error(f"Upstash Redis connection failed: {e}")
-    console.print(Panel(f"[error]Upstash Redis connection failed: {e}[/error]", title="Redis Error", border_style="red"))
-    redis_client = None
+# Use shared Redis client from utils.py
+redis_client = get_redis_client()
+if redis_client is None:
+    logger.warning("Redis client unavailable in worker process")
+    console.print(Panel("[warning]Redis client unavailable in worker process[/warning]", title="Redis Warning", border_style="yellow"))
+else:
+    logger.info("Worker Redis client initialized")
+    console.print("[info]Worker Redis client initialized[/info]")
 
 # Load configuration
 try:
@@ -123,12 +116,14 @@ def send_webhook(tracking_number: str, status: str, checkpoints: list, delivery_
 
 def process_notifications():
     """Process notifications from the Redis queue."""
-    if not redis_client:
-        logger.error("Redis client unavailable, cannot process notifications")
-        console.print(Panel("[error]Redis client unavailable, cannot process notifications[/error]", title="Worker Error", border_style="red"))
-        return
-
     while True:
+        redis_client = get_redis_client()
+        if not redis_client:
+            logger.warning("Redis client unavailable, retrying in 5 seconds")
+            console.print(Panel("[warning]Redis client unavailable, retrying...[/warning]", title="Worker Warning", border_style="yellow"))
+            time.sleep(5)
+            continue
+
         try:
             # Use non-blocking lpop instead of blpop
             notification_data = safe_redis_operation(redis_client.lpop, "notifications_queue")
