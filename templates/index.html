@@ -26,6 +26,7 @@
             object-fit: cover;
             z-index: -1;
             background-color: #ffffff;
+            will-change: transform;
         }
         
         /* Content Overlay */
@@ -170,10 +171,12 @@
         .title {
             text-align: center;
             color: #d32f2f;
-            font-size: 2.5em;
+            font-size: clamp(1.4rem, 3.2vw, 2.5rem);
             margin: 30px 0 10px;
             font-weight: 700;
             letter-spacing: -0.5px;
+            line-height: 1.1;
+            padding: 0 12px;
         }
         .title-sub {
             text-align: center;
@@ -193,10 +196,11 @@
             background: #fff;
             padding: 30px;
             border-radius: 16px;
-            max-width: 500px;
+            max-width: 680px;
             width: 100%;
             box-shadow: 0 4px 20px rgba(0,0,0,0.08);
             border: 1px solid #eee;
+            box-sizing: border-box;
         }
         .track-box label {
             display: block;
@@ -305,10 +309,12 @@
         }
         .blog-card .blog-image {
             width: 100%;
-            height: 550px;
+            height: auto;
+            aspect-ratio: 16/9;
             object-fit: cover;
             background: #f0f0f0;
             display: block;
+            max-height: 60vh;
         }
         .blog-card .blog-label {
             padding: 14px 18px 18px;
@@ -443,8 +449,9 @@
             .title { font-size: 1.8em; }
             .track-box { padding: 20px; }
             .blog-grid { grid-template-columns: 1fr; }
-            .blog-card .blog-image { height: 400px; }
+            .blog-card .blog-image { aspect-ratio: 16/9; max-height: 50vh; }
             .blog-section .section-title { font-size: 1.4rem; }
+            .content-overlay { padding-bottom: 60px; }
         }
         @media (min-width: 641px) and (max-width: 1024px) {
             .blog-grid { grid-template-columns: repeat(2, 1fr); }
@@ -471,7 +478,7 @@
             .gate-card p { font-size: 13px; }
             .toast { left: 10px; right: 10px; bottom: 10px; padding: 12px 16px; font-size: 0.9rem; }
             .blog-section { padding: 0 10px; }
-            .blog-card .blog-image { height: 350px; }
+            .blog-card .blog-image { aspect-ratio: 16/9; max-height: 45vh; }
             .blog-card .blog-label { font-size: 0.8rem; padding: 10px 12px; }
         }
         
@@ -488,10 +495,20 @@
         .menu, .track-box button {
             -webkit-tap-highlight-color: transparent;
         }
+
+        /* Hide background video on small devices to save bandwidth and improve layout */
+        @media (max-width: 420px) {
+            .video-background { display: none; }
+            body { background-image: url('{{ url_for('static', filename='fallback-image.jpg') }}'); background-size: cover; background-position: center; }
+            .track-box { padding: 16px; border-radius: 12px; }
+            .tracking-result .card { padding: 16px; }
+        }
     </style>
     
     <!-- reCAPTCHA script -->
+    {% if recaptcha_site_key %}
     <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+    {% endif %}
     <!-- Socket.IO script -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     
@@ -501,7 +518,7 @@
         (function() {
             var s1 = document.createElement("script"), s0 = document.getElementsByTagName("script")[0];
             s1.async = true;
-            s1.src = 'https://embed.tawk.to/68e86cda366f2e1951fd6e9f/1j75uidt9';
+            s1.src = 'https://embed.tawk.to/6a73f9b55d49711d4933eb10/1jvager9g';
             s1.charset = 'UTF-8';
             s1.setAttribute('crossorigin', '*');
             s0.parentNode.insertBefore(s1, s0);
@@ -520,6 +537,7 @@
     <div class="content-overlay">
         
         <!-- === CLEAN GATE OVERLAY - White === -->
+        {% if recaptcha_site_key %}
         <div id="gate-overlay" class="gate-overlay">
             <div class="gate-card" role="dialog" aria-modal="true">
                 <div class="lock-icon"></div>
@@ -531,6 +549,10 @@
                 <p class="gate-note">If the reCAPTCHA doesn't load, refresh the page.</p>
             </div>
         </div>
+        {% else %}
+        <!-- No reCAPTCHA in development; ensure overlay hidden -->
+        <div id="gate-overlay" class="gate-overlay" style="display:none"></div>
+        {% endif %}
 
         <!-- === HEADER - Admin Removed === -->
         <div class="header">
@@ -681,7 +703,14 @@
         function lockPageUntilRecaptcha() {
             document.body.classList.add('recaptcha-locked');
         }
+        {% if recaptcha_site_key %}
         lockPageUntilRecaptcha();
+        {% else %}
+        // No reCAPTCHA configured (development) — enable form immediately
+        document.getElementById('submit-btn').disabled = false;
+        const overlay = document.getElementById('gate-overlay');
+        if (overlay) overlay.style.display = 'none';
+        {% endif %}
 
         // === Toast Notification ===
         function showToast(message, type = 'success') {
@@ -730,34 +759,61 @@
                 try {
                     const response = await fetch(this.action, {
                         method: 'POST',
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
                         body: formData
                     });
-                    const html = await response.text();
-                    
-                    if (html.includes('tracking-result') || html.includes('shipment')) {
-                        const parser = new DOMParser();
-                        const doc = parser.parseFromString(html, 'text/html');
-                        const resultContent = doc.querySelector('#result-content') || 
-                                             doc.querySelector('.tracking-result') ||
-                                             doc.querySelector('.card-body');
-                        if (resultContent) {
-                            document.getElementById('result-content').innerHTML = resultContent.innerHTML;
-                            document.getElementById('tracking-result').style.display = 'block';
-                            document.getElementById('error-message').style.display = 'none';
-                            showToast('Tracking information loaded successfully', 'success');
-                        } else {
-                            showError('Shipment not found. Please check the tracking number.');
-                        }
-                    } else {
-                        const parser = new DOMParser();
-                        const doc = parser.parseFromString(html, 'text/html');
-                        const errorEl = doc.querySelector('.alert-danger, .error-message, .flash-error');
-                        if (errorEl) {
-                            showError(errorEl.textContent.trim());
-                        } else {
-                            showError('An error occurred. Please try again.');
-                        }
+                    const text = await response.text();
+
+                    let json = null;
+                    try {
+                        json = JSON.parse(text);
+                    } catch (err) {
+                        json = null;
                     }
+
+                    let html = text;
+                    if (json && json.html) {
+                        html = json.html;
+                    }
+
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, 'text/html');
+                    const errorEl = doc.querySelector('.error-message, .alert-danger, .flash-error');
+                    const resultContent = doc.querySelector('#result-content');
+                    const trackingSection = resultContent || doc.querySelector('.tracking-result') || doc.querySelector('#tracking-result');
+
+                    if (json && json.error) {
+                        showError(json.error);
+                        return;
+                    }
+
+                    if (resultContent) {
+                        document.getElementById('result-content').innerHTML = resultContent.innerHTML;
+                        document.getElementById('tracking-result').style.display = 'block';
+                        document.getElementById('error-message').style.display = 'none';
+                        enableTrackingControls();
+                        showToast('Tracking information loaded successfully', 'success');
+                        return;
+                    }
+
+                    if (errorEl) {
+                        showError(errorEl.textContent.trim());
+                        return;
+                    }
+
+                    if (trackingSection) {
+                        const outer = trackingSection.querySelector('#result-content');
+                        document.getElementById('result-content').innerHTML = outer ? outer.innerHTML : trackingSection.innerHTML;
+                        document.getElementById('tracking-result').style.display = 'block';
+                        document.getElementById('error-message').style.display = 'none';
+                        enableTrackingControls();
+                        showToast('Tracking information loaded successfully', 'success');
+                        return;
+                    }
+
+                    showError('Unable to display tracking information. Please try again.');
                 } catch (error) {
                     showError('Network error. Please check your connection.');
                 } finally {
@@ -770,17 +826,40 @@
             });
         }
 
+        function enableTrackingControls() {
+            const trackingResult = document.getElementById('tracking-result');
+            if (trackingResult) {
+                trackingResult.style.display = 'block';
+            }
+            const refreshBtn = document.getElementById('refreshBtn');
+            if (refreshBtn) {
+                refreshBtn.disabled = false;
+            }
+            const connectionStatus = document.getElementById('connectionStatus');
+            if (connectionStatus) {
+                connectionStatus.textContent = 'Connected';
+            }
+            const connectionDot = document.getElementById('connectionDot');
+            if (connectionDot) {
+                connectionDot.classList.add('connected');
+                connectionDot.classList.remove('disconnected');
+            }
+        }
+
         function showError(message) {
             const errorEl = document.getElementById('error-message');
             if (!errorEl) return;
             errorEl.textContent = message;
             errorEl.style.display = 'block';
-            document.getElementById('tracking-result').style.display = 'none';
+            const trackingResult = document.getElementById('tracking-result');
+            if (trackingResult) {
+                trackingResult.style.display = 'none';
+            }
             showToast('Error: ' + message, 'error');
         }
 
-        // === Socket.IO ===
-        const socket = io();
+        // === Socket.IO (force polling to avoid websocket upgrade errors in dev) ===
+        const socket = io({ transports: ['polling'] });
 
         socket.on('connect', function() {
             console.log('Connected to real-time tracking');
@@ -788,7 +867,7 @@
 
         socket.on('tracking_update', function(data) {
             console.log('Tracking update received:', data);
-            const currentTn = document.querySelector('#tracking-result .tracking-number');
+            const currentTn = document.querySelector('#tracking-result .tracking-number-display');
             if (currentTn && data.tracking_number === currentTn.textContent.trim()) {
                 updateTrackingDisplay(data);
             }
@@ -852,6 +931,7 @@
         }
 
         // === Auto-refresh reCAPTCHA ===
+        {% if recaptcha_site_key %}
         setTimeout(() => {
             const recaptchaContainer = document.getElementById('gate-recaptcha');
             if (recaptchaContainer && !recaptchaContainer.innerHTML.trim() && window.grecaptcha) {
@@ -861,6 +941,7 @@
                 });
             }
         }, 5000);
+        {% endif %}
     </script>
 </body>
 </html>
