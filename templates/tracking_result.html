@@ -115,6 +115,38 @@
         #map {
             height: 420px;
             width: 100%;
+            z-index: 1;
+        }
+        
+        /* Leaflet control custom styling */
+        .leaflet-control-custom {
+            background: white;
+            border: 2px solid rgba(0,0,0,0.2);
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            color: #333;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+            transition: all 0.2s ease;
+            margin: 4px;
+        }
+        .leaflet-control-custom:hover:not(:disabled) {
+            background: #f0f0f0;
+            border-color: #d32f2f;
+        }
+        .leaflet-control-custom:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .leaflet-control-custom.active {
+            background: #d32f2f;
+            color: white;
+            border-color: #d32f2f;
+        }
+        .leaflet-control-custom.active:hover {
+            background: #b71c1c;
         }
         
         /* === DETAILS CARD === */
@@ -339,44 +371,125 @@
             text-align: center;
             margin: 16px 0;
         }
-        .error-message {
-            max-width: 760px;
-            margin: 30px auto;
-            padding: 22px;
-            border: 1px solid #f5c2c7;
-            background: #fef2f2;
-            color: #842029;
-            border-radius: 14px;
-            box-shadow: 0 6px 16px rgba(0,0,0,0.04);
-            font-size: 1rem;
-            line-height: 1.6;
-        }
-        .error-message .error-icon {
-            display: block;
-            font-size: 28px;
-            margin-bottom: 8px;
-        }
-        .error-message a {
-            color: #d32f2f;
-            text-decoration: underline;
-            font-weight: 500;
+
+        .back-button {
             display: inline-block;
-            margin-top: 12px;
+            margin-top: 16px;
+            padding: 10px 24px;
+            background: #d32f2f;
+            color: white;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: background 0.3s ease;
         }
-        .menu {
-            border: none;
-            background: transparent;
-            color: inherit;
-            cursor: pointer;
-            font-size: 24px;
-            padding: 10px;
-            border-radius: 50%;
-            transition: background 0.3s;
-        }
-        .menu:hover {
-            background: rgba(0,0,0,0.05);
+        .back-button:hover {
+            background: #b71c1c;
         }
 
+        .refresh-btn {
+            padding: 6px 16px;
+            background: #d32f2f;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .refresh-btn:hover:not(:disabled) {
+            background: #b71c1c;
+            transform: scale(1.02);
+        }
+        .refresh-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .refresh-hint {
+            font-size: 0.8rem;
+            color: #94a3b8;
+        }
+
+        /* === TOAST === */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #333;
+            color: white;
+            padding: 14px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 9999;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.4s ease;
+            font-size: 0.95rem;
+        }
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .toast.success { background: #16a34a; border-left: 4px solid #14532d; }
+        .toast.error { background: #dc2626; border-left: 4px solid #7f1d1d; }
+        .toast.info { background: #2563eb; border-left: 4px solid #1e3a5f; }
+        
+        /* === FOOTER === */
+        .footer {
+            background: linear-gradient(to right, #ffcc00, #fff);
+            padding: 30px 20px;
+            color: #333;
+            text-align: center;
+            margin-top: 40px;
+            border-top: 1px solid #e5e5e5;
+        }
+        .footer .footer-content {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            max-width: 1200px;
+            margin: 0 auto 20px;
+        }
+        .footer-section {
+            margin: 0 15px 20px;
+            flex: 1;
+            min-width: 150px;
+            text-align: left;
+        }
+        .footer-section h3 {
+            color: #d32f2f;
+            font-size: 1.05rem;
+            margin-bottom: 12px;
+            font-weight: 700;
+        }
+        .footer-section p, .footer-section a {
+            color: #333;
+            text-decoration: none;
+            display: block;
+            margin: 6px 0;
+            font-size: 0.92rem;
+        }
+        .footer-section a:hover {
+            color: #d32f2f;
+            text-decoration: underline;
+        }
+        .footer .copyright {
+            font-size: 0.82rem;
+            color: #666;
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid #ccc;
+        }
+
+        .last-updated {
+            font-size: 0.85rem;
+            color: #94a3b8;
+            margin-top: 12px;
+        }
+
+        /* === RESPONSIVE === */
         @media (max-width: 1024px) {
             .header {
                 padding: 12px 16px;
@@ -516,6 +629,23 @@
                 text-align: left;
             }
         }
+
+        @media (max-width: 420px) {
+            #map {
+                height: 220px;
+            }
+            .details {
+                padding: 14px 12px;
+            }
+            .tracking-number-display {
+                font-size: 0.9rem;
+                padding: 2px 10px;
+            }
+            .status-badge-header {
+                font-size: 0.75rem;
+                padding: 4px 12px;
+            }
+        }
     </style>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
@@ -564,111 +694,113 @@
 
                 <!-- === DETAILS === -->
                 <div class="details" id="details">
-            <!-- Tracking Number & Status -->
-            <div class="flex items-center justify-between flex-wrap gap-3">
-                <div>
-                    <span class="text-sm text-gray-400 font-medium">Tracking Number</span>
-                    <span class="tracking-number-display">{{ shipment.tracking_number }}</span>
-                </div>
-                <div>
-                    <span class="text-sm text-gray-400 font-medium mr-2">Status</span>
-                    <span id="status" class="status-badge-header 
-                        {% if shipment.status == 'Delivered' %}delivered
-                        {% elif shipment.status == 'In_Transit' %}in-transit
-                        {% elif shipment.status == 'Out_for_Delivery' %}out-for-delivery
-                        {% elif shipment.status == 'Delayed' %}delayed
-                        {% elif shipment.status == 'Exception' %}exception
-                        {% else %}pending{% endif %}">
-                        {{ shipment.status }}
-                    </span>
-                </div>
-            </div>
-
-            <!-- Live Tracking Controls -->
-            <div class="flex items-center gap-3 mt-4 flex-wrap">
-                <span class="live-indicator"></span>
-                <span class="text-sm text-gray-500 font-medium">Live Tracking</span>
-                <span class="connection-dot connected" id="connectionDot"></span>
-                <span id="connectionStatus" class="text-xs text-gray-500">Connected</span>
-                <button class="refresh-btn" onclick="refreshTracking()" id="refreshBtn" disabled>↻ Refresh</button>
-                <span id="refresh-hint" class="refresh-hint">Waiting for connection...</span>
-            </div>
-
-            <!-- Progress Bar -->
-            <div class="progress-container">
-                <div class="progress-label">
-                    <span>Delivery Progress</span>
-                    <span id="progress-percent">0%</span>
-                </div>
-                <div class="progress-bar">
-                    <div class="fill" id="progress-fill"></div>
-                </div>
-            </div>
-
-            <!-- Checkpoints -->
-            <h3 class="text-lg font-semibold mt-2 mb-2 text-gray-700">Tracking History</h3>
-            <div id="checkpoints">
-                {% if checkpoints %}
-                    {% for checkpoint in checkpoints %}
-                        <div class="checkpoint">
-                            <div class="dot {% if 'Delivered' in checkpoint or 'delivered' in checkpoint|lower %}delivered{% endif %}"></div>
-                            <div>
-                                <div class="time">{{ checkpoint.split(' - ')[0] if ' - ' in checkpoint else '' }}</div>
-                                <div class="location">{{ checkpoint.split(' - ')[1] if (' - ' in checkpoint and checkpoint.split(' - ')|length > 1) else '' }}</div>
-                                <div class="event">{{ checkpoint.split(' - ')[2:]|join(' - ') if ' - ' in checkpoint and checkpoint.split(' - ')|length > 2 else checkpoint }}</div>
-                            </div>
-                        </div>
-                    {% endfor %}
-                {% else %}
-                    <div class="checkpoint">
-                        <div class="dot pending"></div>
+                    <!-- Tracking Number & Status -->
+                    <div class="flex items-center justify-between flex-wrap gap-3">
                         <div>
-                            <div class="location">No checkpoints available</div>
-                            <div class="event">Tracking information will appear here</div>
+                            <span class="text-sm text-gray-400 font-medium">Tracking Number</span>
+                            <span class="tracking-number-display">{{ shipment.tracking_number }}</span>
+                        </div>
+                        <div>
+                            <span class="text-sm text-gray-400 font-medium mr-2">Status</span>
+                            <span id="status" class="status-badge-header 
+                                {% if shipment.status == 'Delivered' %}delivered
+                                {% elif shipment.status == 'In_Transit' %}in-transit
+                                {% elif shipment.status == 'Out_for_Delivery' %}out-for-delivery
+                                {% elif shipment.status == 'Delayed' %}delayed
+                                {% elif shipment.status == 'Exception' %}exception
+                                {% else %}pending{% endif %}">
+                                {{ shipment.status }}
+                            </span>
                         </div>
                     </div>
-                {% endif %}
-            </div>
 
-            <!-- Details Grid -->
-            <div class="details-grid">
-                <div class="detail-item">
-                    <div class="detail-label">Origin</div>
-                    <div class="detail-value">{{ shipment.origin_location or 'N/A' }}</div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Destination</div>
-                    <div class="detail-value" id="delivery_location">{{ shipment.delivery_location }}</div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Service Level</div>
-                    <div class="detail-value" id="service_level">{{ service_level | default('DHL Express') }}</div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Estimated Delivery</div>
-                    <div class="detail-value" id="delivery_window">{{ delivery_window | default('Calculating...') }}</div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Proof of Delivery</div>
-                    <div class="detail-value" id="proof_of_delivery">{{ proof_of_delivery | default('Pending') }}</div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Carrier</div>
-                    <div class="detail-value">{{ shipment.carrier or 'DHL' }}</div>
-                </div>
-            </div>
+                    <!-- Live Tracking Controls -->
+                    <div class="flex items-center gap-3 mt-4 flex-wrap">
+                        <span class="live-indicator"></span>
+                        <span class="text-sm text-gray-500 font-medium">Live Tracking</span>
+                        <span class="connection-dot connected" id="connectionDot"></span>
+                        <span id="connectionStatus" class="text-xs text-gray-500">Connected</span>
+                        <button class="refresh-btn" onclick="refreshTracking()" id="refreshBtn" disabled>Refresh</button>
+                        <span id="refresh-hint" class="refresh-hint">Waiting for connection...</span>
+                    </div>
 
-            <!-- Last Updated -->
-            <div class="last-updated" id="lastUpdated">
-                Last updated: {{ shipment.last_updated.strftime('%Y-%m-%d %H:%M:%S') if shipment.last_updated else 'N/A' }}
-            </div>
+                    <!-- Progress Bar -->
+                    <div class="progress-container">
+                        <div class="progress-label">
+                            <span>Delivery Progress</span>
+                            <span id="progress-percent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="fill" id="progress-fill"></div>
+                        </div>
+                    </div>
 
-            <!-- Back Button -->
-            <a href="{{ url_for('index') }}" class="back-button">← Back to Tracking</a>
+                    <!-- Checkpoints -->
+                    <h3 class="text-lg font-semibold mt-2 mb-2 text-gray-700">Tracking History</h3>
+                    <div id="checkpoints">
+                        {% if checkpoints %}
+                            {% for checkpoint in checkpoints %}
+                                <div class="checkpoint">
+                                    <div class="dot {% if 'Delivered' in checkpoint or 'delivered' in checkpoint|lower %}delivered{% endif %}"></div>
+                                    <div>
+                                        <div class="time">{{ checkpoint.split(' - ')[0] if ' - ' in checkpoint else '' }}</div>
+                                        <div class="location">{{ checkpoint.split(' - ')[1] if (' - ' in checkpoint and checkpoint.split(' - ')|length > 1) else '' }}</div>
+                                        <div class="event">{{ checkpoint.split(' - ')[2:]|join(' - ') if ' - ' in checkpoint and checkpoint.split(' - ')|length > 2 else checkpoint }}</div>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        {% else %}
+                            <div class="checkpoint">
+                                <div class="dot pending"></div>
+                                <div>
+                                    <div class="location">No checkpoints available</div>
+                                    <div class="event">Tracking information will appear here</div>
+                                </div>
+                            </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Details Grid -->
+                    <div class="details-grid">
+                        <div class="detail-item">
+                            <div class="detail-label">Origin</div>
+                            <div class="detail-value">{{ shipment.origin_location or 'N/A' }}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Destination</div>
+                            <div class="detail-value" id="delivery_location">{{ shipment.delivery_location }}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Service Level</div>
+                            <div class="detail-value" id="service_level">{{ service_level | default('DHL Express') }}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Estimated Delivery</div>
+                            <div class="detail-value" id="delivery_window">{{ delivery_window | default('Calculating...') }}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Proof of Delivery</div>
+                            <div class="detail-value" id="proof_of_delivery">{{ proof_of_delivery | default('Pending') }}</div>
+                        </div>
+                        <div class="detail-item">
+                            <div class="detail-label">Carrier</div>
+                            <div class="detail-value">{{ shipment.carrier or 'DHL' }}</div>
+                        </div>
+                    </div>
+
+                    <!-- Last Updated -->
+                    <div class="last-updated" id="lastUpdated">
+                        Last updated: {{ shipment.last_updated.strftime('%Y-%m-%d %H:%M:%S') if shipment.last_updated else 'N/A' }}
+                    </div>
+
+                    <!-- Back Button -->
+                    <a href="{{ url_for('index') }}" class="back-button">← Back to Tracking</a>
+                </div>
+
+                <!-- Toast Notification -->
+                <div id="toast" class="toast"></div>
+            </div>
         </div>
-
-        <!-- Toast Notification -->
-        <div id="toast" class="toast"></div>
     {% endif %}
 
     <!-- === FOOTER === -->
@@ -705,7 +837,9 @@
     </div>
 
     <script>
-        // === TOAST ===
+        // ============================================================
+        // TOAST
+        // ============================================================
         function showToast(message, type = 'success') {
             const toast = document.getElementById('toast');
             if (!toast) return;
@@ -715,7 +849,9 @@
             setTimeout(() => toast.classList.remove('show'), 4000);
         }
 
-        // === REFRESH ===
+        // ============================================================
+        // REFRESH
+        // ============================================================
         const trackingNumber = "{{ shipment.tracking_number if shipment else '' }}";
 
         function requestTracking() {
@@ -727,16 +863,18 @@
             const btn = document.getElementById('refreshBtn');
             if (!btn || btn.disabled) return;
             btn.disabled = true;
-            btn.textContent = '⏳ Updating...';
+            btn.textContent = 'Updating...';
             showToast('Refreshing tracking data...', 'info');
             requestTracking();
             setTimeout(() => {
                 btn.disabled = false;
-                btn.textContent = '↻ Refresh';
+                btn.textContent = 'Refresh';
             }, 3000);
         }
 
-        // === MAP ===
+        // ============================================================
+        // MAP
+        // ============================================================
         const map = L.map('map', { zoomControl: true }).setView([0, 0], 2);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
@@ -860,7 +998,9 @@
             map.fitBounds(routeBounds);
         }
 
-        // === MAP CONTROLS ===
+        // ============================================================
+        // MAP CONTROLS
+        // ============================================================
         const initialCoords = {{ coords | default([]) | tojson }};
         const initialRouteCoords = {{ route_coords | default([]) | tojson }};
         const initialProgress = {{ progress | default(0) }};
@@ -918,7 +1058,9 @@
             document.getElementById('resetView').disabled = true;
         }
 
-        // === SOCKET.IO (force polling transport for dev) ===
+        // ============================================================
+        // SOCKET.IO
+        // ============================================================
         const socket = io({ transports: ['polling'] });
         const refreshBtn = document.getElementById('refreshBtn');
         const refreshHint = document.getElementById('refresh-hint');
@@ -947,21 +1089,21 @@
         renderInitialProgress();
 
         socket.on('connect', () => {
-            console.log('🔗 Socket.IO connected');
+            console.log('Socket.IO connected');
             updateConnectionStatus(true);
             requestTracking();
-            showToast('✅ Connected to live tracking', 'success');
+            showToast('Connected to live tracking', 'success');
         });
 
         socket.on('tracking_update', (data) => {
-            console.log('📦 Received tracking update:', data);
+            console.log('Received tracking update:', data);
             
             if (data.error) {
                 document.getElementById('status').textContent = 'Not Found';
                 document.getElementById('status').className = 'status-badge-header pending';
                 document.getElementById('delivery_location').textContent = 'N/A';
                 document.getElementById('checkpoints').innerHTML = '<div class="checkpoint"><div class="dot pending"></div><div><div class="location">Shipment not found</div></div></div>';
-                showToast('❌ ' + data.error, 'error');
+                showToast('Error: ' + data.error, 'error');
                 updateConnectionStatus(false);
                 return;
             }
@@ -1034,22 +1176,24 @@
                 document.getElementById('resetView').disabled = true;
             }
 
-            showToast('📦 Status updated: ' + statusValue, 'success');
+            showToast('Status updated: ' + statusValue, 'success');
         });
 
         socket.on('disconnect', () => {
-            console.log('🔌 Socket.IO disconnected');
+            console.log('Socket.IO disconnected');
             updateConnectionStatus(false);
-            showToast('⚠️ Disconnected from live tracking', 'error');
+            showToast('Disconnected from live tracking', 'error');
         });
 
         socket.on('connect_error', (error) => {
             console.error('Socket.IO connection error:', error);
             updateConnectionStatus(false);
-            showToast('⚠️ Connection error. Retrying...', 'error');
+            showToast('Connection error. Retrying...', 'error');
         });
 
-        // === MENU ===
+        // ============================================================
+        // MENU
+        // ============================================================
         document.querySelector('.menu').addEventListener('click', function() {
             const menu = document.getElementById('menu-content');
             menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
@@ -1062,14 +1206,16 @@
             }
         });
 
-        // === AUTO-REFRESH ===
+        // ============================================================
+        // AUTO-REFRESH
+        // ============================================================
         setInterval(() => {
             if (socket.connected) {
                 requestTracking();
             }
         }, 30000);
 
-        console.log('✅ Tracking page initialized');
+        console.log('Tracking page initialized');
     </script>
 </body>
 </html>
