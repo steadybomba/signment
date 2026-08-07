@@ -6,14 +6,27 @@
     <title>DHL Track & Trace</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
+        :root {
+            --dhl-red: #D40511;
+            --dhl-yellow: #FFCC00;
+            --dhl-dark: #1a1a1a;
+            --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+            --shadow-md: 0 4px 20px rgba(0,0,0,0.08);
+            --shadow-lg: 0 8px 40px rgba(0,0,0,0.12);
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+        }
+        
         body {
-            font-family: 'Segoe UI', Arial, sans-serif;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
             margin: 0;
             padding: 0;
             line-height: 1.6;
             background-color: #f5f5f5;
             position: relative;
             overflow-x: hidden;
+            min-height: 100vh;
         }
         
         /* Background Video */
@@ -32,13 +45,14 @@
         /* Content Overlay */
         .content-overlay {
             position: relative;
-            background: rgba(255, 255, 255, 0.85);
+            background: rgba(255, 255, 255, 0.88);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
+            backdrop-filter: blur(2px);
         }
         
-        /* === CLEAN GATE OVERLAY - White Background === */
+        /* === CLEAN GATE OVERLAY === */
         .gate-overlay {
             position: fixed;
             inset: 0;
@@ -46,26 +60,34 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #ffffff;
+            background: rgba(255, 255, 255, 0.98);
             padding: 20px;
+            backdrop-filter: blur(8px);
         }
         
         .gate-card {
             width: 100%;
             max-width: 420px;
             background: #ffffff;
-            padding: 40px 30px;
+            padding: 48px 32px;
             text-align: center;
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-lg);
+            border: 1px solid rgba(0,0,0,0.06);
         }
         
         .gate-card .lock-icon {
             font-size: 48px;
             margin-bottom: 16px;
-            color: #d32f2f;
+            color: var(--dhl-red);
+        }
+        
+        .gate-card .lock-icon::before {
+            content: "🔒";
         }
         
         .gate-card h2 {
-            color: #1a1a1a;
+            color: var(--dhl-dark);
             font-size: 20px;
             font-weight: 600;
             margin: 0 0 8px 0;
@@ -83,6 +105,7 @@
             display: flex;
             justify-content: center;
             margin: 8px 0 16px 0;
+            min-height: 78px;
         }
         
         .gate-card .gate-note {
@@ -91,7 +114,29 @@
             margin-top: 16px;
         }
         
-        /* Hide content until reCAPTCHA is solved */
+        .gate-card .recaptcha-loading {
+            color: #666;
+            font-size: 14px;
+            padding: 20px;
+        }
+        
+        .gate-card .recaptcha-loading .spinner {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid var(--dhl-red);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
         body.recaptcha-locked .header,
         body.recaptcha-locked .title,
         body.recaptcha-locked .title-sub,
@@ -118,18 +163,21 @@
         
         /* === HEADER === */
         .header {
-            background: linear-gradient(to right, #ffcc00, #fff);
-            padding: 10px 20px;
+            background: linear-gradient(135deg, var(--dhl-yellow) 0%, #fff 100%);
+            padding: 12px 24px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             position: sticky;
             top: 0;
             z-index: 1000;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+            border-bottom: 1px solid rgba(0,0,0,0.04);
         }
         .header img {
             height: 40px;
             max-width: 100%;
+            object-fit: contain;
         }
         .header .menu {
             font-size: 24px;
@@ -137,6 +185,8 @@
             padding: 10px;
             border-radius: 50%;
             transition: background 0.3s;
+            line-height: 1;
+            user-select: none;
         }
         .header .menu:hover {
             background: rgba(0,0,0,0.05);
@@ -144,35 +194,38 @@
         .menu-content {
             display: none;
             position: absolute;
-            right: 10px;
-            top: 60px;
+            right: 24px;
+            top: 64px;
             background: #fff;
-            border: 1px solid #ccc;
-            border-radius: 8px;
+            border: 1px solid #e5e5e5;
+            border-radius: var(--radius-sm);
             padding: 8px 0;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            min-width: 160px;
+            box-shadow: var(--shadow-md);
+            min-width: 180px;
             z-index: 1000;
+        }
+        .menu-content.show {
+            display: block;
         }
         .menu-content a {
             display: block;
-            padding: 10px 16px;
+            padding: 10px 20px;
             color: #333;
             text-decoration: none;
             font-size: 14px;
-            transition: background 0.2s;
+            transition: background 0.2s, color 0.2s;
         }
         .menu-content a:hover {
             background-color: #f5f5f5;
-            color: #d32f2f;
+            color: var(--dhl-red);
         }
         
         /* === TITLE === */
         .title {
             text-align: center;
-            color: #d32f2f;
-            font-size: clamp(1.4rem, 3.2vw, 2.5rem);
-            margin: 30px 0 10px;
+            color: var(--dhl-red);
+            font-size: clamp(1.8rem, 3.5vw, 2.8rem);
+            margin: 40px 0 8px;
             font-weight: 700;
             letter-spacing: -0.5px;
             line-height: 1.1;
@@ -182,7 +235,8 @@
             text-align: center;
             color: #666;
             font-size: 1.1em;
-            margin-bottom: 20px;
+            margin-bottom: 24px;
+            padding: 0 12px;
         }
         
         /* === TRACKING FORM === */
@@ -190,17 +244,21 @@
             display: flex;
             justify-content: center;
             margin: 10px 0 30px;
-            padding: 0 10px;
+            padding: 0 16px;
         }
         .track-box {
             background: #fff;
-            padding: 30px;
-            border-radius: 16px;
+            padding: 32px;
+            border-radius: var(--radius-lg);
             max-width: 680px;
             width: 100%;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            box-shadow: var(--shadow-md);
             border: 1px solid #eee;
             box-sizing: border-box;
+            transition: box-shadow 0.3s ease;
+        }
+        .track-box:hover {
+            box-shadow: var(--shadow-lg);
         }
         .track-box label {
             display: block;
@@ -215,22 +273,26 @@
             padding: 12px 14px;
             margin-bottom: 16px;
             border: 2px solid #e0e0e0;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             box-sizing: border-box;
             font-size: 16px;
-            transition: border-color 0.3s;
+            transition: border-color 0.3s, box-shadow 0.3s;
         }
         .track-box input:focus {
             outline: none;
-            border-color: #d32f2f;
-            box-shadow: 0 0 0 3px rgba(211, 47, 47, 0.1);
+            border-color: var(--dhl-red);
+            box-shadow: 0 0 0 3px rgba(212, 5, 17, 0.1);
+        }
+        .track-box input:disabled {
+            background-color: #f5f5f5;
+            cursor: not-allowed;
         }
         .track-box button {
-            background-color: #d32f2f;
+            background-color: var(--dhl-red);
             color: white;
             padding: 14px 20px;
             border: none;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             cursor: pointer;
             width: 100%;
             box-sizing: border-box;
@@ -239,9 +301,9 @@
             transition: all 0.3s ease;
         }
         .track-box button:hover:not(:disabled) {
-            background-color: #b71c1c;
+            background-color: #b0040e;
             transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(211, 47, 47, 0.3);
+            box-shadow: 0 4px 12px rgba(212, 5, 17, 0.3);
         }
         .track-box button:disabled {
             background-color: #e57373;
@@ -260,69 +322,21 @@
             display: none;
             margin: 20px auto;
             max-width: 800px;
-            padding: 0 15px;
+            padding: 0 16px;
             width: 100%;
+            animation: fadeInUp 0.4s ease;
         }
         .tracking-result .card {
             background: #fff;
-            border-radius: 8px;
+            border-radius: var(--radius-md);
             padding: 24px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: var(--shadow-md);
+            border: 1px solid #eee;
         }
         
-        /* === BLOG SECTION - Much Taller Images === */
-        .blog-section {
-            max-width: 1200px;
-            margin: 40px auto;
-            padding: 0 20px;
-        }
-        .blog-section .section-title {
-            text-align: center;
-            font-size: 1.6rem;
-            font-weight: 700;
-            color: #1a1a1a;
-            margin-bottom: 4px;
-        }
-        .blog-section .section-subtitle {
-            text-align: center;
-            color: #666;
-            font-size: 0.95rem;
-            margin-bottom: 30px;
-        }
-        .blog-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 30px;
-        }
-        .blog-card {
-            background: #fff;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
-            border: 1px solid #eee;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-            cursor: pointer;
-        }
-        .blog-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 8px 30px rgba(0,0,0,0.1);
-        }
-        .blog-card .blog-image {
-            width: 100%;
-            height: auto;
-            aspect-ratio: 16/9;
-            object-fit: cover;
-            background: #f0f0f0;
-            display: block;
-            max-height: 60vh;
-        }
-        .blog-card .blog-label {
-            padding: 14px 18px 18px;
-            font-size: 0.9rem;
-            color: #555;
-            text-align: center;
-            border-top: 1px solid #f0f0f0;
-            font-weight: 500;
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
         }
         
         /* === ERROR MESSAGE === */
@@ -332,95 +346,186 @@
             border: 1px solid #fecaca;
             color: #dc2626;
             padding: 12px 16px;
-            border-radius: 5px;
+            border-radius: var(--radius-sm);
             margin-top: 12px;
             font-size: 0.95rem;
         }
+        .error-message.show {
+            display: block;
+        }
         
         /* === TOAST === */
-        .toast {
+        .toast-container {
             position: fixed;
-            bottom: 20px;
-            right: 20px;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            max-width: 400px;
+        }
+        .toast {
             background: #333;
             color: white;
             padding: 14px 24px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-            z-index: 9999;
+            border-radius: var(--radius-sm);
+            box-shadow: var(--shadow-lg);
             transform: translateY(100px);
             opacity: 0;
-            transition: all 0.4s ease;
+            transition: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+            margin-top: 8px;
+            font-size: 0.95rem;
+            border-left: 4px solid transparent;
         }
         .toast.show {
             transform: translateY(0);
             opacity: 1;
         }
-        .toast.success { background: #16a34a; }
-        .toast.error { background: #dc2626; }
+        .toast.success { background: #16a34a; border-left-color: #14532d; }
+        .toast.error { background: #dc2626; border-left-color: #7f1d1d; }
+        .toast.info { background: #2563eb; border-left-color: #1e3a5f; }
+        
+        /* === BLOG SECTION === */
+        .blog-section {
+            max-width: 1200px;
+            margin: 50px auto 30px;
+            padding: 0 20px;
+        }
+        .blog-section .section-title {
+            text-align: center;
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--dhl-dark);
+            margin-bottom: 4px;
+        }
+        .blog-section .section-subtitle {
+            text-align: center;
+            color: #666;
+            font-size: 0.95rem;
+            margin-bottom: 32px;
+        }
+        .blog-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
+        }
+        .blog-card {
+            background: #fff;
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+            border: 1px solid #eee;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            cursor: pointer;
+        }
+        .blog-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-lg);
+        }
+        .blog-card .blog-image {
+            width: 100%;
+            height: auto;
+            aspect-ratio: 16/9;
+            object-fit: cover;
+            background: #f0f0f0;
+            display: block;
+        }
+        .blog-card .blog-label {
+            padding: 16px 20px 20px;
+            font-size: 0.95rem;
+            color: #555;
+            text-align: center;
+            border-top: 1px solid #f0f0f0;
+            font-weight: 500;
+        }
+        .blog-card .blog-label .blog-date {
+            display: block;
+            font-size: 0.75rem;
+            color: #999;
+            margin-top: 4px;
+            font-weight: 400;
+        }
         
         /* === FAQ === */
         .faq-section {
-            margin: 30px 20px;
+            margin: 30px auto;
             max-width: 800px;
-            align-self: center;
+            padding: 0 20px;
             width: 100%;
         }
         .faq-section h2 {
-            color: #333;
+            color: var(--dhl-dark);
             font-size: 1.6rem;
-            margin-bottom: 20px;
+            margin-bottom: 24px;
             font-weight: 700;
+            text-align: center;
         }
         .faq-item {
             border-bottom: 1px solid #e5e5e5;
-            padding: 14px 0;
+            padding: 16px 0;
         }
-        .faq-item a {
-            color: #d32f2f;
+        .faq-item:last-child {
+            border-bottom: none;
+        }
+        .faq-item .faq-question {
+            color: var(--dhl-dark);
             text-decoration: none;
             font-size: 15px;
             font-weight: 500;
-            display: block;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             cursor: pointer;
+            padding: 4px 0;
+            transition: color 0.2s;
         }
-        .faq-item a:hover {
-            text-decoration: underline;
+        .faq-item .faq-question:hover {
+            color: var(--dhl-red);
+        }
+        .faq-item .faq-question .arrow {
+            transition: transform 0.3s ease;
+            font-size: 12px;
+            color: #999;
+        }
+        .faq-item .faq-question .arrow.open {
+            transform: rotate(180deg);
         }
         .faq-item .faq-answer {
             display: none;
             margin-top: 10px;
             color: #555;
             font-size: 14px;
-            line-height: 1.6;
+            line-height: 1.7;
             padding-left: 8px;
-            border-left: 3px solid #d32f2f;
+            border-left: 3px solid var(--dhl-red);
+            padding-left: 16px;
+        }
+        .faq-item .faq-answer.open {
+            display: block;
         }
         
         /* === FOOTER === */
         .footer {
-            background: linear-gradient(to right, #ffcc00, #fff);
-            padding: 30px 20px;
+            background: linear-gradient(135deg, var(--dhl-yellow) 0%, #fff 100%);
+            padding: 40px 20px 24px;
             color: #333;
             text-align: center;
             margin-top: 40px;
-            border-top: 1px solid #e5e5e5;
+            border-top: 1px solid rgba(0,0,0,0.04);
         }
         .footer .footer-content {
             display: flex;
             justify-content: space-around;
             flex-wrap: wrap;
             max-width: 1200px;
-            margin: 0 auto 20px;
+            margin: 0 auto 24px;
+            gap: 20px;
         }
         .footer-section {
-            margin: 0 15px 20px;
             flex: 1;
             min-width: 150px;
             text-align: left;
         }
         .footer-section h3 {
-            color: #d32f2f;
+            color: var(--dhl-red);
             font-size: 1.05rem;
             margin-bottom: 12px;
             font-weight: 700;
@@ -431,78 +536,77 @@
             display: block;
             margin: 6px 0;
             font-size: 0.92rem;
+            transition: color 0.2s;
         }
         .footer-section a:hover {
-            color: #d32f2f;
-            text-decoration: underline;
+            color: var(--dhl-red);
         }
         .footer .copyright {
             font-size: 0.82rem;
             color: #666;
             margin-top: 15px;
-            padding-top: 10px;
-            border-top: 1px solid #ccc;
+            padding-top: 12px;
+            border-top: 1px solid rgba(0,0,0,0.08);
         }
 
-        /* Responsive */
-        @media (max-width: 640px) {
-            .title { font-size: 1.8em; }
-            .track-box { padding: 20px; }
-            .blog-grid { grid-template-columns: 1fr; }
-            .blog-card .blog-image { aspect-ratio: 16/9; max-height: 50vh; }
-            .blog-section .section-title { font-size: 1.4rem; }
-            .content-overlay { padding-bottom: 60px; }
+        /* === RESPONSIVE === */
+        @media (max-width: 1024px) {
+            .blog-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
         }
-        @media (min-width: 641px) and (max-width: 1024px) {
-            .blog-grid { grid-template-columns: repeat(2, 1fr); }
-            .blog-card .blog-image { height: 450px; }
+        
+        @media (max-width: 768px) {
+            .title { font-size: 2em; margin-top: 30px; }
+            .track-box { padding: 24px; }
+            .footer .footer-content { flex-direction: column; align-items: center; text-align: center; }
+            .footer-section { min-width: 100%; text-align: center; }
+            .blog-grid { grid-template-columns: 1fr; }
+            .blog-section .section-title { font-size: 1.5rem; }
+            .gate-card { padding: 32px 24px; }
         }
         
         @media (max-width: 480px) {
-            .header { padding: 8px 10px; }
+            .header { padding: 8px 12px; }
             .header img { height: 30px; }
-            .menu { font-size: 20px; padding: 8px; }
-            .menu-content { top: 50px; right: 5px; min-width: 120px; }
-            .menu-content a { font-size: 14px; padding: 6px 10px; }
-            .title { font-size: 1.5em; margin: 15px 0; }
+            .header .menu { font-size: 20px; padding: 8px; }
+            .menu-content { right: 12px; top: 52px; min-width: 150px; }
+            .title { font-size: 1.6em; margin-top: 20px; }
             .title-sub { font-size: 0.95rem; }
-            .track-box { padding: 15px; }
-            .track-box input, .track-box button { font-size: 14px; padding: 8px; }
-            .faq-section { margin: 15px 5px; }
+            .track-box { padding: 16px; border-radius: var(--radius-sm); }
+            .track-box input { font-size: 14px; padding: 10px 12px; }
+            .track-box button { font-size: 14px; padding: 12px; }
+            .faq-section { padding: 0 12px; }
             .faq-section h2 { font-size: 1.3rem; }
-            .footer { padding: 15px 10px; margin-top: 20px; }
-            .footer .footer-content { flex-direction: column; text-align: center; }
-            .footer-section { margin: 10px 0; min-width: 100%; text-align: center; }
-            .gate-card { padding: 30px 20px; }
+            .footer { padding: 20px 12px 16px; margin-top: 20px; }
+            .footer-section h3 { font-size: 0.95rem; }
+            .gate-card { padding: 24px 16px; }
             .gate-card h2 { font-size: 18px; }
             .gate-card p { font-size: 13px; }
-            .toast { left: 10px; right: 10px; bottom: 10px; padding: 12px 16px; font-size: 0.9rem; }
-            .blog-section { padding: 0 10px; }
-            .blog-card .blog-image { aspect-ratio: 16/9; max-height: 45vh; }
-            .blog-card .blog-label { font-size: 0.8rem; padding: 10px 12px; }
-        }
-        
-        @media (min-width: 481px) and (max-width: 768px) {
-            .header { padding: 10px 15px; }
-            .header img { height: 35px; }
-            .title { font-size: 2em; }
-            .track-box { padding: 20px; max-width: 400px; }
-            .footer { padding: 20px 15px; }
-            .footer .footer-content { flex-direction: column; text-align: center; }
-            .footer-section { margin: 12px 0; min-width: 100%; text-align: center; }
-        }
-        
-        .menu, .track-box button {
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        /* Hide background video on small devices to save bandwidth and improve layout */
-        @media (max-width: 420px) {
-            .video-background { display: none; }
-            body { background-image: url('{{ url_for('static', filename='fallback-image.jpg') }}'); background-size: cover; background-position: center; }
-            .track-box { padding: 16px; border-radius: 12px; }
+            .toast-container { left: 16px; right: 16px; bottom: 16px; }
+            .toast { padding: 12px 16px; font-size: 0.9rem; }
+            .blog-section { padding: 0 12px; }
+            .blog-card .blog-label { font-size: 0.85rem; padding: 12px 14px; }
             .tracking-result .card { padding: 16px; }
         }
+        
+        @media (max-width: 380px) {
+            .title { font-size: 1.4em; }
+            .track-box { padding: 12px; }
+            .track-box input { font-size: 13px; padding: 8px 10px; }
+            .track-box button { font-size: 13px; padding: 10px; }
+        }
+        
+        @media (max-width: 420px) {
+            .video-background { display: none; }
+            body { background: #f5f5f5; }
+            .content-overlay { background: rgba(255, 255, 255, 0.95); }
+        }
+
+        /* Utility classes */
+        .text-dhl-red { color: var(--dhl-red); }
+        .bg-dhl-red { background-color: var(--dhl-red); }
+        .border-dhl-red { border-color: var(--dhl-red); }
     </style>
     
     <!-- reCAPTCHA script -->
@@ -536,38 +640,39 @@
     <!-- Content Overlay -->
     <div class="content-overlay">
         
-        <!-- === CLEAN GATE OVERLAY - White === -->
+        <!-- === GATE OVERLAY === -->
         {% if recaptcha_site_key %}
         <div id="gate-overlay" class="gate-overlay">
             <div class="gate-card" role="dialog" aria-modal="true">
                 <div class="lock-icon"></div>
-                <h2>Please verify you're human</h2>
-                <p>Complete the reCAPTCHA below to unlock the tracking page.</p>
+                <h2>Verify You're Human</h2>
+                <p>Complete the reCAPTCHA below to access real-time tracking.</p>
                 <div class="recaptcha-wrapper">
                     <div id="gate-recaptcha" class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-callback="recaptchaGateSuccess"></div>
                 </div>
-                <p class="gate-note">If the reCAPTCHA doesn't load, refresh the page.</p>
+                <p class="gate-note">Protected by reCAPTCHA. This helps prevent automated access.</p>
             </div>
         </div>
         {% else %}
-        <!-- No reCAPTCHA in development; ensure overlay hidden -->
         <div id="gate-overlay" class="gate-overlay" style="display:none"></div>
         {% endif %}
 
-        <!-- === HEADER - Admin Removed === -->
+        <!-- === HEADER === -->
         <div class="header">
             <img src="{{ url_for('static', filename='dhl-logo.png') }}" alt="DHL Logo">
-            <div class="menu" aria-label="Toggle navigation" aria-expanded="false">≡</div>
-            <div id="menu-content" class="menu-content hidden">
+            <div class="menu" aria-label="Toggle navigation" aria-expanded="false">☰</div>
+            <div id="menu-content" class="menu-content">
                 <a href="{{ url_for('index') }}">Home</a>
-                <a href="#">Contact</a>
-                <a href="#">Support</a>
+                <a href="#tracking">Track Shipment</a>
+                <a href="#faq">FAQ</a>
+                <a href="#blog">Blog</a>
+                <a href="#" onclick="showToast('Contact support at support@dhl.com', 'info')">Contact</a>
             </div>
         </div>
 
         <!-- === TITLE === -->
-        <div class="title">Track & Trace</div>
-        <div class="title-sub">Enter your tracking number for real-time updates</div>
+        <div class="title" id="tracking">Track & Trace</div>
+        <div class="title-sub">Enter your DHL tracking number for real-time updates</div>
 
         <!-- === TRACKING FORM === -->
         <div class="track-section">
@@ -577,12 +682,12 @@
                     <input type="hidden" name="g-recaptcha-response" id="g-recaptcha-response" />
                     
                     <label for="tracking_number">Tracking Number</label>
-                    {{ form.tracking_number(id='tracking_number', placeholder='Enter your tracking number', pattern='[A-Za-z0-9]{10,20}', title='Enter a valid tracking number (10-20 alphanumeric characters)', required=True, maxlength=50) }}
+                    {{ form.tracking_number(id='tracking_number', placeholder='Enter your tracking number (e.g., JD1234567890)', pattern='[A-Za-z0-9]{10,20}', title='Enter a valid tracking number (10-20 alphanumeric characters)', required=True, maxlength=50) }}
                     
                     <label for="email" class="mt-4">Email for Updates <span class="text-gray-400 text-sm">(Optional)</span></label>
-                    {{ form.email(id='email', placeholder='Enter your email address', type='email') }}
+                    {{ form.email(id='email', placeholder='Enter your email address for notifications', type='email') }}
                     
-                    {{ form.submit(id='submit-btn', class='bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded w-full cursor-pointer mt-4', disabled='disabled') }}
+                    {{ form.submit(id='submit-btn', class='bg-dhl-red hover:bg-red-700 text-white font-bold py-3 px-4 rounded w-full cursor-pointer mt-4', disabled='disabled') }}
                     
                     <div class="recaptcha-note">Protected by reCAPTCHA</div>
                 </form>
@@ -599,31 +704,37 @@
             </div>
         </div>
 
-        <!-- Toast Notification -->
-        <div id="toast" class="toast"></div>
+        <!-- Toast Container -->
+        <div id="toast-container" class="toast-container"></div>
 
-        <!-- === BLOG SECTION - Much Taller Images === -->
-        <div class="blog-section">
+        <!-- === BLOG SECTION === -->
+        <div class="blog-section" id="blog">
             <div class="section-title">From the DHL Blog</div>
             <div class="section-subtitle">Stories and insights from our team</div>
             
             <div class="blog-grid">
-                <!-- Blog Image 1 -->
                 <div class="blog-card">
-                    <img class="blog-image" src="{{ url_for('static', filename='blog-1.jpg') }}" alt="DHL Blog Post 1">
-                    <div class="blog-label">DHL Logistics & Innovation</div>
+                    <img class="blog-image" src="{{ url_for('static', filename='blog-1.jpg') }}" alt="DHL Logistics & Innovation" loading="lazy">
+                    <div class="blog-label">
+                        DHL Logistics & Innovation
+                        <span class="blog-date">March 15, 2026</span>
+                    </div>
                 </div>
 
-                <!-- Blog Image 2 -->
                 <div class="blog-card">
-                    <img class="blog-image" src="{{ url_for('static', filename='blog-2.jpg') }}" alt="DHL Blog Post 2">
-                    <div class="blog-label">DHL Air Freight & Express</div>
+                    <img class="blog-image" src="{{ url_for('static', filename='blog-2.jpg') }}" alt="DHL Air Freight & Express" loading="lazy">
+                    <div class="blog-label">
+                        DHL Air Freight & Express
+                        <span class="blog-date">March 12, 2026</span>
+                    </div>
                 </div>
 
-                <!-- Blog Image 3 -->
                 <div class="blog-card">
-                    <img class="blog-image" src="{{ url_for('static', filename='blog-3.jpg') }}" alt="DHL Blog Post 3">
-                    <div class="blog-label">DHL Delivery & Customer Service</div>
+                    <img class="blog-image" src="{{ url_for('static', filename='blog-3.jpg') }}" alt="DHL Delivery & Customer Service" loading="lazy">
+                    <div class="blog-label">
+                        DHL Delivery & Customer Service
+                        <span class="blog-date">March 10, 2026</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -631,25 +742,60 @@
         <!-- === FAQ SECTION === -->
         <div class="faq-section" id="faq">
             <h2>Frequently Asked Questions</h2>
+            
             <div class="faq-item">
-                <a onclick="toggleFAQ('faq1')">What Is a Tracking Number & Where Can I Find It?</a>
-                <div id="faq1" class="faq-answer">A tracking number is a unique ID assigned to your shipment. You can find it on your shipping confirmation email, receipt, or the shipping label.</div>
+                <div class="faq-question" onclick="toggleFAQ('faq1')">
+                    What Is a Tracking Number & Where Can I Find It?
+                    <span class="arrow">▼</span>
+                </div>
+                <div id="faq1" class="faq-answer">A tracking number is a unique ID assigned to your shipment. You can find it on your shipping confirmation email, receipt, or the shipping label. DHL tracking numbers typically start with "JD" followed by 10 digits.</div>
             </div>
+            
             <div class="faq-item">
-                <a onclick="toggleFAQ('faq2')">When will my tracking information appear?</a>
-                <div id="faq2" class="faq-answer">Tracking information typically appears within 24 hours after your shipment is processed and picked up by DHL.</div>
+                <div class="faq-question" onclick="toggleFAQ('faq2')">
+                    When will my tracking information appear?
+                    <span class="arrow">▼</span>
+                </div>
+                <div id="faq2" class="faq-answer">Tracking information typically appears within 24 hours after your shipment is processed and picked up by DHL. For express shipments, updates may appear within 2-4 hours.</div>
             </div>
+            
             <div class="faq-item">
-                <a onclick="toggleFAQ('faq3')">Why is my tracking number not working?</a>
-                <div id="faq3" class="faq-answer">Ensure you've entered the number correctly. If it still doesn't work, please contact DHL customer support for assistance.</div>
+                <div class="faq-question" onclick="toggleFAQ('faq3')">
+                    Why is my tracking number not working?
+                    <span class="arrow">▼</span>
+                </div>
+                <div id="faq3" class="faq-answer">Ensure you've entered the number correctly. Common issues include: the shipment hasn't been processed yet, you're using the wrong format, or the number has expired. If it still doesn't work, contact DHL customer support.</div>
             </div>
+            
             <div class="faq-item">
-                <a onclick="toggleFAQ('faq4')">What does "In Transit" mean?</a>
-                <div id="faq4" class="faq-answer">"In Transit" means your shipment is on its way to the destination and is moving through the DHL network.</div>
+                <div class="faq-question" onclick="toggleFAQ('faq4')">
+                    What does "In Transit" mean?
+                    <span class="arrow">▼</span>
+                </div>
+                <div id="faq4" class="faq-answer">"In Transit" means your shipment is on its way to the destination and is actively moving through the DHL network. It has been picked up and is being transported through various hubs and facilities.</div>
             </div>
+            
             <div class="faq-item">
-                <a onclick="toggleFAQ('faq5')">Will I receive email updates?</a>
-                <div id="faq5" class="faq-answer">Yes. If you provide your email when tracking, you'll receive automatic updates about your shipment status.</div>
+                <div class="faq-question" onclick="toggleFAQ('faq5')">
+                    Will I receive email updates?
+                    <span class="arrow">▼</span>
+                </div>
+                <div id="faq5" class="faq-answer">Yes. If you provide your email when tracking, you'll receive automatic updates about your shipment status. You can also opt-in for notifications via the tracking page.</div>
+            </div>
+            
+            <div class="faq-item">
+                <div class="faq-question" onclick="toggleFAQ('faq6')">
+                    What do the different statuses mean?
+                    <span class="arrow">▼</span>
+                </div>
+                <div id="faq6" class="faq-answer">
+                    <strong>Pending:</strong> Shipment information received<br>
+                    <strong>In Transit:</strong> Package is moving through the network<br>
+                    <strong>Out for Delivery:</strong> Package is with the courier<br>
+                    <strong>Delivered:</strong> Package has been delivered<br>
+                    <strong>Delayed:</strong> Delivery is delayed due to customs, weather, or other reasons<br>
+                    <strong>Exception:</strong> An unexpected event has occurred
+                </div>
             </div>
         </div>
 
@@ -661,34 +807,40 @@
                     <p>Email: support@dhl.com</p>
                     <p>Phone: +1 700 345 6789</p>
                     <p>Address: 1 DHL Way, America</p>
+                    <p>Hours: 24/7 Customer Support</p>
                 </div>
                 <div class="footer-section">
                     <h3>Follow Us</h3>
-                    <a href="https://x.com/dhl" target="_blank">X (Twitter)</a>
-                    <a href="https://facebook.com/dhl" target="_blank">Facebook</a>
-                    <a href="https://instagram.com/dhl" target="_blank">Instagram</a>
+                    <a href="https://x.com/dhl" target="_blank" rel="noopener">X (Twitter)</a>
+                    <a href="https://facebook.com/dhl" target="_blank" rel="noopener">Facebook</a>
+                    <a href="https://instagram.com/dhl" target="_blank" rel="noopener">Instagram</a>
+                    <a href="https://linkedin.com/company/dhl" target="_blank" rel="noopener">LinkedIn</a>
                 </div>
                 <div class="footer-section">
                     <h3>Legal</h3>
                     <a href="#">Terms & Conditions</a>
                     <a href="#">Privacy Policy</a>
-                    <a href="#">Cookies</a>
+                    <a href="#">Cookie Policy</a>
                 </div>
                 <div class="footer-section">
                     <h3>Support</h3>
                     <a href="#">Help Center</a>
                     <a href="#faq">FAQs</a>
-                    <a href="#">Contact</a>
+                    <a href="#">Contact Support</a>
+                    <a href="#">Track Another Package</a>
                 </div>
             </div>
             <div class="copyright">
-                &copy; 2026 DHL International. All rights reserved.
+                &copy; 2026 DHL International GmbH. All rights reserved. | 
+                <span style="color: #999;">Version 2.0.1</span>
             </div>
         </div>
     </div>
 
     <script>
-        // === reCAPTCHA Callback ===
+        // ============================================================
+        // reCAPTCHA Callback
+        // ============================================================
         function recaptchaGateSuccess(token) {
             document.getElementById('g-recaptcha-response').value = token;
             document.getElementById('submit-btn').disabled = false;
@@ -697,55 +849,89 @@
             if (overlay) {
                 overlay.style.display = 'none';
             }
+            showToast('Verification successful! You can now track shipments.', 'success');
         }
 
-        // === Lock page until reCAPTCHA is solved ===
+        // ============================================================
+        // Lock page until reCAPTCHA is solved
+        // ============================================================
         function lockPageUntilRecaptcha() {
             document.body.classList.add('recaptcha-locked');
         }
         {% if recaptcha_site_key %}
         lockPageUntilRecaptcha();
         {% else %}
-        // No reCAPTCHA configured (development) — enable form immediately
+        // No reCAPTCHA configured — enable form immediately
         document.getElementById('submit-btn').disabled = false;
         const overlay = document.getElementById('gate-overlay');
         if (overlay) overlay.style.display = 'none';
         {% endif %}
 
-        // === Toast Notification ===
+        // ============================================================
+        // Toast Notification
+        // ============================================================
         function showToast(message, type = 'success') {
-            const toast = document.getElementById('toast');
-            if (!toast) return;
-            toast.textContent = message;
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            
+            const toast = document.createElement('div');
             toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            
             setTimeout(() => toast.classList.add('show'), 10);
-            setTimeout(() => toast.classList.remove('show'), 4000);
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 400);
+            }, 4000);
         }
 
-        // === Hamburger Menu ===
+        // ============================================================
+        // Hamburger Menu
+        // ============================================================
         document.querySelector('.menu').addEventListener('click', function(e) {
             e.stopPropagation();
             const menu = document.getElementById('menu-content');
-            menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+            menu.classList.toggle('show');
+            this.setAttribute('aria-expanded', menu.classList.contains('show'));
         });
-        document.addEventListener('click', function() {
-            document.getElementById('menu-content').style.display = 'none';
+        
+        document.addEventListener('click', function(e) {
+            const menu = document.getElementById('menu-content');
+            const menuBtn = document.querySelector('.menu');
+            if (!menu.contains(e.target) && e.target !== menuBtn) {
+                menu.classList.remove('show');
+                menuBtn.setAttribute('aria-expanded', 'false');
+            }
         });
 
-        // === FAQ Toggle ===
+        // ============================================================
+        // FAQ Toggle
+        // ============================================================
         function toggleFAQ(id) {
             const answer = document.getElementById(id);
-            if (answer) {
-                answer.style.display = answer.style.display === 'none' || !answer.style.display ? 'block' : 'none';
+            const question = answer.closest('.faq-item').querySelector('.faq-question');
+            const arrow = question.querySelector('.arrow');
+            
+            if (answer.classList.contains('open')) {
+                answer.classList.remove('open');
+                arrow.classList.remove('open');
+            } else {
+                document.querySelectorAll('.faq-answer').forEach(el => {
+                    el.classList.remove('open');
+                });
+                document.querySelectorAll('.faq-question .arrow').forEach(el => {
+                    el.classList.remove('open');
+                });
+                answer.classList.add('open');
+                arrow.classList.add('open');
             }
         }
 
-        // Initialize FAQ answers as hidden
-        document.querySelectorAll('.faq-answer').forEach(el => {
-            el.style.display = 'none';
-        });
-
-        // === AJAX Form Submission ===
+        // ============================================================
+        // AJAX Form Submission
+        // ============================================================
         const trackForm = document.getElementById('trackForm');
         if (trackForm) {
             trackForm.addEventListener('submit', async function(e) {
@@ -754,6 +940,7 @@
                 const originalText = btn.innerHTML;
                 btn.disabled = true;
                 btn.innerHTML = 'Searching...';
+                
                 const formData = new FormData(this);
 
                 try {
@@ -764,85 +951,44 @@
                         },
                         body: formData
                     });
-                    const text = await response.text();
+                    const data = await response.json();
 
-                    let json = null;
-                    try {
-                        json = JSON.parse(text);
-                    } catch (err) {
-                        json = null;
-                    }
-
-                    let html = text;
-                    if (json && json.html) {
-                        html = json.html;
-                    }
-
-                    const parser = new DOMParser();
-                    const doc = parser.parseFromString(html, 'text/html');
-                    const errorEl = doc.querySelector('.error-message, .alert-danger, .flash-error');
-                    const resultContent = doc.querySelector('#result-content');
-                    const trackingSection = resultContent || doc.querySelector('.tracking-result') || doc.querySelector('#tracking-result');
-
-                    if (json && json.error) {
-                        showError(json.error);
+                    if (data.error) {
+                        showError(data.error);
                         return;
                     }
 
-                    if (resultContent) {
-                        document.getElementById('result-content').innerHTML = resultContent.innerHTML;
+                    if (data.html) {
+                        document.getElementById('result-content').innerHTML = data.html;
                         document.getElementById('tracking-result').style.display = 'block';
-                        document.getElementById('error-message').style.display = 'none';
+                        document.getElementById('error-message').classList.remove('show');
                         enableTrackingControls();
-                        showToast('Tracking information loaded successfully', 'success');
-                        return;
+                        showToast('Tracking information loaded successfully!', 'success');
+                    } else {
+                        showError('Unable to display tracking information. Please try again.');
                     }
-
-                    if (errorEl) {
-                        showError(errorEl.textContent.trim());
-                        return;
-                    }
-
-                    if (trackingSection) {
-                        const outer = trackingSection.querySelector('#result-content');
-                        document.getElementById('result-content').innerHTML = outer ? outer.innerHTML : trackingSection.innerHTML;
-                        document.getElementById('tracking-result').style.display = 'block';
-                        document.getElementById('error-message').style.display = 'none';
-                        enableTrackingControls();
-                        showToast('Tracking information loaded successfully', 'success');
-                        return;
-                    }
-
-                    showError('Unable to display tracking information. Please try again.');
                 } catch (error) {
-                    showError('Network error. Please check your connection.');
+                    console.error('Tracking error:', error);
+                    showError('Network error. Please check your connection and try again.');
                 } finally {
                     btn.disabled = false;
                     btn.innerHTML = originalText;
-                    if (document.getElementById('g-recaptcha-response').value) {
+                    const recaptchaToken = document.getElementById('g-recaptcha-response').value;
+                    if (recaptchaToken) {
                         btn.disabled = false;
                     }
                 }
             });
         }
 
+        // ============================================================
+        // Helper Functions
+        // ============================================================
         function enableTrackingControls() {
             const trackingResult = document.getElementById('tracking-result');
             if (trackingResult) {
                 trackingResult.style.display = 'block';
-            }
-            const refreshBtn = document.getElementById('refreshBtn');
-            if (refreshBtn) {
-                refreshBtn.disabled = false;
-            }
-            const connectionStatus = document.getElementById('connectionStatus');
-            if (connectionStatus) {
-                connectionStatus.textContent = 'Connected';
-            }
-            const connectionDot = document.getElementById('connectionDot');
-            if (connectionDot) {
-                connectionDot.classList.add('connected');
-                connectionDot.classList.remove('disconnected');
+                trackingResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }
         }
 
@@ -850,7 +996,7 @@
             const errorEl = document.getElementById('error-message');
             if (!errorEl) return;
             errorEl.textContent = message;
-            errorEl.style.display = 'block';
+            errorEl.classList.add('show');
             const trackingResult = document.getElementById('tracking-result');
             if (trackingResult) {
                 trackingResult.style.display = 'none';
@@ -858,18 +1004,30 @@
             showToast('Error: ' + message, 'error');
         }
 
-        // === Socket.IO (force polling to avoid websocket upgrade errors in dev) ===
-        const socket = io({ transports: ['polling'] });
+        // ============================================================
+        // Socket.IO (Real-time Updates)
+        // ============================================================
+        const socket = io({ 
+            transports: ['polling', 'websocket'],
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000
+        });
 
         socket.on('connect', function() {
-            console.log('Connected to real-time tracking');
+            console.log('Connected to real-time tracking server');
+        });
+
+        socket.on('disconnect', function() {
+            console.log('Disconnected from tracking server');
         });
 
         socket.on('tracking_update', function(data) {
             console.log('Tracking update received:', data);
-            const currentTn = document.querySelector('#tracking-result .tracking-number-display');
+            const currentTn = document.querySelector('#result-content .tracking-number');
             if (currentTn && data.tracking_number === currentTn.textContent.trim()) {
                 updateTrackingDisplay(data);
+                showToast('Tracking status updated!', 'info');
             }
         });
 
@@ -877,10 +1035,9 @@
             const container = document.getElementById('result-content');
             if (!container) return;
             
-            // Update status badge
-            const statusBadge = container.querySelector('.status-badge');
-            if (statusBadge) {
-                const colors = {
+            const statusEl = container.querySelector('.shipment-status');
+            if (statusEl && data.status) {
+                const statusColors = {
                     'Delivered': 'bg-green-100 text-green-800',
                     'In_Transit': 'bg-blue-100 text-blue-800',
                     'Out_for_Delivery': 'bg-purple-100 text-purple-800',
@@ -888,11 +1045,10 @@
                     'Exception': 'bg-red-100 text-red-800',
                     'Pending': 'bg-gray-100 text-gray-800'
                 };
-                statusBadge.className = `status-badge ${colors[data.status] || 'bg-gray-100 text-gray-800'}`;
-                statusBadge.textContent = data.status || 'Unknown';
+                statusEl.className = `shipment-status inline-block px-3 py-1 rounded-full text-sm font-medium ${statusColors[data.status] || 'bg-gray-100 text-gray-800'}`;
+                statusEl.textContent = data.status;
             }
             
-            // Update progress
             const progressBar = container.querySelector('.progress-bar .fill');
             if (progressBar && data.progress !== undefined) {
                 const percent = Math.round(data.progress * 100);
@@ -900,7 +1056,6 @@
                 progressBar.textContent = percent + '%';
             }
             
-            // Update checkpoints
             const checkpointsContainer = container.querySelector('.checkpoints-list');
             if (checkpointsContainer && data.checkpoints) {
                 checkpointsContainer.innerHTML = data.checkpoints.map(cp => {
@@ -910,19 +1065,20 @@
                     const event = parts.slice(2).join(' - ') || '';
                     const isDelivered = event.toLowerCase().includes('delivered');
                     return `
-                        <div class="checkpoint">
-                            <div class="dot ${isDelivered ? 'delivered' : ''}"></div>
+                        <div class="checkpoint-item flex gap-3 py-2 border-b border-gray-100 last:border-0">
+                            <div class="flex-shrink-0 mt-1">
+                                <div class="w-2 h-2 rounded-full ${isDelivered ? 'bg-green-500' : 'bg-dhl-red'}"></div>
+                            </div>
                             <div>
-                                <div class="time">${time}</div>
-                                <div class="location">${location}</div>
-                                <div class="event">${event}</div>
+                                <div class="text-xs text-gray-500">${time}</div>
+                                <div class="font-medium text-gray-700">${location}</div>
+                                <div class="text-sm text-gray-600">${event}</div>
                             </div>
                         </div>
                     `;
                 }).join('');
             }
             
-            // Update last updated
             const lastUpdated = container.querySelector('.last-updated');
             if (lastUpdated && data.last_updated) {
                 const date = new Date(data.last_updated);
@@ -930,18 +1086,45 @@
             }
         }
 
-        // === Auto-refresh reCAPTCHA ===
+        // ============================================================
+        // Retry reCAPTCHA if it doesn't load
+        // ============================================================
         {% if recaptcha_site_key %}
-        setTimeout(() => {
+        setTimeout(function() {
             const recaptchaContainer = document.getElementById('gate-recaptcha');
             if (recaptchaContainer && !recaptchaContainer.innerHTML.trim() && window.grecaptcha) {
-                grecaptcha.render(recaptchaContainer, {
-                    'sitekey': '{{ recaptcha_site_key }}',
-                    'callback': 'recaptchaGateSuccess'
-                });
+                try {
+                    grecaptcha.render(recaptchaContainer, {
+                        'sitekey': '{{ recaptcha_site_key }}',
+                        'callback': 'recaptchaGateSuccess'
+                    });
+                } catch (e) {
+                    console.warn('reCAPTCHA render retry failed:', e);
+                }
             }
-        }, 5000);
+        }, 3000);
         {% endif %}
+
+        // ============================================================
+        // Keyboard Shortcuts
+        // ============================================================
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 'Enter') {
+                const form = document.getElementById('trackForm');
+                if (form) form.dispatchEvent(new Event('submit'));
+            }
+            if (e.key === 'Escape') {
+                const menu = document.getElementById('menu-content');
+                if (menu.classList.contains('show')) {
+                    menu.classList.remove('show');
+                    document.querySelector('.menu').setAttribute('aria-expanded', 'false');
+                }
+            }
+        });
+
+        console.log('DHL Track & Trace loaded successfully');
+        console.log('Version: 2.0.1');
+        console.log('reCAPTCHA:', '{{ recaptcha_site_key }}' ? 'Enabled' : 'Disabled');
     </script>
 </body>
 </html>
