@@ -36,7 +36,7 @@ try:
         webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
         websocket_server=os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com"),
         allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        valid_statuses=os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
+        valid_statuses=os.getenv("VALID_STATUSES", "Pending,On_Hold,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
         route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
         smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
         smtp_port=int(os.getenv("SMTP_PORT", 587)),
@@ -126,7 +126,7 @@ def process_notifications():
 
         try:
             # Use non-blocking lpop instead of blpop
-            notification_data = safe_redis_operation(redis_client.lpop, "notifications_queue")
+            notification_data = safe_redis_operation(redis_client.lpop, "notifications")
             if not notification_data:
                 logger.debug("No notifications in queue, waiting...")
                 time.sleep(1)  # Avoid tight loop
@@ -150,7 +150,7 @@ def process_notifications():
                 )
                 if not success:
                     logger.warning(f"Requeueing failed email notification for {tracking_number}")
-                    safe_redis_operation(redis_client.lpush, "notifications_queue", notification_data)
+                    safe_redis_operation(redis_client.lpush, "notifications", notification_data)
 
             elif notification_type == "webhook":
                 checkpoints = data.get('checkpoints', [])
@@ -165,7 +165,7 @@ def process_notifications():
                 )
                 if not success:
                     logger.warning(f"Requeueing failed webhook notification for {tracking_number}")
-                    safe_redis_operation(redis_client.lpush, "notifications_queue", notification_data)
+                    safe_redis_operation(redis_client.lpush, "notifications", notification_data)
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid notification format: {e}")
