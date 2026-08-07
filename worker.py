@@ -1,8 +1,16 @@
 import os
-from dotenv import load_dotenv
 import json
 import time
 import logging
+
+# patch eventlet before importing Flask/Werkzeug or networking modules
+try:
+    import eventlet
+    eventlet.monkey_patch()
+except Exception:
+    eventlet = None
+
+from dotenv import load_dotenv
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
