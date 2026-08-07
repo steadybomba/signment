@@ -23,6 +23,10 @@ from utils import BotConfig, safe_redis_operation, get_redis_client
 load_dotenv()
 
 # Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger('worker')
 console = Console()
 
@@ -64,6 +68,10 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 def send_email(tracking_number: str, status: str, checkpoints: str, delivery_location: str, recipient_email: str) -> bool:
     """Send an email notification using HTML template."""
     try:
+        if not recipient_email:
+            logger.warning(f"No recipient email for {tracking_number}")
+            return False
+
         # Prepare checkpoints as a list for template
         checkpoints_list = checkpoints.split(';') if checkpoints else []
         
@@ -77,22 +85,50 @@ def send_email(tracking_number: str, status: str, checkpoints: str, delivery_loc
         
         # Create MIME message
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"Shipment Update: {tracking_number}"
+        msg['Subject'] = f"DHL Shipment Update: {tracking_number}"
         msg['From'] = config.smtp_from
         msg['To'] = recipient_email
+        
+        # Add plain text fallback
+        plain_text = f"""
+DHL Shipment Update
+
+Tracking Number: {tracking_number}
+Status: {status}
+Destination: {delivery_location}
+
+Recent Updates:
+{chr(10).join(['- ' + c for c in checkpoints_list[-3:]]) if checkpoints_list else 'No updates yet'}
+
+Track online: {config.websocket_server}/track/{tracking_number}
+"""
+        plain_part = MIMEText(plain_text, 'plain')
+        msg.attach(plain_part)
         
         # Attach HTML content
         html_part = MIMEText(html_content, 'html')
         msg.attach(html_part)
         
-        # Send email
-        with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=5) as server:
-            server.starttls()
-            server.login(config.smtp_user, config.smtp_pass)
-            server.send_message(msg)
-        logger.info(f"Sent HTML email notification for {tracking_number} to {recipient_email}")
-        console.print(f"[info]Sent HTML email notification for {tracking_number} to {recipient_email}[/info]")
-        return True
+        # Send email with retry
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=10) as server:
+                    server.starttls()
+                    server.login(config.smtp_user, config.smtp_pass)
+                    server.send_message(msg)
+                logger.info(f"Sent HTML email notification for {tracking_number} to {recipient_email}")
+                console.print(f"[info]Sent HTML email notification for {tracking_number} to {recipient_email}[/info]")
+                return True
+            except smtplib.SMTPServerDisconnected:
+                logger.warning(f"SMTP connection lost, retrying... ({attempt + 1}/{max_retries})")
+                time.sleep(2 ** attempt)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)
+        
+        return False
     except smtplib.SMTPException as e:
         logger.error(f"Failed to send HTML email notification for {tracking_number}: {e}")
         console.print(Panel(f"[error]Failed to send HTML email notification for {tracking_number}: {e}[/error]", title="Email Error", border_style="red"))
@@ -105,18 +141,34 @@ def send_email(tracking_number: str, status: str, checkpoints: str, delivery_loc
 def send_webhook(tracking_number: str, status: str, checkpoints: list, delivery_location: str, webhook_url: str) -> bool:
     """Send a webhook notification."""
     try:
+        if not webhook_url:
+            logger.warning(f"No webhook URL for {tracking_number}")
+            return False
+
         payload = {
             "tracking_number": tracking_number,
             "status": status,
-            "checkpoints": checkpoints,
+            "checkpoints": checkpoints if isinstance(checkpoints, list) else [],
             "delivery_location": delivery_location,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }
-        response = requests.post(webhook_url, json=payload, timeout=5)
-        response.raise_for_status()
-        logger.info(f"Sent webhook notification for {tracking_number} to {webhook_url}")
-        console.print(f"[info]Sent webhook notification for {tracking_number} to {webhook_url}[/info]")
-        return True
+        
+        # Send with timeout and retry
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(webhook_url, json=payload, timeout=5)
+                response.raise_for_status()
+                logger.info(f"Sent webhook notification for {tracking_number} to {webhook_url}")
+                console.print(f"[info]Sent webhook notification for {tracking_number} to {webhook_url}[/info]")
+                return True
+            except requests.RequestException as e:
+                if attempt == max_retries - 1:
+                    raise
+                logger.warning(f"Webhook attempt {attempt + 1} failed: {e}")
+                time.sleep(2 ** attempt)
+        
+        return False
     except requests.RequestException as e:
         logger.error(f"Failed to send webhook notification for {tracking_number}: {e}")
         console.print(Panel(f"[error]Failed to send webhook notification for {tracking_number}: {e}[/error]", title="Webhook Error", border_style="red"))
@@ -124,19 +176,29 @@ def send_webhook(tracking_number: str, status: str, checkpoints: list, delivery_
 
 def process_notifications():
     """Process notifications from the Redis queue."""
+    consecutive_errors = 0
+    max_consecutive_errors = 10
+    
     while True:
         redis_client = get_redis_client()
         if not redis_client:
-            logger.warning("Redis client unavailable, retrying in 5 seconds")
-            console.print(Panel("[warning]Redis client unavailable, retrying...[/warning]", title="Worker Warning", border_style="yellow"))
-            time.sleep(5)
+            consecutive_errors += 1
+            logger.warning(f"Redis client unavailable, retrying in 5 seconds (error {consecutive_errors})")
+            console.print(Panel(f"[warning]Redis client unavailable, retrying... ({consecutive_errors})[/warning]", title="Worker Warning", border_style="yellow"))
+            if consecutive_errors >= max_consecutive_errors:
+                logger.error("Max consecutive Redis errors reached, waiting longer...")
+                time.sleep(30)
+            else:
+                time.sleep(5)
             continue
+        
+        # Reset error counter on successful connection
+        consecutive_errors = 0
 
         try:
             # Use non-blocking lpop instead of blpop
             notification_data = safe_redis_operation(redis_client.lpop, "notifications")
             if not notification_data:
-                logger.debug("No notifications in queue, waiting...")
                 time.sleep(1)  # Avoid tight loop
                 continue
 
@@ -183,9 +245,11 @@ def process_notifications():
             console.print(Panel(f"[error]Unexpected error processing notification: {e}[/error]", title="Worker Error", border_style="red"))
             time.sleep(5)  # Prevent tight loop on persistent errors
 
-if __name__ == "__main__":
+def start_worker():
+    """Start the worker process."""
     logger.info("Starting notification worker")
     console.print("[info]Starting notification worker[/info]")
+    
     try:
         process_notifications()
     except KeyboardInterrupt:
@@ -194,4 +258,7 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Worker crashed: {e}")
         console.print(Panel(f"[critical]Worker crashed: {e}[/critical]", title="Worker Error", border_style="red"))
-        raise               
+        raise
+
+if __name__ == "__main__":
+    start_worker()
