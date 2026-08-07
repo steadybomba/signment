@@ -97,6 +97,8 @@ config = BotConfig(
 # Redis Client
 # ============================================================
 redis_client = None
+
+# Email throttle caches - declared ONCE here
 email_throttle_cache = {}
 email_digest_cache = {}
 
@@ -579,7 +581,26 @@ def enqueue_notification(payload: dict):
         pass
 
 # ============================================================
-# Email Cache Helpers
+# Exports
 # ============================================================
-email_throttle_cache = {}
-email_digest_cache = {}
+__all__ = [
+    'console', 'logger',
+    'RATE_LIMIT_WINDOW', 'RATE_LIMIT_MAX',
+    'BotConfig', 'config',
+    'redis_client', 'get_redis_client', 'safe_redis_operation',
+    'r_ping', 'r_get', 'r_set', 'r_lpop', 'r_lpush', 'r_ltrim',
+    'r_sadd', 'r_srem', 'r_smembers', 'r_scan_iter', 'r_keys',
+    'r_hget', 'r_hset', 'r_hgetall', 'r_hlen', 'r_exists', 'r_llen',
+    'sanitize_tracking_number', 'validate_email', 'validate_location', 'validate_webhook_url',
+    'get_bot', 'is_admin',
+    'generate_unique_id',
+    'cache_route_templates', 'get_cached_route_templates',
+    'get_shipment_list', 'get_shipment_details', 'save_shipment', 'update_shipment',
+    'invalidate_cache', 'export_shipments', 'search_shipments', 'get_recent_logs',
+    'send_dynamic_menu', 'show_shipment_menu',
+    'spawn_simulation',
+    'enqueue_notification',
+    'add_socket_event', 'recent_socket_events',
+    'add_client_error', 'recent_client_errors',
+    'email_throttle_cache', 'email_digest_cache'
+]
