@@ -1795,12 +1795,17 @@ def telegram_webhook():
 
 @app.route('/health')
 def health_check():
+    """Health check endpoint - SMTP failures are non-critical."""
     status = {'status': 'healthy', 'database': 'ok', 'redis': 'ok', 'smtp': 'ok'}
+    
+    # Check database - CRITICAL
     try:
         db.session.execute(text('SELECT 1'))
     except Exception as e:
         status['status'] = status['database'] = 'error'
         flask_logger.exception("Health check database failed: %s", e)
+    
+    # Check Redis - CRITICAL
     try:
         if redis_client:
             redis_client.ping()
@@ -1809,14 +1814,23 @@ def health_check():
     except Exception as e:
         status['redis'] = 'error'
         flask_logger.exception("Health check redis failed: %s", e)
+    
+    # Check SMTP - NON-CRITICAL (just warn, don't fail)
     try:
-        with smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT'], timeout=5) as s:
-            s.starttls()
-            s.login(app.config['SMTP_USER'], app.config['SMTP_PASS'])
+        if app.config.get('SMTP_HOST') and app.config.get('SMTP_USER') and app.config.get('SMTP_PASS'):
+            with smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT'], timeout=5) as s:
+                s.starttls()
+                s.login(app.config['SMTP_USER'], app.config['SMTP_PASS'])
+        else:
+            status['smtp'] = 'unconfigured'
+            flask_logger.warning("SMTP not configured")
     except Exception as e:
-        status['smtp'] = 'error'
-        flask_logger.exception("Health check smtp failed: %s", e)
-    return jsonify(status), 200 if status['status'] == 'healthy' else 500
+        status['smtp'] = 'unavailable'  # Not 'error' - just unavailable
+        flask_logger.warning("Health check smtp unavailable: %s", e)
+    
+    # Only return 500 if critical services are down
+    critical_ok = status['database'] == 'ok' and status['redis'] != 'error'
+    return jsonify(status), 200 if critical_ok else 500
 
 @app.route('/debug')
 def debug_info():
@@ -1857,14 +1871,18 @@ def debug_info():
         else:
             status['smtp'] = 'unconfigured'
     except Exception as e:
-        status['smtp'] = 'error'
-        flask_logger.exception("Debug smtp check failed: %s", e)
+        status['smtp'] = 'unavailable'  # Not 'error'
+        flask_logger.warning("Debug smtp unavailable: %s", e)
     try:
-        webhook_info = bot.get_webhook_info()
-        status['bot'] = {
-            'class': bot.__class__.__name__,
-            'webhook_url': getattr(webhook_info, 'url', None)
-        }
+        bot = get_bot()
+        if bot:
+            webhook_info = bot.get_webhook_info()
+            status['bot'] = {
+                'class': bot.__class__.__name__,
+                'webhook_url': getattr(webhook_info, 'url', None)
+            }
+        else:
+            status['bot'] = 'disabled'
     except Exception as e:
         status['bot'] = 'error'
         flask_logger.exception("Debug bot webhook info failed: %s", e)
