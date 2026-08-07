@@ -7,6 +7,12 @@
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
+        :root {
+            --dhl-red: #D40511;
+            --dhl-yellow: #FFCC00;
+            --dhl-dark: #1a1a1a;
+        }
+        
         html {
             box-sizing: border-box;
         }
@@ -14,7 +20,7 @@
             box-sizing: inherit;
         }
         body {
-            font-family: 'Segoe UI', Arial, sans-serif;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
             margin: 0;
             padding: 0;
             line-height: 1.6;
@@ -26,7 +32,7 @@
         
         /* === HEADER === */
         .header {
-            background: linear-gradient(to right, #ffcc00, #fff);
+            background: linear-gradient(to right, var(--dhl-yellow), #fff);
             padding: 10px 20px;
             display: flex;
             justify-content: space-between;
@@ -39,20 +45,20 @@
         .header img {
             height: 40px;
             max-width: 100%;
+            object-fit: contain;
         }
         .menu {
             border: none;
             background: transparent;
             color: inherit;
-        }
-        .header .menu {
             font-size: 24px;
             cursor: pointer;
             padding: 10px;
             border-radius: 50%;
             transition: background 0.3s;
+            line-height: 1;
         }
-        .header .menu:hover {
+        .menu:hover {
             background: rgba(0,0,0,0.05);
         }
         .menu-content {
@@ -68,6 +74,9 @@
             min-width: 160px;
             z-index: 1000;
         }
+        .menu-content.show {
+            display: block;
+        }
         .menu-content a {
             display: block;
             padding: 10px 16px;
@@ -78,15 +87,15 @@
         }
         .menu-content a:hover {
             background-color: #f5f5f5;
-            color: #d32f2f;
+            color: var(--dhl-red);
         }
         
         /* === TITLE === */
         .title {
             text-align: center;
-            color: #d32f2f;
-            font-size: 2.2em;
-            margin: 25px 0 10px;
+            color: var(--dhl-red);
+            font-size: clamp(1.8rem, 3.5vw, 2.5rem);
+            margin: 25px 0 8px;
             font-weight: 700;
             letter-spacing: -0.5px;
         }
@@ -134,19 +143,19 @@
         }
         .leaflet-control-custom:hover:not(:disabled) {
             background: #f0f0f0;
-            border-color: #d32f2f;
+            border-color: var(--dhl-red);
         }
         .leaflet-control-custom:disabled {
             opacity: 0.5;
             cursor: not-allowed;
         }
         .leaflet-control-custom.active {
-            background: #d32f2f;
+            background: var(--dhl-red);
             color: white;
-            border-color: #d32f2f;
+            border-color: var(--dhl-red);
         }
         .leaflet-control-custom.active:hover {
-            background: #b71c1c;
+            background: #b0040e;
         }
         
         /* === DETAILS CARD === */
@@ -163,7 +172,7 @@
         .tracking-number-display {
             font-family: 'Courier New', monospace;
             font-weight: 700;
-            color: #d32f2f;
+            color: var(--dhl-red);
             font-size: 1.1rem;
             background: #fef2f2;
             padding: 4px 14px;
@@ -234,7 +243,7 @@
         .progress-bar .fill {
             width: 0%;
             height: 100%;
-            background: linear-gradient(90deg, #d32f2f, #ef4444);
+            background: linear-gradient(90deg, var(--dhl-red), #ef4444);
             border-radius: 4px;
             transition: width 1s ease;
         }
@@ -252,7 +261,7 @@
             line-height: 1.6;
         }
         .error-message a {
-            color: #d32f2f;
+            color: var(--dhl-red);
             text-decoration: underline;
             font-weight: 500;
         }
@@ -273,7 +282,7 @@
             width: 10px;
             height: 10px;
             border-radius: 50%;
-            background: #d32f2f;
+            background: var(--dhl-red);
             margin-top: 5px;
             flex-shrink: 0;
         }
@@ -290,7 +299,7 @@
         }
         .checkpoint .location {
             font-weight: 500;
-            color: #1a1a1a;
+            color: var(--dhl-dark);
         }
         .checkpoint .event {
             color: #666;
@@ -328,55 +337,11 @@
             font-weight: 500;
         }
 
-        .history-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin: 20px 0 8px;
-        }
-        .history-header h2 {
-            font-size: 1.2rem;
-            margin: 0;
-            color: #111827;
-        }
-        .history-list {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-        }
-        .history-item {
-            padding: 12px 16px;
-            margin-bottom: 10px;
-            border-radius: 14px;
-            background: #fafafa;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.04);
-        }
-        .history-item .event-name {
-            font-size: 1rem;
-            font-weight: 600;
-            color: #111827;
-        }
-        .history-item .event-time {
-            font-size: 0.85rem;
-            color: #6b7280;
-            margin-top: 4px;
-        }
-        .history-item .event-location {
-            margin-top: 8px;
-            color: #4b5563;
-            font-size: 0.9rem;
-        }
-        .empty-history {
-            color: #6b7280;
-            text-align: center;
-            margin: 16px 0;
-        }
-
         .back-button {
             display: inline-block;
             margin-top: 16px;
             padding: 10px 24px;
-            background: #d32f2f;
+            background: var(--dhl-red);
             color: white;
             border-radius: 8px;
             text-decoration: none;
@@ -384,12 +349,12 @@
             transition: background 0.3s ease;
         }
         .back-button:hover {
-            background: #b71c1c;
+            background: #b0040e;
         }
 
         .refresh-btn {
             padding: 6px 16px;
-            background: #d32f2f;
+            background: var(--dhl-red);
             color: white;
             border: none;
             border-radius: 6px;
@@ -399,7 +364,7 @@
             transition: all 0.3s ease;
         }
         .refresh-btn:hover:not(:disabled) {
-            background: #b71c1c;
+            background: #b0040e;
             transform: scale(1.02);
         }
         .refresh-btn:disabled {
@@ -413,32 +378,37 @@
         }
 
         /* === TOAST === */
-        .toast {
+        .toast-container {
             position: fixed;
-            bottom: 20px;
-            right: 20px;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            max-width: 400px;
+        }
+        .toast {
             background: #333;
             color: white;
             padding: 14px 24px;
             border-radius: 8px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-            z-index: 9999;
             transform: translateY(100px);
             opacity: 0;
             transition: all 0.4s ease;
             font-size: 0.95rem;
+            border-left: 4px solid transparent;
+            margin-top: 8px;
         }
         .toast.show {
             transform: translateY(0);
             opacity: 1;
         }
-        .toast.success { background: #16a34a; border-left: 4px solid #14532d; }
-        .toast.error { background: #dc2626; border-left: 4px solid #7f1d1d; }
-        .toast.info { background: #2563eb; border-left: 4px solid #1e3a5f; }
+        .toast.success { background: #16a34a; border-left-color: #14532d; }
+        .toast.error { background: #dc2626; border-left-color: #7f1d1d; }
+        .toast.info { background: #2563eb; border-left-color: #1e3a5f; }
         
         /* === FOOTER === */
         .footer {
-            background: linear-gradient(to right, #ffcc00, #fff);
+            background: linear-gradient(to right, var(--dhl-yellow), #fff);
             padding: 30px 20px;
             color: #333;
             text-align: center;
@@ -459,7 +429,7 @@
             text-align: left;
         }
         .footer-section h3 {
-            color: #d32f2f;
+            color: var(--dhl-red);
             font-size: 1.05rem;
             margin-bottom: 12px;
             font-weight: 700;
@@ -472,7 +442,7 @@
             font-size: 0.92rem;
         }
         .footer-section a:hover {
-            color: #d32f2f;
+            color: var(--dhl-red);
             text-decoration: underline;
         }
         .footer .copyright {
@@ -645,6 +615,11 @@
                 font-size: 0.75rem;
                 padding: 4px 12px;
             }
+            .toast-container {
+                left: 16px;
+                right: 16px;
+                bottom: 16px;
+            }
         }
     </style>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -665,8 +640,8 @@
     <!-- === HEADER === -->
     <div class="header">
         <img src="{{ url_for('static', filename='dhl-logo.png') }}" alt="DHL Logo">
-        <button class="menu" aria-label="Toggle navigation" aria-expanded="false" type="button">≡</button>
-        <div id="menu-content" class="menu-content hidden">
+        <button class="menu" aria-label="Toggle navigation" aria-expanded="false" type="button">☰</button>
+        <div id="menu-content" class="menu-content">
             <a href="{{ url_for('index') }}">Home</a>
             <a href="#">Contact</a>
             <a href="#">Support</a>
@@ -797,8 +772,8 @@
                     <a href="{{ url_for('index') }}" class="back-button">← Back to Tracking</a>
                 </div>
 
-                <!-- Toast Notification -->
-                <div id="toast" class="toast"></div>
+                <!-- Toast Container -->
+                <div id="toast-container" class="toast-container"></div>
             </div>
         </div>
     {% endif %}
@@ -841,12 +816,19 @@
         // TOAST
         // ============================================================
         function showToast(message, type = 'success') {
-            const toast = document.getElementById('toast');
-            if (!toast) return;
-            toast.textContent = message;
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            
+            const toast = document.createElement('div');
             toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            
             setTimeout(() => toast.classList.add('show'), 10);
-            setTimeout(() => toast.classList.remove('show'), 4000);
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 400);
+            }, 4000);
         }
 
         // ============================================================
@@ -1061,7 +1043,12 @@
         // ============================================================
         // SOCKET.IO
         // ============================================================
-        const socket = io({ transports: ['polling'] });
+        const socket = io({ 
+            transports: ['polling', 'websocket'],
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000
+        });
         const refreshBtn = document.getElementById('refreshBtn');
         const refreshHint = document.getElementById('refresh-hint');
 
@@ -1194,15 +1181,18 @@
         // ============================================================
         // MENU
         // ============================================================
-        document.querySelector('.menu').addEventListener('click', function() {
+        document.querySelector('.menu').addEventListener('click', function(e) {
+            e.stopPropagation();
             const menu = document.getElementById('menu-content');
-            menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+            menu.classList.toggle('show');
+            this.setAttribute('aria-expanded', menu.classList.contains('show'));
         });
-        document.addEventListener('click', function(event) {
-            const menu = document.querySelector('.menu');
-            const menuContent = document.getElementById('menu-content');
-            if (!menu.contains(event.target) && !menuContent.contains(event.target)) {
-                menuContent.style.display = 'none';
+        document.addEventListener('click', function(e) {
+            const menu = document.getElementById('menu-content');
+            const menuBtn = document.querySelector('.menu');
+            if (!menu.contains(e.target) && e.target !== menuBtn) {
+                menu.classList.remove('show');
+                menuBtn.setAttribute('aria-expanded', 'false');
             }
         });
 
@@ -1214,6 +1204,23 @@
                 requestTracking();
             }
         }, 30000);
+
+        // ============================================================
+        // KEYBOARD SHORTCUTS
+        // ============================================================
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                const menu = document.getElementById('menu-content');
+                if (menu.classList.contains('show')) {
+                    menu.classList.remove('show');
+                    document.querySelector('.menu').setAttribute('aria-expanded', 'false');
+                }
+            }
+            if (e.key === 'r' && e.ctrlKey) {
+                e.preventDefault();
+                refreshTracking();
+            }
+        });
 
         console.log('Tracking page initialized');
     </script>
