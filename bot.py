@@ -803,33 +803,106 @@ if bot is not None:
             return False
 
     def set_webhook() -> None:
+        """Set Telegram webhook with proper error handling to prevent recursion."""
         if bot is None:
             bot_logger.warning("Bot instance unavailable: skipping webhook setup.")
             return
 
-        if not config.webhook_url or not is_valid_webhook_url(config.webhook_url):
-            bot_logger.error(f"Skipping webhook setup because WEBHOOK_URL is invalid: {config.webhook_url}")
+        # Get webhook URL from config or environment
+        webhook_url = config.webhook_url or os.getenv('WEBHOOK_URL')
+        
+        if not webhook_url:
+            bot_logger.warning("WEBHOOK_URL not configured. Skipping webhook setup.")
+            return
+        
+        # Validate URL
+        if not is_valid_webhook_url(webhook_url):
+            bot_logger.error(f"Invalid webhook URL: {webhook_url}")
             return
 
-        webhook_host = urlparse(config.webhook_url).hostname
-        if not is_hostname_resolvable(webhook_host):
-            bot_logger.error(f"Skipping webhook setup because webhook host is not resolvable: {webhook_host}")
-            return
+        # Check if hostname is resolvable
+        webhook_host = urlparse(webhook_url).hostname
+        if webhook_host and not is_hostname_resolvable(webhook_host):
+            bot_logger.warning(f"Webhook host not resolvable: {webhook_host}. Will retry later.")
+            # Don't return - we'll try anyway
 
         try:
-            bot.set_webhook(url=config.webhook_url, max_connections=5)
-            bot_logger.info(f"Webhook set: {config.webhook_url}")
+            # First, try to delete any existing webhook
+            try:
+                bot.delete_webhook()
+                bot_logger.info("Deleted existing webhook")
+            except Exception as e:
+                bot_logger.warning(f"Could not delete existing webhook: {e}")
+            
+            # Set new webhook with timeout
+            bot.set_webhook(
+                url=webhook_url,
+                max_connections=5,
+                timeout=30
+            )
+            bot_logger.info(f"Webhook set successfully: {webhook_url}")
+            
+            # Verify webhook was set (with error handling)
+            try:
+                webhook_info = bot.get_webhook_info()
+                bot_logger.info(f"Webhook verification: {webhook_info}")
+            except Exception as e:
+                bot_logger.warning(f"Could not verify webhook: {e}")
+                
         except RecursionError as e:
-            bot_logger.error(f"Webhook setup failed due to recursion error: {e}")
+            # This can happen with some TeleBot versions on Render
+            bot_logger.error(f"Webhook recursion error: {e}")
+            bot_logger.info("Falling back to polling mode...")
+            start_polling_fallback()
+            
         except Exception as e:
-            bot_logger.error(f"Webhook failed: {e}")
+            bot_logger.error(f"Webhook setup failed: {e}")
+            # Try polling as fallback
+            bot_logger.info("Attempting fallback to polling mode...")
+            start_polling_fallback()
+
+    def start_polling_fallback():
+        """Start the bot in polling mode as a fallback when webhook fails."""
+        if bot is None:
+            return
+            
+        def poll():
+            try:
+                bot_logger.info("Starting polling mode...")
+                bot.polling(none_stop=True, interval=1, timeout=30)
+            except Exception as e:
+                bot_logger.error(f"Polling failed: {e}")
+                # Retry polling after a delay
+                time.sleep(60)
+                poll()
+        
+        # Start polling in a separate thread
+        poll_thread = threading.Thread(target=poll, daemon=True)
+        poll_thread.start()
+        bot_logger.info("Polling thread started as fallback")
 
     def start_bot_service() -> None:
         """Initialize bot services with proper app context."""
-        with app.app_context():
-            cache_route_templates()
-        set_webhook()
-        notify_admins_on_startup()
+        try:
+            with app.app_context():
+                cache_route_templates()
+            bot_logger.info("Route templates cached")
+        except Exception as e:
+            bot_logger.error(f"Failed to cache route templates: {e}")
+        
+        # Set webhook with error handling - but don't let it crash the bot
+        try:
+            set_webhook()
+        except Exception as e:
+            bot_logger.error(f"Webhook setup failed: {e}")
+            # Start polling as fallback
+            start_polling_fallback()
+        
+        # Notify admins
+        try:
+            notify_admins_on_startup()
+        except Exception as e:
+            bot_logger.error(f"Failed to notify admins: {e}")
 
     def send_manual_webhook(call, tracking_number):
         shipment = get_shipment_with_context(tracking_number)
@@ -870,7 +943,7 @@ if bot is not None:
         """Main entry point for the bot."""
         try:
             start_bot_service()
-            bot_logger.info("Webhook setup completed successfully")
+            bot_logger.info("Bot service started")
             console.print("[green]✅ bot.py started — DHL + All Features Live[/green]")
             
             # Start keep-alive thread
