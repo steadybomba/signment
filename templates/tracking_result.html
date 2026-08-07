@@ -7,6 +7,12 @@
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
+        html {
+            box-sizing: border-box;
+        }
+        *, *::before, *::after {
+            box-sizing: inherit;
+        }
         body {
             font-family: 'Segoe UI', Arial, sans-serif;
             margin: 0;
@@ -15,6 +21,7 @@
             background-color: #f5f5f5;
             position: relative;
             min-height: 100vh;
+            overflow-x: hidden;
         }
         
         /* === HEADER === */
@@ -32,6 +39,11 @@
         .header img {
             height: 40px;
             max-width: 100%;
+        }
+        .menu {
+            border: none;
+            background: transparent;
+            color: inherit;
         }
         .header .menu {
             font-size: 24px;
@@ -86,8 +98,14 @@
         }
         
         /* === MAP === */
+        .tracking-result,
+        .map-container,
+        .details {
+            width: min(100%, 980px);
+            margin-left: auto;
+            margin-right: auto;
+        }
         .map-container {
-            max-width: 800px;
             margin: 0 auto 20px;
             padding: 0 15px;
             border-radius: 16px;
@@ -104,7 +122,6 @@
             background: #fff;
             padding: 28px 30px;
             border-radius: 16px;
-            max-width: 800px;
             margin: 0 auto 20px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.08);
             border: 1px solid #eee;
@@ -183,12 +200,31 @@
             overflow: hidden;
         }
         .progress-bar .fill {
+            width: 0%;
             height: 100%;
             background: linear-gradient(90deg, #d32f2f, #ef4444);
             border-radius: 4px;
             transition: width 1s ease;
         }
         
+        .error-message {
+            max-width: 760px;
+            margin: 30px auto;
+            padding: 22px;
+            border: 1px solid #f5c2c7;
+            background: #fef2f2;
+            color: #842029;
+            border-radius: 14px;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.04);
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+        .error-message a {
+            color: #d32f2f;
+            text-decoration: underline;
+            font-weight: 500;
+        }
+
         /* === CHECKPOINTS === */
         .checkpoint {
             padding: 10px 0;
@@ -258,217 +294,227 @@
         }
         .details-grid .detail-value {
             font-weight: 500;
-            color: #1a1a1a;
-            font-size: 0.95rem;
         }
-        
-        /* === REFRESH BUTTON === */
-        .refresh-btn {
-            background: #d32f2f;
-            color: white;
-            border: none;
-            padding: 6px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 500;
-            transition: all 0.3s ease;
-        }
-        .refresh-btn:hover:not(:disabled) {
-            background: #b71c1c;
-            transform: scale(1.02);
-        }
-        .refresh-btn:disabled {
-            background: #e57373;
-            cursor: not-allowed;
-            opacity: 0.7;
-        }
-        .refresh-hint {
-            display: inline-block;
-            font-size: 0.8rem;
-            color: #94a3b8;
-            margin-left: 6px;
-        }
-        
-        /* === LAST UPDATED === */
-        .last-updated {
-            font-size: 0.8rem;
-            color: #94a3b8;
-            margin-top: 12px;
-            padding-top: 10px;
-            border-top: 1px solid #f0f0f0;
-        }
-        
-        /* === BACK BUTTON === */
-        .back-button {
-            display: inline-block;
-            background: #d32f2f;
-            color: white;
-            padding: 10px 28px;
-            border-radius: 8px;
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 0.95rem;
-            transition: all 0.3s ease;
-            margin-top: 16px;
-        }
-        .back-button:hover {
-            background: #b71c1c;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(211, 47, 47, 0.3);
-        }
-        
-        /* === TOAST === */
-        .toast {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            background: #1a1a1a;
-            color: white;
-            padding: 14px 24px;
-            border-radius: 12px;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.2);
-            z-index: 9999;
-            transform: translateY(100px);
-            opacity: 0;
-            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-            font-size: 0.95rem;
-            font-weight: 500;
-        }
-        .toast.show {
-            transform: translateY(0);
-            opacity: 1;
-        }
-        .toast.success { background: #16a34a; }
-        .toast.error { background: #dc2626; }
-        .toast.info { background: #2563eb; }
-        
-        /* === ERROR MESSAGE === */
-        .error-message {
-            color: #dc2626;
-            text-align: center;
-            padding: 40px 20px;
-            font-size: 1.1rem;
-            background: #fef2f2;
-            border-radius: 12px;
-            max-width: 600px;
-            margin: 40px auto;
-            border: 1px solid #fecaca;
-        }
-        
-        /* === LEAFLET CONTROLS === */
-        .leaflet-control-custom {
-            background: #fff;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            padding: 6px 14px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-            cursor: pointer;
-            font-size: 13px;
-            color: #d32f2f;
-            text-align: center;
-            font-weight: 500;
-            transition: all 0.2s;
-        }
-        .leaflet-control-custom:hover {
-            background: #f5f5f5;
-        }
-        .leaflet-control-custom.active {
-            background: #d32f2f;
-            color: #fff;
-        }
-        .leaflet-control-custom:disabled {
-            background: #e0e0e0;
-            color: #999;
-            cursor: not-allowed;
-        }
-        
-        /* === FOOTER === */
-        .footer {
-            background: linear-gradient(to right, #ffcc00, #fff);
-            padding: 30px 20px;
-            color: #333;
-            text-align: center;
-            margin-top: 40px;
-            border-top: 1px solid #e5e5e5;
-        }
-        .footer .footer-content {
+
+        .history-header {
             display: flex;
-            justify-content: space-around;
-            flex-wrap: wrap;
-            max-width: 1200px;
-            margin: 0 auto 20px;
+            justify-content: space-between;
+            align-items: center;
+            margin: 20px 0 8px;
         }
-        .footer-section {
-            margin: 0 15px 20px;
-            flex: 1;
-            min-width: 150px;
-            text-align: left;
+        .history-header h2 {
+            font-size: 1.2rem;
+            margin: 0;
+            color: #111827;
         }
-        .footer-section h3 {
-            color: #d32f2f;
-            font-size: 1.05rem;
-            margin-bottom: 12px;
-            font-weight: 700;
+        .history-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
         }
-        .footer-section p, .footer-section a {
-            color: #333;
-            text-decoration: none;
+        .history-item {
+            padding: 12px 16px;
+            margin-bottom: 10px;
+            border-radius: 14px;
+            background: #fafafa;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+        }
+        .history-item .event-name {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #111827;
+        }
+        .history-item .event-time {
+            font-size: 0.85rem;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+        .history-item .event-location {
+            margin-top: 8px;
+            color: #4b5563;
+            font-size: 0.9rem;
+        }
+        .empty-history {
+            color: #6b7280;
+            text-align: center;
+            margin: 16px 0;
+        }
+        .error-message {
+            max-width: 760px;
+            margin: 30px auto;
+            padding: 22px;
+            border: 1px solid #f5c2c7;
+            background: #fef2f2;
+            color: #842029;
+            border-radius: 14px;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.04);
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+        .error-message .error-icon {
             display: block;
-            margin: 6px 0;
-            font-size: 0.92rem;
+            font-size: 28px;
+            margin-bottom: 8px;
         }
-        .footer-section a:hover {
+        .error-message a {
             color: #d32f2f;
             text-decoration: underline;
+            font-weight: 500;
+            display: inline-block;
+            margin-top: 12px;
         }
-        .footer .copyright {
-            font-size: 0.82rem;
-            color: #666;
-            margin-top: 15px;
-            padding-top: 10px;
-            border-top: 1px solid #ccc;
+        .menu {
+            border: none;
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+            font-size: 24px;
+            padding: 10px;
+            border-radius: 50%;
+            transition: background 0.3s;
         }
-        
-        /* === RESPONSIVE === */
+        .menu:hover {
+            background: rgba(0,0,0,0.05);
+        }
+
+        @media (max-width: 1024px) {
+            .header {
+                padding: 12px 16px;
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+            .title {
+                font-size: 1.95em;
+                margin: 20px 0 8px;
+            }
+            .title-sub {
+                font-size: 0.95rem;
+                margin-bottom: 16px;
+            }
+            .map-container,
+            .details {
+                padding: 0 12px;
+                width: min(100%, 100%);
+            }
+            #map {
+                height: 360px;
+            }
+            .details {
+                padding: 24px 22px;
+            }
+            .details-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 14px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .header {
+                justify-content: space-between;
+                align-items: center;
+                gap: 8px;
+            }
+            .title {
+                font-size: 1.7em;
+                margin: 18px 0 8px;
+            }
+            .title-sub {
+                font-size: 0.95rem;
+                margin-bottom: 14px;
+            }
+            .details,
+            .map-container {
+                border-radius: 14px;
+                padding: 0 10px;
+            }
+            .details {
+                padding: 20px 18px;
+            }
+            #map {
+                height: 320px;
+            }
+            .progress-label,
+            .history-header,
+            .checkpoint {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .checkpoint {
+                display: block;
+            }
+            .checkpoint .time {
+                min-width: auto;
+                margin-bottom: 4px;
+            }
+            .details-grid {
+                grid-template-columns: 1fr;
+            }
+            .live-indicator,
+            .connection-dot,
+            #connectionStatus,
+            #refreshBtn,
+            #refresh-hint {
+                display: block;
+                width: 100%;
+            }
+            .refresh-btn {
+                margin-top: 10px;
+            }
+            .tracking-number-display {
+                font-size: 1rem;
+            }
+            .status-badge-header {
+                width: 100%;
+                white-space: normal;
+                word-break: break-word;
+            }
+            .menu-content {
+                right: 10px;
+                left: auto;
+                width: 180px;
+            }
+        }
+
         @media (max-width: 640px) {
-            .title { font-size: 1.6em; }
-            .details { padding: 18px 16px; }
-            .map-container { padding: 0 10px; }
-            #map { height: 300px; }
-            .details-grid { grid-template-columns: 1fr; gap: 4px; }
-            .checkpoint .time { min-width: 100px; font-size: 0.75rem; }
-            .checkpoint { flex-wrap: wrap; }
-            .toast { left: 16px; right: 16px; bottom: 16px; font-size: 0.9rem; text-align: center; }
-            .refresh-btn { padding: 4px 12px; font-size: 12px; }
-            .tracking-number-display { font-size: 0.95rem; padding: 2px 10px; }
-        }
-        
-        @media (max-width: 480px) {
-            .header { padding: 8px 12px; }
-            .header img { height: 30px; }
-            .menu { font-size: 20px; padding: 6px; }
-            .menu-content { top: 50px; right: 5px; min-width: 130px; }
-            .menu-content a { font-size: 13px; padding: 8px 12px; }
-            .title { font-size: 1.4em; margin: 15px 0 5px; }
-            .details { padding: 14px; border-radius: 12px; }
-            #map { height: 250px; }
-            .details-grid .detail-value { font-size: 0.9rem; }
-            .back-button { padding: 8px 20px; font-size: 0.9rem; width: 100%; text-align: center; }
-            .footer { padding: 15px 10px; margin-top: 20px; }
-            .footer .footer-content { flex-direction: column; text-align: center; }
-            .footer-section { margin: 8px 0; min-width: 100%; text-align: center; }
-            .footer-section h3 { font-size: 1rem; }
-        }
-        
-        @media (min-width: 641px) and (max-width: 1024px) {
-            .details { max-width: 700px; }
-            #map { height: 380px; }
-            .details-grid { grid-template-columns: 1fr 1fr; }
-        }
-        
-        .menu, .back-button, .leaflet-control-custom, .refresh-btn {
-            -webkit-tap-highlight-color: transparent;
+            .header {
+                padding: 10px 12px;
+            }
+            .title {
+                font-size: 1.5em;
+            }
+            .title-sub {
+                font-size: 0.9rem;
+            }
+            #map {
+                height: 280px;
+            }
+            .details {
+                padding: 18px 16px;
+            }
+            .progress-label,
+            .history-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .checkpoint {
+                padding: 10px 0;
+            }
+            .checkpoint .time,
+            .checkpoint .location,
+            .checkpoint .event {
+                font-size: 0.88rem;
+            }
+            .footer {
+                padding: 18px 12px;
+            }
+            .footer .footer-content {
+                flex-direction: column;
+                gap: 12px;
+            }
+            .footer-section {
+                min-width: 100%;
+                text-align: left;
+            }
         }
     </style>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -489,7 +535,7 @@
     <!-- === HEADER === -->
     <div class="header">
         <img src="{{ url_for('static', filename='dhl-logo.png') }}" alt="DHL Logo">
-        <div class="menu" aria-label="Toggle navigation" aria-expanded="false">≡</div>
+        <button class="menu" aria-label="Toggle navigation" aria-expanded="false" type="button">≡</button>
         <div id="menu-content" class="menu-content hidden">
             <a href="{{ url_for('index') }}">Home</a>
             <a href="#">Contact</a>
@@ -503,19 +549,21 @@
 
     {% if error %}
         <div class="error-message">
-            <span style="font-size: 28px; display: block; margin-bottom: 8px;">📦</span>
+            <span class="error-icon">📦</span>
             {{ error }}
             <br>
-            <a href="{{ url_for('index') }}" style="color: #d32f2f; text-decoration: underline; font-weight: 500; display: inline-block; margin-top: 12px;">Try again →</a>
+            <a href="{{ url_for('index') }}">Try again →</a>
         </div>
     {% else %}
-        <!-- === MAP === -->
-        <div class="map-container">
-            <div id="map"></div>
-        </div>
+        <div class="tracking-result">
+            <div id="result-content">
+                <!-- === MAP === -->
+                <div class="map-container">
+                    <div id="map"></div>
+                </div>
 
-        <!-- === DETAILS === -->
-        <div class="details" id="details">
+                <!-- === DETAILS === -->
+                <div class="details" id="details">
             <!-- Tracking Number & Status -->
             <div class="flex items-center justify-between flex-wrap gap-3">
                 <div>
@@ -553,7 +601,7 @@
                     <span id="progress-percent">0%</span>
                 </div>
                 <div class="progress-bar">
-                    <div class="fill" id="progress-fill" style="width: 0%;"></div>
+                    <div class="fill" id="progress-fill"></div>
                 </div>
             </div>
 
@@ -566,7 +614,7 @@
                             <div class="dot {% if 'Delivered' in checkpoint or 'delivered' in checkpoint|lower %}delivered{% endif %}"></div>
                             <div>
                                 <div class="time">{{ checkpoint.split(' - ')[0] if ' - ' in checkpoint else '' }}</div>
-                                <div class="location">{{ checkpoint.split(' - ')[1] if ' - ' in checkpoint|length > 1 else '' }}</div>
+                                <div class="location">{{ checkpoint.split(' - ')[1] if (' - ' in checkpoint and checkpoint.split(' - ')|length > 1) else '' }}</div>
                                 <div class="event">{{ checkpoint.split(' - ')[2:]|join(' - ') if ' - ' in checkpoint and checkpoint.split(' - ')|length > 2 else checkpoint }}</div>
                             </div>
                         </div>
@@ -634,9 +682,9 @@
             </div>
             <div class="footer-section">
                 <h3>Follow Us</h3>
-                <a href="https://x.com/dhl" target="_blank">X (Twitter)</a>
-                <a href="https://facebook.com/dhl" target="_blank">Facebook</a>
-                <a href="https://instagram.com/dhl" target="_blank">Instagram</a>
+                <a href="https://x.com/dhl" target="_blank" rel="noopener noreferrer">X (Twitter)</a>
+                <a href="https://facebook.com/dhl" target="_blank" rel="noopener noreferrer">Facebook</a>
+                <a href="https://instagram.com/dhl" target="_blank" rel="noopener noreferrer">Instagram</a>
             </div>
             <div class="footer-section">
                 <h3>Legal</h3>
@@ -668,15 +716,20 @@
         }
 
         // === REFRESH ===
+        const trackingNumber = "{{ shipment.tracking_number if shipment else '' }}";
+
+        function requestTracking() {
+            if (!trackingNumber) return;
+            socket.emit('request_tracking', { tracking_number: trackingNumber });
+        }
+
         function refreshTracking() {
             const btn = document.getElementById('refreshBtn');
             if (!btn || btn.disabled) return;
             btn.disabled = true;
             btn.textContent = '⏳ Updating...';
             showToast('Refreshing tracking data...', 'info');
-            {% if shipment %}
-            socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
-            {% endif %}
+            requestTracking();
             setTimeout(() => {
                 btn.disabled = false;
                 btn.textContent = '↻ Refresh';
@@ -698,11 +751,20 @@
         let isAnimationEnabled = true;
 
         function sortCoordsByTimestamp(coords) {
-            return coords.slice().sort((a, b) => {
-                const aTime = a.desc.split(' - ')[0];
-                const bTime = b.desc.split(' - ')[0];
-                return new Date(aTime) - new Date(bTime);
-            });
+            return coords.map((coord, index) => ({ coord, index }))
+                .sort((a, b) => {
+                    const aTime = a.coord.desc ? a.coord.desc.split(' - ')[0] : null;
+                    const bTime = b.coord.desc ? b.coord.desc.split(' - ')[0] : null;
+                    const aDate = aTime ? new Date(aTime) : null;
+                    const bDate = bTime ? new Date(bTime) : null;
+                    if (aDate && bDate && !isNaN(aDate) && !isNaN(bDate)) {
+                        return aDate - bDate;
+                    }
+                    if (aDate && !bDate) return -1;
+                    if (!aDate && bDate) return 1;
+                    return a.index - b.index;
+                })
+                .map(entry => entry.coord);
         }
 
         function animateSegment(start, end, duration, callback) {
@@ -772,9 +834,17 @@
             document.getElementById('toggleAnimation').disabled = coords.length < 2;
             document.getElementById('resetView').disabled = false;
             const sortedCoords = sortCoordsByTimestamp(coords);
-            sortedCoords.forEach(coord => {
-                L.marker([coord.lat, coord.lon]).addTo(map).bindPopup(coord.desc);
-            });
+            const hasDescriptions = sortedCoords.some(coord => coord.desc);
+            if (hasDescriptions) {
+                sortedCoords.forEach(coord => {
+                    if (coord.desc) {
+                        L.marker([coord.lat, coord.lon]).addTo(map).bindPopup(coord.desc);
+                    }
+                });
+            } else if (sortedCoords.length >= 2) {
+                L.marker([sortedCoords[0].lat, sortedCoords[0].lon]).addTo(map).bindPopup('Route start');
+                L.marker([sortedCoords[sortedCoords.length - 1].lat, sortedCoords[sortedCoords.length - 1].lon]).addTo(map).bindPopup('Route end');
+            }
             routeBounds = L.latLngBounds(sortedCoords.map(c => [c.lat, c.lon]));
             const latlngs = sortedCoords.map(c => [c.lat, c.lon]);
             if (isAnimationEnabled && sortedCoords.length >= 2) {
@@ -793,7 +863,18 @@
         // === MAP CONTROLS ===
         const initialCoords = {{ coords | default([]) | tojson }};
         const initialRouteCoords = {{ route_coords | default([]) | tojson }};
+        const initialProgress = {{ progress | default(0) }};
         const hasInitialRoute = (initialRouteCoords && initialRouteCoords.length) || (initialCoords && initialCoords.length);
+
+        function renderInitialProgress() {
+            const progressPercent = document.getElementById('progress-percent');
+            const progressFill = document.getElementById('progress-fill');
+            if (progressPercent && progressFill) {
+                const percent = Math.round(initialProgress * 100);
+                progressPercent.textContent = `${percent}%`;
+                progressFill.style.width = `${percent}%`;
+            }
+        }
 
         const ToggleAnimationControl = L.Control.extend({
             options: { position: 'topright' },
@@ -837,8 +918,8 @@
             document.getElementById('resetView').disabled = true;
         }
 
-        // === SOCKET.IO ===
-        const socket = io();
+        // === SOCKET.IO (force polling transport for dev) ===
+        const socket = io({ transports: ['polling'] });
         const refreshBtn = document.getElementById('refreshBtn');
         const refreshHint = document.getElementById('refresh-hint');
 
@@ -863,13 +944,12 @@
             updateConnectionStatus(socket.connected);
         }
         initConnectionStatus();
+        renderInitialProgress();
 
         socket.on('connect', () => {
             console.log('🔗 Socket.IO connected');
             updateConnectionStatus(true);
-            {% if shipment %}
-            socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
-            {% endif %}
+            requestTracking();
             showToast('✅ Connected to live tracking', 'success');
         });
 
@@ -985,9 +1065,7 @@
         // === AUTO-REFRESH ===
         setInterval(() => {
             if (socket.connected) {
-                {% if shipment %}
-                socket.emit('request_tracking', { tracking_number: '{{ shipment.tracking_number | default("") }}' });
-                {% endif %}
+                requestTracking();
             }
         }, 30000);
 
