@@ -349,6 +349,122 @@ def get_cached_route_templates() -> Dict[str, Any]:
     return _route_templates_cache or config.route_templates
 
 # ============================================================
+# DHL Configuration
+# ============================================================
+DHL_CONFIG = {
+    "name": "DHL Express",
+    "primary_color": "#D40511",
+    "secondary_color": "#FFCC00",
+    "logo_url": "https://www.dhl.com/etc.clientlibs/dhl/clientlibs/clientlib-site/resources/images/dhl-logo.svg",
+    "tracking_prefix": "JD",
+    "tracking_format": r"^JD\d{10}$",
+}
+
+# ============================================================
+# Distance Estimation Helper
+# ============================================================
+def estimate_distance(origin: str, destination: str) -> float:
+    """Estimate distance between two locations in kilometers.
+    Uses a simple city-based lookup with fallback.
+    """
+    if not origin or not destination:
+        return 1000
+    
+    # City coordinates database
+    city_coords = {
+        "lagos": (6.5244, 3.3792),
+        "abuja": (9.0579, 7.4951),
+        "port harcourt": (4.8156, 7.0498),
+        "kano": (12.0001, 8.5167),
+        "ibadan": (7.3775, 3.9470),
+        "enugu": (6.4584, 7.5170),
+        "new york": (40.7128, -74.0060),
+        "los angeles": (34.0522, -118.2437),
+        "london": (51.5074, -0.1278),
+        "dubai": (25.2048, 55.2708),
+        "tokyo": (35.6762, 139.6503),
+        "sydney": (-33.8688, 151.2093),
+        "paris": (48.8566, 2.3522),
+        "berlin": (52.5200, 13.4050),
+        "mumbai": (19.0760, 72.8777),
+        "singapore": (1.3521, 103.8198),
+        "hong kong": (22.3193, 114.1694),
+        "sao paulo": (-23.5505, -46.6333),
+        "johannesburg": (-26.2041, 28.0473),
+        "cairo": (30.0444, 31.2357),
+        "moscow": (55.7558, 37.6173),
+        "toronto": (43.6532, -79.3832),
+        "mexico city": (19.4326, -99.1332),
+        "seoul": (37.5665, 126.9780),
+        "bangkok": (13.7563, 100.5018),
+        "jakarta": (-6.2088, 106.8456),
+        "delhi": (28.7041, 77.1025),
+        "beijing": (39.9042, 116.4074),
+        "shanghai": (31.2304, 121.4737),
+        "istanbul": (41.0082, 28.9784),
+        "karachi": (24.8607, 67.0011),
+        "buenos aires": (-34.6037, -58.3816),
+        "rio de janeiro": (-22.9068, -43.1729),
+        "lima": (-12.0464, -77.0428),
+        "bogota": (4.7110, -74.0721),
+        "santiago": (-33.4489, -70.6693),
+        "cape town": (-33.9249, 18.4241),
+        "nairobi": (-1.2921, 36.8219),
+        "accra": (5.6037, -0.1870),
+        "addis ababa": (8.9806, 38.7578),
+        "kuala lumpur": (3.1390, 101.6869),
+        "hanoi": (21.0285, 105.8342),
+        "manila": (14.5995, 120.9842),
+        "taipei": (25.0330, 121.5654),
+        "riyadh": (24.7136, 46.6753),
+        "tel aviv": (32.0853, 34.7818),
+        "athens": (37.9838, 23.7275),
+        "lisbon": (38.7223, -9.1393),
+        "stockholm": (59.3293, 18.0686),
+        "oslo": (59.9139, 10.7522),
+        "helsinki": (60.1699, 24.9384),
+        "warsaw": (52.2297, 21.0122),
+        "prague": (50.0755, 14.4378),
+        "budapest": (47.4979, 19.0402),
+        "vienna": (48.2082, 16.3738),
+        "zurich": (47.3769, 8.5417),
+        "amsterdam": (52.3676, 4.9041),
+        "brussels": (50.8476, 4.3572),
+        "dublin": (53.3498, -6.2603),
+        "madrid": (40.4168, -3.7038),
+        "rome": (41.9028, 12.4964),
+        "milan": (45.4642, 9.1900),
+        "barcelona": (41.3851, 2.1734),
+        "cincinnati": (39.1031, -84.5120),
+        "miami": (25.7617, -80.1918),
+        "frankfurt": (50.1109, 8.6821),
+        "leipzig": (51.3397, 12.3731),
+    }
+    
+    def find_city(location: str):
+        location_lower = location.lower()
+        for city, _ in city_coords.items():
+            if city in location_lower or location_lower in city:
+                return city
+        return None
+    
+    origin_city = find_city(origin)
+    dest_city = find_city(destination)
+    
+    if origin_city and dest_city:
+        from math import radians, sin, cos, sqrt, atan2
+        lat1, lon1 = city_coords[origin_city]
+        lat2, lon2 = city_coords[dest_city]
+        
+        rlat1, rlon1, rlat2, rlon2 = map(radians, (lat1, lon1, lat2, lon2))
+        dlon = rlon2 - rlon1
+        dlat = rlat2 - rlat1
+        a = sin(dlat/2)**2 + cos(rlat1) * cos(rlat2) * sin(dlon/2)**2
+        return round(6371 * 2 * atan2(sqrt(a), sqrt(1-a)), 1)
+    
+    return 1000  # Default fallback
+
+# ============================================================
 # Database Helpers (Lazy imports to avoid circular)
 # ============================================================
 def get_shipment_list(page=1, per_page=10):
@@ -581,6 +697,49 @@ def enqueue_notification(payload: dict):
         pass
 
 # ============================================================
+# Keep Alive Helper
+# ============================================================
+def keep_alive():
+    """Start a background thread for periodic health checks.
+    Returns the started thread.
+    """
+    import threading
+    import time
+    
+    def _keep_alive_loop():
+        while True:
+            try:
+                # Check Redis connection if available
+                if redis_client:
+                    try:
+                        redis_client.ping()
+                        logger.debug("Keep-alive: Redis ping successful")
+                    except Exception as e:
+                        logger.warning(f"Keep-alive: Redis ping failed: {e}")
+                
+                # Check database connection
+                try:
+                    from app import app, db
+                    from sqlalchemy import text
+                    with app.app_context():
+                        db.session.execute(text('SELECT 1'))
+                        logger.debug("Keep-alive: Database check successful")
+                except Exception as e:
+                    logger.warning(f"Keep-alive: Database check failed: {e}")
+                
+            except Exception as e:
+                logger.error(f"Keep-alive: Health check error: {e}")
+            
+            # Sleep for 5 minutes between checks
+            time.sleep(300)
+    
+    # Start the keep-alive thread as a daemon
+    thread = threading.Thread(target=_keep_alive_loop, daemon=True)
+    thread.start()
+    logger.info("Keep-alive thread started")
+    return thread
+
+# ============================================================
 # Exports
 # ============================================================
 __all__ = [
@@ -595,11 +754,13 @@ __all__ = [
     'get_bot', 'is_admin',
     'generate_unique_id',
     'cache_route_templates', 'get_cached_route_templates',
+    'DHL_CONFIG', 'estimate_distance',
     'get_shipment_list', 'get_shipment_details', 'save_shipment', 'update_shipment',
     'invalidate_cache', 'export_shipments', 'search_shipments', 'get_recent_logs',
     'send_dynamic_menu', 'show_shipment_menu',
     'spawn_simulation',
     'enqueue_notification',
+    'keep_alive',
     'add_socket_event', 'recent_socket_events',
     'add_client_error', 'recent_client_errors',
     'email_throttle_cache', 'email_digest_cache'
