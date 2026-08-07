@@ -31,8 +31,9 @@ console = Console()
 # Initialize bot - MUST be done before decorators
 bot = get_bot()
 if bot is None:
-    bot_logger.error("Failed to initialize bot!")
-    raise RuntimeError("Bot initialization failed")
+    bot_logger.warning("Telegram bot token not configured; bot disabled. Set TELEGRAM_BOT_TOKEN to enable.")
+    # keep module importable for local dev; some handlers will be no-ops without a bot
+    bot = None
 
 # === RATE LIMIT DECORATOR ===
 def rate_limit(func):
@@ -769,7 +770,8 @@ def notify_admins_on_startup() -> None:
     welcome_text = get_startup_welcome_text()
     for admin_id in config.allowed_admins:
         try:
-            bot.send_message(admin_id, welcome_text, parse_mode='Markdown', disable_web_page_preview=True)
+            # send as plain text to avoid Markdown parsing errors in arbitrary content
+            bot.send_message(admin_id, welcome_text, disable_web_page_preview=True)
             bot_logger.info(f"Sent startup welcome to admin {admin_id}")
         except Exception as e:
             bot_logger.error(f"Failed to send startup welcome to {admin_id}: {e}")
