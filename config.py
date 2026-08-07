@@ -68,6 +68,12 @@ class Config(object):
             'probabilities': [0.7, 0.3],
             'events': {'Delayed due to weather', 'Delayed at customs'}
         },
+            'On_Hold': {
+                'next': ['In_Transit', 'Delayed'],
+                'delay': (3600, 86400),
+                'probabilities': [0.5, 0.5],
+                'events': {'Held for customs clearance', 'Awaiting clearance documentation'}
+            },
         'Delivered': {
             'next': [],
             'delay': (0, 0),
@@ -79,7 +85,7 @@ class Config(object):
             'events': {}
         }
     }
-    VALID_STATUSES = {'Pending', 'In_Transit', 'Out_for_Delivery', 'Delivered', 'Delayed', 'Returned'}
+    VALID_STATUSES = {'Pending', 'On_Hold', 'In_Transit', 'Out_for_Delivery', 'Delivered', 'Delayed', 'Returned'}
 
     # Validate required environment variables
     required_vars = ['SECRET_KEY', 'SQLALCHEMY_DATABASE_URI', 'SMTP_USER', 'SMTP_PASS', 'TELEGRAM_BOT_TOKEN', 'REDIS_TOKEN']
