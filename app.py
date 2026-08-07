@@ -1675,6 +1675,12 @@ def track():
         else:
             return _render_tracking_response(render_template('tracking_result.html', error='Invalid form submission', coords=[]), 400)
     
+    # reCAPTCHA REMOVED - Already on main page
+    # recaptcha = request.form.get('g-recaptcha-response')
+    # if app.config['RECAPTCHA_SITE_KEY'] and 'your-site-key' not in app.config['RECAPTCHA_SITE_KEY']:
+    #     if not verify_recaptcha(recaptcha):
+    #         return _render_tracking_response(render_template('tracking_result.html', error='reCAPTCHA failed', coords=[]), 400)
+    
     tn = sanitize_tracking_number(form.tracking_number.data)
     email = form.email.data
     if not tn:
