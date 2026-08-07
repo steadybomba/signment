@@ -51,7 +51,7 @@ from io import StringIO
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from math import radians, cos, sin, sqrt, atan2
+from math import radians, cos, sin, sqrt, atan2, ceil
 
 # Third-party imports
 import requests
@@ -188,7 +188,6 @@ def rget(field, tn, default=None):
     global redis_client
     try:
         if not redis_client:
-            # fallback to in-memory simulation state
             return in_memory_sim.get(tn, {}).get(field, default)
         val = redis_client.hget(field, tn)
         if val is None:
@@ -205,7 +204,6 @@ def rset(field, tn, value):
     """Safe redis.hset wrapper that disables redis_client on failure."""
     global redis_client
     if not redis_client:
-        # fallback to in-memory simulation state
         try:
             in_memory_sim.setdefault(tn, {})[field] = value
         except Exception:
@@ -278,7 +276,6 @@ def densify_route_coords(route_coords, max_segment_km=1.0):
     """
     if not route_coords or len(route_coords) < 2:
         return route_coords or []
-    # normalize to pairs
     pairs = []
     for p in route_coords:
         if isinstance(p, dict):
@@ -493,7 +490,7 @@ def build_route_from_checkpoints(checkpoint_coords, mode='drive'):
 
 def geocode_locations(checkpoints):
     coords = []
-    api_key = app.config['GEOCODING_API_KEY']
+    api_key = app.config.get('GEOCODING_API_KEY')
     last_time = [0]
     for cp in checkpoints:
         if cp in geocode_cache:
@@ -696,7 +693,6 @@ def keep_alive():
 
 def process_notification_queue():
     while True:
-        # use safe redis wrapper to avoid throwing in background thread
         try:
             notif = rlist_lpop("notifications")
         except Exception as e:
@@ -1182,18 +1178,14 @@ def enhanced_full_simulate_tracking(tn):
                     else:
                         new_status = "Delivered"
                         stage = "delivered"
-                # compute a route index for deterministic checkpointing
+
                 try:
                     route_index = min(int(progress * len(route_template)), len(route_template) - 1)
                 except Exception:
                     route_index = 0
 
                 checkpoint = None
-                # when moving through transit, add a checkpoint when passing a new route node
                 if stage == "transit":
-                    # Add checkpoint only when passing a new route node AND we've advanced
-                    # at least a minimum progress delta since the last checkpoint. This
-                    # reduces noisy checkpoint generation for long routes or fast sims.
                     if route_index != last_route_index and (progress - last_checkpoint_progress) >= sim_min_checkpoint_delta:
                         city = route_template[route_index] if route_template else destination_norm
                         checkpoint = DHLRealisticSimulator.generate_realistic_checkpoint(
@@ -1202,14 +1194,12 @@ def enhanced_full_simulate_tracking(tn):
                         last_route_index = route_index
                         last_checkpoint_progress = progress
                     elif random.random() < 0.02 and (progress - last_checkpoint_progress) >= sim_min_checkpoint_delta:
-                        # occasional extra transit event, but still respect min delta
                         city = route_template[route_index] if route_template else destination_norm
                         checkpoint = DHLRealisticSimulator.generate_realistic_checkpoint(
                             city, new_status, tn, destination=destination_norm
                         )
                         last_checkpoint_progress = progress
                 elif new_status != current_status or random.random() < 0.12:
-                    # fallback behavior for pickup/delivery and status changes
                     if stage == "pickup":
                         pickup_events = [
                             f"{datetime.now():%Y-%m-%d %H:%M} - {pickup_location} - Pickup request received from shipper",
@@ -1220,7 +1210,6 @@ def enhanced_full_simulate_tracking(tn):
                         ]
                         checkpoint = random.choice(pickup_events)
                     elif stage == "transit":
-                        # already handled above; keep compatibility
                         route_index = min(int(progress * len(route_template)), len(route_template) - 1)
                         city = route_template[route_index] if route_template else destination_norm
                         checkpoint = DHLRealisticSimulator.generate_realistic_checkpoint(
@@ -1240,7 +1229,6 @@ def enhanced_full_simulate_tracking(tn):
                             )
                         checkpoint = random.choice(delivery_events)
                     if checkpoint and checkpoint not in checkpoints:
-                        # ensure we don't create checkpoints too frequently
                         if (progress - last_checkpoint_progress) >= sim_min_checkpoint_delta:
                             checkpoints.append(checkpoint)
                             last_checkpoint_progress = progress
@@ -1265,11 +1253,9 @@ def enhanced_full_simulate_tracking(tn):
                 shipment.last_updated = datetime.now()
                 db.session.commit()
 
-                # compute interpolated position along route for live mapping
                 try:
                     route_coords = []
                     for city_name in route_template:
-                        # prefer known hubs table
                         hub = DHLRealisticSimulator.DHL_HUBS.get(city_name)
                         if hub:
                             route_coords.append({'lat': hub['lat'], 'lon': hub['lon']})
@@ -1277,10 +1263,8 @@ def enhanced_full_simulate_tracking(tn):
                             _n, coords = resolve_location(city_name)
                             if coords:
                                 route_coords.append(coords)
-                    # fallback to origin/destination if coords missing
                     if not route_coords and origin_coords and dest_coords:
                         route_coords = [origin_coords, dest_coords]
-                    # densify for smoother interpolation
                     try:
                         dens_km = float(os.getenv('SIM_ROUTE_DENSIFY_KM', '1.0') or '1.0')
                         route_coords = densify_route_coords(route_coords, dens_km)
@@ -1299,12 +1283,10 @@ def enhanced_full_simulate_tracking(tn):
                         current_lat = a['lat'] + (b['lat'] - a['lat']) * local_frac
                         current_lon = a['lon'] + (b['lon'] - a['lon']) * local_frac
                     else:
-                        # fallback to destination
                         if dest_coords:
                             current_lat = dest_coords.get('lat')
                             current_lon = dest_coords.get('lon')
 
-                    # persist progress and current position to redis for frontend
                     try:
                         rset('progress', tn, str(progress))
                         rset('stage', tn, stage)
@@ -1601,7 +1583,6 @@ def broadcast_update(tn):
     try:
         coords = geocode_locations((shipment.checkpoints or "").split(";"))
         route_coords = build_route_from_checkpoints(coords, mode='drive')
-        # densify route for smoother client interpolation
         try:
             dens_km = float(os.getenv('SIM_ROUTE_DENSIFY_KM', '1.0') or '1.0')
             route_coords = densify_route_coords(route_coords, dens_km)
@@ -1670,7 +1651,6 @@ def index():
         form = F()
     except:
         form = TrackForm()
-    # Don't expose site key in development or when placeholder is used
     recaptcha_key = app.config.get('RECAPTCHA_SITE_KEY', '')
     host = request.host or ''
     if app.debug or app.config.get('FLASK_ENV') == 'development' or 'your-site-key' in (recaptcha_key or '') or 'localhost' in host or '127.0.0.1' in host:
@@ -1697,10 +1677,8 @@ def track():
             form.email.data = request.form.get('email', '')
         else:
             return _render_tracking_response(render_template('tracking_result.html', error='Invalid form submission', coords=[]), 400)
-    recaptcha = request.form.get('g-recaptcha-response')
-    if app.config['RECAPTCHA_SITE_KEY'] and 'your-site-key' not in app.config['RECAPTCHA_SITE_KEY']:
-        if not verify_recaptcha(recaptcha):
-            return _render_tracking_response(render_template('tracking_result.html', error='reCAPTCHA failed', coords=[]), 400)
+    
+    
     tn = sanitize_tracking_number(form.tracking_number.data)
     email = form.email.data
     if not tn:
@@ -1907,7 +1885,6 @@ def admin_logout():
 @admin_required
 def admin_metrics():
     metrics = {}
-    # Use safe Redis wrappers to avoid exceptions when Redis is unstable
     try:
         active_keys = rkeys("clients:*")
         metrics['active_simulations'] = len(active_keys)
@@ -1943,11 +1920,9 @@ def admin_dashboard():
     per_page = 10
     
     try:
-        # Get total count
         total = Shipment.query.count()
         flask_logger.info(f"Total shipments found: {total}")
         
-        # Get paginated shipments
         shipments_query = Shipment.query.order_by(
             Shipment.created_at.desc()
         ).paginate(page=page, per_page=per_page, error_out=False)
@@ -2099,8 +2074,7 @@ def api_shipment_detail(tn):
         'delivery_window': delivery_window,
         'proof_of_delivery': proof_of_delivery,
         'temperature': temperature,
-        'progress': progress
-        ,
+        'progress': progress,
         'current_lat': float(current_lat) if current_lat is not None else None,
         'current_lon': float(current_lon) if current_lon is not None else None
     })
@@ -2155,7 +2129,6 @@ def api_shipment_update(tn):
         return jsonify({'error': 'Not found'}), 404
 
     data = request.get_json() or {}
-    # Allowed editable fields
     editable = {
         'status', 'stage', 'service_level', 'delivery_window', 'proof_of_delivery',
         'recipient_email', 'delivery_location', 'paused', 'speed', 'email_notifications', 'checkpoints'
@@ -2188,15 +2161,12 @@ def api_shipment_update(tn):
                 rset('proof_of_delivery', tn, v)
 
             if k == 'checkpoints':
-                # Expect list of checkpoint strings
                 if isinstance(v, list):
                     shipment.checkpoints = ';'.join(v)
                     updated['checkpoints'] = v
                 continue
 
-            # DB fields
             if hasattr(shipment, k):
-                # Normalize location if delivery_location or origin_location updated
                 if k in ('delivery_location', 'origin_location') and v:
                     name, coords = resolve_location(v)
                     v = name
@@ -2516,9 +2486,6 @@ def api_update_speed():
 
     return jsonify({'success': True, 'speed': speed_value})
 
-# Keep remaining admin API endpoints (mode, active_shipments, carrier)
-# They remain unchanged from the previous version
-
 # SocketIO
 @socketio.on('connect')
 def on_connect():
@@ -2630,7 +2597,6 @@ def start_background_services():
             db.create_all()
         init_db()
         cache_route_templates()
-        # resume simulations for active shipments
         try:
             with app.app_context():
                 active_shipments = Shipment.query.filter(Shipment.status.notin_(["Delivered", "Returned"]))
