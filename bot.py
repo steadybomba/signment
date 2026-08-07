@@ -799,6 +799,10 @@ def is_hostname_resolvable(hostname: str) -> bool:
         return False
 
 def set_webhook() -> None:
+    if bot is None:
+        bot_logger.warning("Bot instance unavailable: skipping webhook setup.")
+        return
+
     if not config.webhook_url or not is_valid_webhook_url(config.webhook_url):
         bot_logger.error(f"Skipping webhook setup because WEBHOOK_URL is invalid: {config.webhook_url}")
         return
@@ -809,10 +813,10 @@ def set_webhook() -> None:
         return
 
     try:
-        bot.remove_webhook()
-        time.sleep(1)
-        bot.set_webhook(url=config.webhook_url)
+        bot.set_webhook(url=config.webhook_url, max_connections=5)
         bot_logger.info(f"Webhook set: {config.webhook_url}")
+    except RecursionError as e:
+        bot_logger.error(f"Webhook setup failed due to recursion error: {e}")
     except Exception as e:
         bot_logger.error(f"Webhook failed: {e}")
 
