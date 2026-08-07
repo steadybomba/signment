@@ -185,6 +185,19 @@
       border-radius: 16px 16px 0 0;
       box-shadow: 0 4px 20px rgba(212,5,17,0.2);
     }
+
+    .container-fluid {
+      padding-left: 1rem;
+      padding-right: 1rem;
+    }
+
+    .card {
+      border-radius: 16px;
+    }
+
+    .card-header .btn {
+      white-space: nowrap;
+    }
     
     #map {
       height: 400px;
@@ -406,6 +419,59 @@
       .stage-badge { font-size: 0.5rem; padding: 1px 6px; }
       .service-level-badge { font-size: 0.5rem; padding: 1px 6px; }
     }
+
+    @media (max-width: 420px) {
+      .dhl-header { padding: 1rem 0.75rem; }
+      .dhl-header .row { gap: 0.75rem; }
+      .dhl-header .col-md-6 { width: 100%; }
+      .dhl-header .text-end { text-align: center !important; }
+      .dhl-header .btn { width: 100%; margin-bottom: 0.5rem; }
+      #map { height: 220px; }
+      .stat-card { padding: 0.9rem; }
+      .stat-card .icon { font-size: 1.5rem; }
+      .table td, .table th { padding: 0.25rem 0.35rem; font-size: 0.62rem; }
+      .table th, .table td { white-space: normal; }
+      .table-responsive { overflow-x: auto; }
+      .table-responsive table { min-width: 100%; }
+      #shipment-table th:nth-child(5),
+      #shipment-table th:nth-child(6),
+      #shipment-table th:nth-child(8),
+      #shipment-table td:nth-child(5),
+      #shipment-table td:nth-child(6),
+      #shipment-table td:nth-child(8) {
+        display: none !important;
+      }
+      .speed-slider { width: 100%; }
+      .proof-signature { max-width: 100px; }
+      .toast-container { top: auto; bottom: 15px; right: 10px; left: 10px; max-width: calc(100% - 20px); }
+      .modal-dialog { margin: 1rem; max-width: calc(100% - 2rem); }
+      .modal-lg { max-width: 100%; }
+    }
+
+    /* Compact stats mode: applies when toggled or useful on small screens */
+    body.compact-stats .stat-card,
+    @media (max-width: 420px) {
+      .stat-card {
+        padding: 0.6rem !important;
+        border-radius: 12px !important;
+      }
+      .stat-card h3 { font-size: 1rem !important; margin-bottom: 0.2rem; }
+      .stat-card .label { display: none !important; }
+      .stat-card .icon { font-size: 1.25rem !important; opacity: 0.9; }
+      .stat-card .stat-change { font-size: 0.7rem; }
+      .stat-card::after { width: 60px; height: 60px; transform: translate(20%, -20%); }
+      .stat-card .icon, .stat-card h3 { display: inline-block; vertical-align: middle; }
+      .stat-card .icon { margin-left: 6px; }
+      .row.g-3 .col-md-3 { flex: 0 0 50%; max-width: 50%; }
+    }
+
+    body.compact-stats .stat-card {
+      padding: 0.6rem !important;
+      border-radius: 12px !important;
+    }
+    body.compact-stats .stat-card h3 { font-size: 1rem !important; margin-bottom: 0.2rem; }
+    body.compact-stats .stat-card .label { display: none !important; }
+    body.compact-stats .row.g-3 .col-md-3 { flex: 0 0 50%; max-width: 50%; }
     
     .truck-marker { 
       background: transparent; 
@@ -459,6 +525,9 @@
           <span class="text-white-50 me-3" id="clock-display" style="font-family: monospace; font-size: 0.9rem;"></span>
           <button class="btn btn-light btn-sm me-2" onclick="showCreateModal()">
             <i class="bi bi-plus-lg"></i> New Shipment
+          </button>
+          <button id="compactToggle" class="btn btn-outline-light btn-sm me-2 d-none d-sm-inline-block" title="Toggle compact stats">
+            <i class="bi bi-arrows-collapse"></i> Compact
           </button>
           <a href="{{ url_for('admin_csv') }}" class="btn btn-light btn-sm me-2">
             <i class="bi bi-download"></i> CSV
@@ -751,6 +820,30 @@
     </div>
   </div>
 
+  <script>
+    // Compact stats toggle: persist in localStorage
+    (function() {
+      function setCompact(enabled) {
+        if (enabled) document.body.classList.add('compact-stats');
+        else document.body.classList.remove('compact-stats');
+        try { localStorage.setItem('compactStats', enabled ? '1' : '0'); } catch (e) {}
+      }
+      const btn = document.getElementById('compactToggle');
+      if (btn) {
+        btn.addEventListener('click', function() {
+          const enabled = document.body.classList.toggle('compact-stats');
+          setCompact(enabled);
+        });
+      }
+      // restore on load
+      try {
+        const val = localStorage.getItem('compactStats');
+        if (val === '1') document.body.classList.add('compact-stats');
+      } catch (e) {}
+    })();
+  </script>
+  <datalist id="citiesList"></datalist>
+
   <!-- === EMAIL SEND MODAL === -->
   <div class="modal fade" id="emailModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
@@ -843,15 +936,11 @@
             <div class="row g-3">
               <div class="col-md-6">
                 <label class="form-label fw-bold">Origin <span class="text-danger">*</span></label>
-                <select class="form-select city-select" id="origin" required>
-                  <option value="">Select origin city...</option>
-                </select>
+                <input list="citiesList" type="text" class="form-control" id="origin" required placeholder="Enter origin (e.g. Lagos, NG)">
               </div>
               <div class="col-md-6">
                 <label class="form-label fw-bold">Destination <span class="text-danger">*</span></label>
-                <select class="form-select city-select" id="destination" required>
-                  <option value="">Select destination city...</option>
-                </select>
+                <input list="citiesList" type="text" class="form-control" id="destination" required placeholder="Enter destination (e.g. London, UK)">
               </div>
               <div class="col-md-6">
                 <label class="form-label fw-bold">Service Level</label>
@@ -916,6 +1005,88 @@
     </div>
   </div>
 
+  <!-- Edit Shipment Modal -->
+  <div class="modal fade" id="editModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header" style="background:var(--dhl-red);color:white;">
+          <h5 class="modal-title"><i class="bi bi-pencil-square me-2"></i>Edit Shipment</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <form id="editForm" data-tn="">
+            <div class="row g-3">
+              <div class="col-md-6">
+                <label class="form-label fw-bold">Status</label>
+                <select class="form-select" id="editStatus">
+                  <option>Pending</option>
+                  <option>In_Transit</option>
+                  <option>Out_for_Delivery</option>
+                  <option>Delayed</option>
+                  <option>On_Hold</option>
+                  <option>Delivered</option>
+                  <option>Returned</option>
+                  <option>Exception</option>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-bold">Stage</label>
+                <select class="form-select" id="editStage">
+                  <option value="pickup">Pickup</option>
+                  <option value="transit">Transit</option>
+                  <option value="delivery">Delivery</option>
+                  <option value="delivered">Delivered</option>
+                  <option value="exception">Exception</option>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-bold">Service Level</label>
+                <input class="form-control" id="editServiceLevel" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-bold">Delivery Window</label>
+                <input class="form-control" id="editDeliveryWindow" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-bold">Recipient Email</label>
+                <input class="form-control" id="editRecipientEmail" type="email" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-bold">Proof of Delivery</label>
+                <input class="form-control" id="editProofOfDelivery" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-bold">Speed Multiplier (e.g. 1.0)</label>
+                <input class="form-control" id="editSpeed" type="number" step="0.1" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-bold">Paused</label>
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="editPaused">
+                  <label class="form-check-label" for="editPaused">Pause simulation</label>
+                </div>
+              </div>
+              <div class="col-12">
+                <label class="form-label fw-bold">Delivery Location</label>
+                <input class="form-control" id="editDeliveryLocation" />
+              </div>
+            </div>
+          </form>
+          <div id="editStatusMessage" style="display:none;" class="alert mt-3"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-danger me-auto" id="deleteShipmentBtn" onclick="confirmDeleteShipment()">
+            <i class="bi bi-trash me-1"></i>Delete Shipment
+          </button>
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-create" id="saveEditBtn" onclick="saveShipmentEdits()">
+            <i class="bi bi-save me-1"></i>Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Container -->
   <div id="toastContainer" class="toast-container"></div>
 
@@ -973,39 +1144,26 @@
     const createModal = new bootstrap.Modal(document.getElementById('createModal'));
     const detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
     const emailModal = new bootstrap.Modal(document.getElementById('emailModal'));
-    const socket = io();
+    // Force polling transport to avoid websocket upgrade errors when server uses threading fallback
+    const socket = io({ transports: ['polling'] });
     let currentEmailTn = null;
 
     // ============================================================
     // CREATE SHIPMENT
     // ============================================================
-    function loadCities() {
-      fetch('/admin/api/cities')
-        .then(r => r.json())
-        .then(cities => {
-          $('.city-select').each(function() {
-            $(this).select2({
-              theme: 'bootstrap-5',
-              dropdownParent: $('#createModal'),
-              data: cities.map(c => ({ id: c, text: c })),
-              placeholder: 'Search for a city...',
-              allowClear: true,
-              width: '100%'
-            });
-          });
-        })
-        .catch(err => {
-          console.error('Failed to load cities:', err);
-          showToast('Failed to load cities', 'error');
-        });
-    }
-
+    // Origin/Destination are free-text inputs now. No city list is required.
     function showCreateModal() {
       document.getElementById('createResult').style.display = 'none';
       document.getElementById('createForm').reset();
-      $('.city-select').val(null).trigger('change');
-      loadCities();
       createModal.show();
+      // populate datalist suggestions (non-blocking)
+      fetch('/admin/api/cities')
+        .then(r => r.json())
+        .then(cities => {
+          const dl = document.getElementById('citiesList');
+          dl.innerHTML = cities.map(c => `<option value="${c}"></option>`).join('');
+        })
+        .catch(() => {});
     }
 
     document.getElementById('bulkCreate').addEventListener('change', function() {
@@ -1316,6 +1474,8 @@
 
     const markers = {};
     const polylines = {};
+    // animation state for markers
+    const markerAnims = {};
     const cityCoords = {
       "Lagos, NG": [6.5244, 3.3792],
       "Abuja, NG": [9.0579, 7.4951],
@@ -1383,7 +1543,18 @@
           iconSize: [24, 24],
           className: 'truck-marker'
         });
-        markers[tn] = L.marker(cityCoords[currentLoc], { icon }).addTo(map)
+        // prefer interpolated route position if available, then explicit coords
+        let markerPos = null;
+        if (data.route_coords && Array.isArray(data.route_coords) && typeof data.progress === 'number') {
+          const p = interpolateAlongRoute(data.route_coords, data.progress);
+          if (p) markerPos = p;
+        }
+        if (!markerPos) {
+          const explicitLat = (data.current_lat !== undefined && data.current_lat !== null) ? data.current_lat : null;
+          const explicitLon = (data.current_lon !== undefined && data.current_lon !== null) ? data.current_lon : null;
+          markerPos = (explicitLat !== null && explicitLon !== null) ? [explicitLat, explicitLon] : cityCoords[currentLoc];
+        }
+        markers[tn] = L.marker(markerPos, { icon }).addTo(map)
           .bindPopup(`
             <div style="min-width:150px;">
               <strong style="color:var(--dhl-red);">${tn}</strong><br>
@@ -1394,7 +1565,19 @@
             </div>
           `);
       } else {
-        markers[tn].setLatLng(cityCoords[currentLoc]);
+        // prefer interpolated route position if available, then explicit coords
+        let markerPos = null;
+        if (data.route_coords && Array.isArray(data.route_coords) && typeof data.progress === 'number') {
+          const p = interpolateAlongRoute(data.route_coords, data.progress);
+          if (p) markerPos = p;
+        }
+        if (!markerPos) {
+          const explicitLat = (data.current_lat !== undefined && data.current_lat !== null) ? data.current_lat : null;
+          const explicitLon = (data.current_lon !== undefined && data.current_lon !== null) ? data.current_lon : null;
+          markerPos = (explicitLat !== null && explicitLon !== null) ? [explicitLat, explicitLon] : cityCoords[currentLoc];
+        }
+        // Smoothly animate marker to new position
+        moveMarkerSmooth(tn, markerPos, 900);
         markers[tn].setPopupContent(`
           <div style="min-width:150px;">
             <strong style="color:var(--dhl-red);">${tn}</strong><br>
@@ -1430,6 +1613,78 @@
         polylines[tn].setLatLngs(path);
       }
     }
+
+    // Helper: approximate distance between two lat/lon points (meters)
+    function latLngDistance(a, b) {
+      const R = 6371000; // meters
+      const toRad = v => v * Math.PI / 180;
+      const dLat = toRad(b[0] - a[0]);
+      const dLon = toRad(b[1] - a[1]);
+      const lat1 = toRad(a[0]);
+      const lat2 = toRad(b[0]);
+      const sinDLat = Math.sin(dLat/2), sinDLon = Math.sin(dLon/2);
+      const aa = sinDLat*sinDLat + Math.cos(lat1)*Math.cos(lat2)*sinDLon*sinDLon;
+      const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1-aa));
+      return R * c;
+    }
+
+    // Interpolate along a polyline (array of {lat, lon}) by fraction [0..1]
+    function interpolateAlongRoute(routeCoords, fraction) {
+      if (!routeCoords || routeCoords.length === 0) return null;
+      fraction = Math.min(1, Math.max(0, fraction));
+      // build segment lengths
+      const pts = routeCoords.map(p => [p.lat, p.lon]);
+      const segLens = [];
+      let total = 0;
+      for (let i=0;i<pts.length-1;i++){
+        const l = latLngDistance(pts[i], pts[i+1]);
+        segLens.push(l); total += l;
+      }
+      if (total === 0) return pts[pts.length-1];
+      let target = total * fraction;
+      for (let i=0;i<segLens.length;i++){
+        if (target <= segLens[i]){
+          const a = pts[i], b = pts[i+1];
+          const t = segLens[i] === 0 ? 0 : target / segLens[i];
+          const lat = a[0] + (b[0]-a[0]) * t;
+          const lon = a[1] + (b[1]-a[1]) * t;
+          return [lat, lon];
+        }
+        target -= segLens[i];
+      }
+      return pts[pts.length-1];
+    }
+
+    // Easing function for smoother motion
+    function easeInOutQuad(t){ return t<0.5 ? 2*t*t : -1 + (4-2*t)*t; }
+
+    // Smooth marker movement helper with easing
+    function moveMarkerSmooth(tn, toPos, duration = 800) {
+      const marker = markers[tn];
+      if (!marker) return;
+      const fromLL = marker.getLatLng();
+      const from = [fromLL.lat, fromLL.lng];
+      const start = performance.now();
+      markerAnims[tn] = { from, to: toPos, start, duration };
+    }
+
+    // Animation loop with easing
+    (function animateMarkers(now) {
+      try {
+        for (const tn in markerAnims) {
+          const a = markerAnims[tn];
+          const marker = markers[tn];
+          if (!marker) { delete markerAnims[tn]; continue; }
+          const tRaw = Math.min(1, (now - a.start) / a.duration);
+          const t = easeInOutQuad(tRaw);
+          const lat = a.from[0] + (a.to[0] - a.from[0]) * t;
+          const lon = a.from[1] + (a.to[1] - a.from[1]) * t;
+          marker.setLatLng([lat, lon]);
+          if (tRaw >= 1) delete markerAnims[tn];
+        }
+      } catch (e) { console.error('Marker animation error', e); }
+      requestAnimationFrame(animateMarkers);
+    })(performance.now());
 
     function refreshMap() {
       // Remove all markers and polylines
@@ -1635,6 +1890,11 @@
                     <strong>Temperature:</strong> ${data.temperature}°C
                   </div>
                 ` : ''}
+                <div class="mt-3">
+                  <button class="btn btn-outline-secondary btn-sm me-2" onclick="showEditModal('${tn}')">
+                    <i class="bi bi-pencil-square"></i> Edit Shipment
+                  </button>
+                </div>
               </div>
               <div class="col-md-6">
                 <h6 class="fw-bold mb-3"><i class="bi bi-clock-history me-2 text-danger"></i>Recent Activity</h6>
@@ -1656,6 +1916,107 @@
 
     function refreshData() {
       location.reload();
+    }
+
+    // Show Edit modal and populate fields
+    function showEditModal(tn) {
+      fetch(`/admin/api/shipment/${tn}`)
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('editStatus').value = data.status || 'Pending';
+          document.getElementById('editStage').value = data.stage || 'pickup';
+          document.getElementById('editServiceLevel').value = data.service_level || '';
+          document.getElementById('editDeliveryWindow').value = data.delivery_window || '';
+          document.getElementById('editRecipientEmail').value = data.recipient_email || '';
+          document.getElementById('editProofOfDelivery').value = data.proof_of_delivery || '';
+          document.getElementById('editSpeed').value = data.speed_multiplier || 1.0;
+          document.getElementById('editPaused').checked = !!data.paused;
+          document.getElementById('editDeliveryLocation').value = data.delivery_location || '';
+          // store current tn
+          document.getElementById('editForm').dataset.tn = tn;
+          const editModal = new bootstrap.Modal(document.getElementById('editModal'));
+          editModal.show();
+        })
+        .catch(err => {
+          showToast('Failed to load shipment for editing', 'error');
+        });
+    }
+
+    function confirmDeleteShipment() {
+      const frm = document.getElementById('editForm');
+      const tn = frm.dataset.tn;
+      if (!tn || !confirm(`Delete shipment ${tn}? This cannot be undone.`)) {
+        return;
+      }
+      const deleteBtn = document.getElementById('deleteShipmentBtn');
+      deleteBtn.disabled = true;
+      deleteBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Deleting';
+
+      fetch(`/admin/api/shipment/${tn}/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      })
+      .then(r => r.json())
+      .then(d => {
+        if (d && d.success) {
+          showToast('Shipment deleted', 'success');
+          setTimeout(() => location.reload(), 800);
+        } else {
+          showToast(d.error || 'Failed to delete shipment', 'error');
+          console.error('Delete failed', d);
+        }
+      })
+      .catch(err => {
+        showToast('Failed to delete shipment', 'error');
+        console.error(err);
+      })
+      .finally(() => {
+        deleteBtn.disabled = false;
+        deleteBtn.innerHTML = '<i class="bi bi-trash me-1"></i>Delete Shipment';
+      });
+    }
+    function saveShipmentEdits(){
+      const frm = document.getElementById('editForm');
+      const tn = frm.dataset.tn;
+      if (!tn) { showToast('No shipment selected', 'error'); return; }
+      const payload = {
+        status: document.getElementById('editStatus').value,
+        stage: document.getElementById('editStage').value,
+        service_level: document.getElementById('editServiceLevel').value,
+        delivery_window: document.getElementById('editDeliveryWindow').value,
+        recipient_email: document.getElementById('editRecipientEmail').value,
+        proof_of_delivery: document.getElementById('editProofOfDelivery').value,
+        speed: parseFloat(document.getElementById('editSpeed').value) || 1.0,
+        paused: document.getElementById('editPaused').checked,
+        delivery_location: document.getElementById('editDeliveryLocation').value
+      };
+      const saveBtn = document.getElementById('saveEditBtn');
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving';
+
+      fetch(`/admin/api/shipment/${tn}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      .then(r => r.json())
+      .then(d => {
+        if (d && d.success) {
+          showToast('Shipment updated', 'success');
+          setTimeout(() => location.reload(), 800);
+        } else {
+          showToast('Failed to update shipment', 'error');
+          console.error('Update failed', d);
+        }
+      })
+      .catch(err => {
+        showToast('Failed to update shipment', 'error');
+        console.error(err);
+      })
+      .finally(() => {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<i class="bi bi-save me-1"></i>Save Changes';
+      });
     }
 
     // ============================================================
@@ -1701,6 +2062,45 @@
       console.log('✅ Admin Dashboard loaded');
       showToast('Dashboard loaded successfully', 'success');
     });
+  </script>
+  <script>
+    (function(){
+      function sendError(payload){
+        try{
+          navigator.sendBeacon && typeof navigator.sendBeacon === 'function' && navigator.sendBeacon('/admin/client_error', JSON.stringify(payload)) ||
+          fetch('/admin/client_error',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(()=>{});
+        }catch(e){}
+      }
+
+      window.addEventListener('error', function(e){
+        sendError({type:'error', message: e.message, filename: e.filename, lineno: e.lineno, colno: e.colno, stack: (e.error && e.error.stack) || null});
+      });
+      window.addEventListener('unhandledrejection', function(e){
+        var reason = e.reason || e.detail || null;
+        sendError({type:'unhandledrejection', reason: (reason && (reason.stack || reason.message)) || String(reason)});
+      });
+
+      document.addEventListener('DOMContentLoaded', function(){
+        var issues = [];
+        if (typeof io === 'undefined') issues.push('socket.io missing');
+        if (typeof L === 'undefined') issues.push('leaflet missing');
+        if (typeof $ === 'undefined') issues.push('jquery missing');
+        if (issues.length) sendError({type:'init_issues', issues: issues});
+
+        setTimeout(function(){
+          sendError({type:'client_heartbeat', io_defined: typeof io !== 'undefined', leaflet_defined: typeof L !== 'undefined', jquery_defined: typeof $ !== 'undefined'});
+          if (typeof io !== 'undefined'){
+            try{
+              var testSocket = io({transports:['polling']});
+              if (testSocket){
+                testSocket.on('connect', function(){ sendError({type:'socket_event', socket_status:'connected'}); try{testSocket.disconnect();}catch(e){} });
+                testSocket.on('connect_error', function(err){ sendError({type:'socket_event', socket_status:'connect_error', message: String(err)}); });
+              }
+            }catch(err){ sendError({type:'socket_init_error', message: String(err)}); }
+          }
+        }, 2000);
+      });
+    })();
   </script>
 </body>
 </html>
