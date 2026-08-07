@@ -75,6 +75,7 @@ from wtforms import StringField, SubmitField
 from wtforms.validators import DataRequired
 from flask_wtf import FlaskForm
 from functools import wraps, lru_cache
+from collections import deque
 
 load_dotenv()
 
@@ -1646,11 +1647,7 @@ def favicon():
 # === PUBLIC ROUTES ===
 @app.route('/')
 def index():
-    try:
-        from forms import TrackForm as F
-        form = F()
-    except:
-        form = TrackForm()
+    form = TrackForm()
     recaptcha_key = app.config.get('RECAPTCHA_SITE_KEY', '')
     host = request.host or ''
     if app.debug or app.config.get('FLASK_ENV') == 'development' or 'your-site-key' in (recaptcha_key or '') or 'localhost' in host or '127.0.0.1' in host:
@@ -1677,7 +1674,6 @@ def track():
             form.email.data = request.form.get('email', '')
         else:
             return _render_tracking_response(render_template('tracking_result.html', error='Invalid form submission', coords=[]), 400)
-    
     
     tn = sanitize_tracking_number(form.tracking_number.data)
     email = form.email.data
@@ -1714,6 +1710,22 @@ def track():
             except Exception:
                 threading.Thread(target=simulate_tracking, args=(tn,), daemon=True).start()
     progress = float(rget('progress', tn, '0') or '0')
+    
+    # Check if this is an AJAX request
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        result_html = render_template(
+            'tracking_result_content.html',
+            shipment=shipment,
+            checkpoints=checkpoints,
+            coords=coords_list,
+            route_coords=route_coords,
+            service_level=service_level,
+            delivery_window=delivery_window,
+            proof_of_delivery=proof_of_delivery,
+            progress=progress
+        )
+        return jsonify({'html': result_html})
+    
     rendered = render_template(
         'tracking_result.html', shipment=shipment, checkpoints=checkpoints, coords=coords_list,
         route_coords=route_coords, service_level=service_level, delivery_window=delivery_window,
@@ -2486,7 +2498,7 @@ def api_update_speed():
 
     return jsonify({'success': True, 'speed': speed_value})
 
-# SocketIO
+# SocketIO - Merged disconnect handlers
 @socketio.on('connect')
 def on_connect():
     sid = getattr(request, 'sid', None)
@@ -2520,6 +2532,17 @@ def on_disconnect():
         add_socket_event(details)
     except Exception:
         pass
+    
+    # Clean up clients
+    for tn in list(in_memory_clients.keys()):
+        remove_client(tn, request.sid)
+    if redis_client:
+        for key in redis_client.scan_iter("clients:*"):
+            try:
+                tn = key.decode().split(":", 1)[1]
+                remove_client(tn, request.sid)
+            except Exception:
+                continue
 
 
 @app.route('/admin/client_error', methods=['POST'])
@@ -2570,15 +2593,6 @@ def on_request(data):
         'proof_of_delivery': proof_of_delivery, 'progress': progress,
         'speed_multiplier': speed, 'paused': paused, 'mode': mode, 'carrier': shipment.carrier
     })
-
-@socketio.on('disconnect')
-def on_disconnect():
-    for tn in list(in_memory_clients.keys()):
-        remove_client(tn, request.sid)
-    if redis_client:
-        for key in redis_client.scan_iter("clients:*"):
-            tn = key.decode().split(":", 1)[1]
-            remove_client(tn, request.sid)
 
 services_started = False
 services_started_lock = threading.Lock()
