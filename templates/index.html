@@ -45,11 +45,93 @@
         /* Content Overlay */
         .content-overlay {
             position: relative;
-            background: rgba(255, 255, 255, 0.88);
+            background: rgba(255, 255, 255, 0.85);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            backdrop-filter: blur(2px);
+        }
+        
+        /* === CLEAN GATE OVERLAY - White Background === */
+        .gate-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #ffffff;
+            padding: 20px;
+        }
+        
+        .gate-card {
+            width: 100%;
+            max-width: 420px;
+            background: #ffffff;
+            padding: 40px 30px;
+            text-align: center;
+        }
+        
+        .gate-card .lock-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            color: var(--dhl-red);
+        }
+        
+        .gate-card .lock-icon::before {
+            content: "🔒";
+        }
+        
+        .gate-card h2 {
+            color: var(--dhl-dark);
+            font-size: 20px;
+            font-weight: 600;
+            margin: 0 0 8px 0;
+            letter-spacing: -0.3px;
+        }
+        
+        .gate-card p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+            margin: 0 0 24px 0;
+        }
+        
+        .gate-card .recaptcha-wrapper {
+            display: flex;
+            justify-content: center;
+            margin: 8px 0 16px 0;
+            min-height: 78px;
+        }
+        
+        .gate-card .gate-note {
+            color: #999;
+            font-size: 12px;
+            margin-top: 16px;
+        }
+        
+        /* Hide content until reCAPTCHA is solved */
+        body.recaptcha-locked .header,
+        body.recaptcha-locked .title,
+        body.recaptcha-locked .title-sub,
+        body.recaptcha-locked .track-section,
+        body.recaptcha-locked #tracking-result,
+        body.recaptcha-locked .blog-section,
+        body.recaptcha-locked .faq-section,
+        body.recaptcha-locked .footer {
+            visibility: hidden;
+        }
+        
+        body.recaptcha-locked .content-overlay {
+            pointer-events: none;
+        }
+        
+        body.recaptcha-locked #gate-overlay {
+            display: flex !important;
+            pointer-events: auto;
+        }
+        
+        body:not(.recaptcha-locked) #gate-overlay {
+            display: none !important;
         }
         
         /* === HEADER === */
@@ -180,12 +262,6 @@
             background-color: #f5f5f5;
             cursor: not-allowed;
         }
-        .track-box .recaptcha-container {
-            display: flex;
-            justify-content: center;
-            margin: 12px 0;
-            min-height: 78px;
-        }
         .track-box button {
             background-color: var(--dhl-red);
             color: white;
@@ -282,7 +358,7 @@
         .toast.error { background: #dc2626; border-left-color: #7f1d1d; }
         .toast.info { background: #2563eb; border-left-color: #1e3a5f; }
         
-        /* === BLOG SECTION - ENHANCED IMAGE SIZES === */
+        /* === BLOG SECTION === */
         .blog-section {
             max-width: 1200px;
             margin: 50px auto 30px;
@@ -474,6 +550,7 @@
                 min-height: 200px;
                 max-height: 350px;
             }
+            .gate-card { padding: 32px 24px; }
         }
         
         @media (max-width: 480px) {
@@ -490,6 +567,9 @@
             .faq-section h2 { font-size: 1.3rem; }
             .footer { padding: 20px 12px 16px; margin-top: 20px; }
             .footer-section h3 { font-size: 0.95rem; }
+            .gate-card { padding: 24px 16px; }
+            .gate-card h2 { font-size: 18px; }
+            .gate-card p { font-size: 13px; }
             .toast-container { left: 16px; right: 16px; bottom: 16px; }
             .toast { padding: 12px 16px; font-size: 0.9rem; }
             .blog-section { padding: 0 12px; }
@@ -557,6 +637,23 @@
     <!-- Content Overlay -->
     <div class="content-overlay">
         
+        <!-- === CLEAN GATE OVERLAY - White === -->
+        {% if recaptcha_site_key %}
+        <div id="gate-overlay" class="gate-overlay">
+            <div class="gate-card" role="dialog" aria-modal="true">
+                <div class="lock-icon"></div>
+                <h2>Please verify you're human</h2>
+                <p>Complete the reCAPTCHA below to unlock the tracking page.</p>
+                <div class="recaptcha-wrapper">
+                    <div id="gate-recaptcha" class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-callback="recaptchaGateSuccess"></div>
+                </div>
+                <p class="gate-note">If the reCAPTCHA doesn't load, refresh the page.</p>
+            </div>
+        </div>
+        {% else %}
+        <div id="gate-overlay" class="gate-overlay" style="display:none"></div>
+        {% endif %}
+
         <!-- === HEADER === -->
         <div class="header">
             <img src="{{ url_for('static', filename='dhl-logo.png') }}" alt="DHL Logo">
@@ -586,13 +683,6 @@
                     
                     <label for="email" class="mt-4">Email for Updates <span class="text-gray-400 text-sm">(Optional)</span></label>
                     {{ form.email(id='email', placeholder='Enter your email address for notifications', type='email') }}
-                    
-                    <!-- reCAPTCHA in the form (your preferred style) -->
-                    {% if recaptcha_site_key %}
-                    <div class="recaptcha-container">
-                        <div class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-callback="recaptchaCallback"></div>
-                    </div>
-                    {% endif %}
                     
                     {{ form.submit(id='submit-btn', class='bg-dhl-red hover:bg-red-700 text-white font-bold py-3 px-4 rounded w-full cursor-pointer mt-4', disabled='disabled') }}
                     
@@ -746,13 +836,33 @@
 
     <script>
         // ============================================================
-        // reCAPTCHA Callback (your preferred style - in form)
+        // reCAPTCHA Callback
         // ============================================================
-        function recaptchaCallback() {
+        function recaptchaGateSuccess(token) {
+            document.getElementById('g-recaptcha-response').value = token;
             document.getElementById('submit-btn').disabled = false;
-            document.getElementById('g-recaptcha-response').value = 'verified';
+            document.body.classList.remove('recaptcha-locked');
+            const overlay = document.getElementById('gate-overlay');
+            if (overlay) {
+                overlay.style.display = 'none';
+            }
             showToast('Verification successful! You can now track shipments.', 'success');
         }
+
+        // ============================================================
+        // Lock page until reCAPTCHA is solved
+        // ============================================================
+        function lockPageUntilRecaptcha() {
+            document.body.classList.add('recaptcha-locked');
+        }
+        {% if recaptcha_site_key %}
+        lockPageUntilRecaptcha();
+        {% else %}
+        // No reCAPTCHA configured — enable form immediately
+        document.getElementById('submit-btn').disabled = false;
+        const overlay = document.getElementById('gate-overlay');
+        if (overlay) overlay.style.display = 'none';
+        {% endif %}
 
         // ============================================================
         // Toast Notification
@@ -934,6 +1044,25 @@
                 lastUpdated.textContent = 'Last updated: ' + date.toLocaleString();
             }
         }
+
+        // ============================================================
+        // Retry reCAPTCHA if it doesn't load
+        // ============================================================
+        {% if recaptcha_site_key %}
+        setTimeout(function() {
+            const recaptchaContainer = document.getElementById('gate-recaptcha');
+            if (recaptchaContainer && !recaptchaContainer.innerHTML.trim() && window.grecaptcha) {
+                try {
+                    grecaptcha.render(recaptchaContainer, {
+                        'sitekey': '{{ recaptcha_site_key }}',
+                        'callback': 'recaptchaGateSuccess'
+                    });
+                } catch (e) {
+                    console.warn('reCAPTCHA render retry failed:', e);
+                }
+            }
+        }, 3000);
+        {% endif %}
 
         // ============================================================
         // Keyboard Shortcuts
