@@ -110,8 +110,10 @@ def send_email(tracking_number: str, status: str, checkpoints: str, delivery_loc
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=10) as server:
-                    server.starttls()
+                smtp_class = smtplib.SMTP_SSL if int(config.smtp_port) == 465 else smtplib.SMTP
+                with smtp_class(config.smtp_host, config.smtp_port, timeout=20) as server:
+                    if int(config.smtp_port) != 465:
+                        server.starttls()
                     server.login(config.smtp_user, config.smtp_pass)
                     server.send_message(msg)
                 logger.info(f"Sent HTML email notification for {tracking_number} to {recipient_email}")
