@@ -610,13 +610,34 @@ def resolve_location(loc):
     except Exception:
         coords = None
 
+    # Fallback: if external geocoding failed, try known DHL hubs mapping
+    if coords is None:
+        try:
+            hub = DHLRealisticSimulator.DHL_HUBS.get(name)
+            if hub:
+                coords = { 'lat': float(hub.get('lat')), 'lon': float(hub.get('lon')) }
+                flask_logger.info(f"Geocode fallback: used DHL_HUBS for '{loc}' -> '{name}'")
+            else:
+                # try fuzzy match: if loc appears inside a known hub key
+                lower_loc = loc.lower()
+                for hub_name, hubv in DHLRealisticSimulator.DHL_HUBS.items():
+                    if lower_loc in hub_name.lower() or hub_name.lower().startswith(lower_loc):
+                        coords = { 'lat': float(hubv.get('lat')), 'lon': float(hubv.get('lon')) }
+                        name = hub_name
+                        flask_logger.info(f"Geocode fallback (fuzzy): matched '{loc}' -> '{name}' from DHL_HUBS")
+                        break
+        except Exception:
+            coords = None
+
     try:
-        if redis_client:
-            redis_client.set(cache_key, json.dumps({
-                'name': name,
-                'lat': coords.get('lat') if coords else None,
-                'lon': coords.get('lon') if coords else None
-            }), ex=86400)
+        # Only cache successful geocodes (coords present). Avoid caching negative results.
+        if coords is not None:
+            if redis_client:
+                redis_client.set(cache_key, json.dumps({
+                    'name': name,
+                    'lat': coords.get('lat'),
+                    'lon': coords.get('lon')
+                }), ex=86400)
     except Exception:
         pass
 
@@ -855,7 +876,28 @@ class DHLRealisticSimulator:
         "Singapore, SG": {"zone": "SGT", "lat": 1.3521, "lon": 103.8198},
         "Brussels, BE": {"zone": "CET", "lat": 50.8476, "lon": 4.3572},
         "Miami, FL": {"zone": "EST", "lat": 25.7617, "lon": -80.1918},
-        "Tokyo, JP": {"zone": "JST", "lat": 35.6762, "lon": 139.6503}
+        "Tokyo, JP": {"zone": "JST", "lat": 35.6762, "lon": 139.6503},
+        "Helsinki, FI": {"zone": "EET", "lat": 60.1699, "lon": 24.9384},
+        "Stockholm, SE": {"zone": "CET", "lat": 59.3293, "lon": 18.0686},
+        "Paris, FR": {"zone": "CET", "lat": 48.8566, "lon": 2.3522},
+        "Madrid, ES": {"zone": "CET", "lat": 40.4168, "lon": -3.7038},
+        "Berlin, DE": {"zone": "CET", "lat": 52.5200, "lon": 13.4050},
+        "Milan, IT": {"zone": "CET", "lat": 45.4642, "lon": 9.1900},
+        "Rome, IT": {"zone": "CET", "lat": 41.9028, "lon": 12.4964},
+        "Warsaw, PL": {"zone": "CET", "lat": 52.2297, "lon": 21.0122},
+        "Istanbul, TR": {"zone": "TRT", "lat": 41.0082, "lon": 28.9784},
+        "Sao Paulo, BR": {"zone": "BRT", "lat": -23.5505, "lon": -46.6333},
+        "Mexico City, MX": {"zone": "CST", "lat": 19.4326, "lon": -99.1332},
+        "Johannesburg, ZA": {"zone": "SAST", "lat": -26.2041, "lon": 28.0473},
+        "Nairobi, KE": {"zone": "EAT", "lat": -1.2921, "lon": 36.8219},
+        "Vancouver, CA": {"zone": "PST", "lat": 49.2827, "lon": -123.1207},
+        "Los Angeles, CA": {"zone": "PST", "lat": 34.0522, "lon": -118.2437},
+        "Chicago, IL": {"zone": "CST", "lat": 41.8781, "lon": -87.6298},
+        "Toronto, CA": {"zone": "EST", "lat": 43.6532, "lon": -79.3832},
+        "Seoul, KR": {"zone": "KST", "lat": 37.5665, "lon": 126.9780},
+        "Beijing, CN": {"zone": "CST", "lat": 39.9042, "lon": 116.4074},
+        "Eilat, IL": {"zone": "IST", "lat": 29.5581, "lon": 34.9482},
+        "Rehovot, IL": {"zone": "IST", "lat": 31.8928, "lon": 34.8111}
     }
 
     @staticmethod
@@ -976,7 +1018,8 @@ class DHLRealisticSimulator:
             "Dubai, UAE": ["Jebel Ali Free Zone", "Dubai Airport Freezone", "Business Bay"],
             "London, UK": ["Heathrow Cargo Area", "Canary Wharf", "London City Business Park"],
             "New York, NY": ["JFK Cargo Area", "Times Square District", "Brooklyn Industrial Zone"],
-            "Sydney, AU": ["Sydney Airport Cargo", "Parramatta Industrial", "CBD Business District"]
+            "Sydney, AU": ["Sydney Airport Cargo", "Parramatta Industrial", "CBD Business District"],
+            "Rehovot, IL": ["Ha Yashim 12, Rehovot", "University Campus Area", "Kiryat Rehovot Industrial Zone"]
         }
         locations = pickup_locations.get(origin, ["Industrial Zone", "Business District"])
         return random.choice(locations)
@@ -989,7 +1032,8 @@ class DHLRealisticSimulator:
             "Dubai, UAE": ["Sheikh Zayed Road, Dubai Marina", "Jumeirah Beach Road", "Al Barsha District"],
             "London, UK": ["Brick Lane, Shoreditch", "King's Road, Chelsea", "Oxford Street, Mayfair"],
             "New York, NY": ["5th Avenue, Manhattan", "Wall Street, Financial District", "Broadway, Soho"],
-            "Sydney, AU": ["George Street, CBD", "Bondi Beach Road", "Kings Cross, Potts Point"]
+            "Sydney, AU": ["George Street, CBD", "Bondi Beach Road", "Kings Cross, Potts Point"],
+            "Rehovot, IL": ["Ha Yashim 12, Rehovot", "Kiryat Rehovot Main St", "Science Park, Rehovot"]
         }
         locations = delivery_locations.get(destination, ["Main Street", "City Center"])
         return random.choice(locations)
