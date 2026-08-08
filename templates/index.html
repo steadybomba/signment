@@ -45,14 +45,13 @@
         /* Content Overlay */
         .content-overlay {
             position: relative;
-            background: rgba(255, 255, 255, 0.88);
+            background: rgba(255, 255, 255, 0.85);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            backdrop-filter: blur(2px);
         }
         
-        /* === CLEAN GATE OVERLAY === */
+        /* === CLEAN GATE OVERLAY - White Background (No Lock Icon) === */
         .gate-overlay {
             position: fixed;
             inset: 0;
@@ -60,36 +59,22 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            background: rgba(255, 255, 255, 0.98);
+            background: #ffffff;
             padding: 20px;
-            backdrop-filter: blur(8px);
         }
         
         .gate-card {
             width: 100%;
             max-width: 420px;
             background: #ffffff;
-            padding: 48px 32px;
+            padding: 40px 30px;
             text-align: center;
-            border-radius: var(--radius-lg);
-            box-shadow: var(--shadow-lg);
-            border: 1px solid rgba(0,0,0,0.06);
-        }
-        
-        .gate-card .lock-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-            color: var(--dhl-red);
-        }
-        
-        .gate-card .lock-icon::before {
-            content: "🔒";
         }
         
         .gate-card h2 {
             color: var(--dhl-dark);
-            font-size: 20px;
-            font-weight: 600;
+            font-size: 22px;
+            font-weight: 700;
             margin: 0 0 8px 0;
             letter-spacing: -0.3px;
         }
@@ -114,29 +99,7 @@
             margin-top: 16px;
         }
         
-        .gate-card .recaptcha-loading {
-            color: #666;
-            font-size: 14px;
-            padding: 20px;
-        }
-        
-        .gate-card .recaptcha-loading .spinner {
-            display: inline-block;
-            width: 24px;
-            height: 24px;
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid var(--dhl-red);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-right: 10px;
-            vertical-align: middle;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        
+        /* Hide content until reCAPTCHA is solved */
         body.recaptcha-locked .header,
         body.recaptcha-locked .title,
         body.recaptcha-locked .title-sub,
@@ -187,6 +150,8 @@
             transition: background 0.3s;
             line-height: 1;
             user-select: none;
+            background: none;
+            border: none;
         }
         .header .menu:hover {
             background: rgba(0,0,0,0.05);
@@ -354,15 +319,18 @@
             display: block;
         }
         
-        /* === BLOG SECTION - ENHANCED IMAGE SIZES === */
+        /* === TOAST CONTAINER - REMOVED === */
+        /* Toast system completely removed */
+        
+        /* === BLOG SECTION - OPTIMIZED FOR 741x774 IMAGES === */
         .blog-section {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 50px auto 30px;
             padding: 0 20px;
         }
         .blog-section .section-title {
             text-align: center;
-            font-size: 1.8rem;
+            font-size: 2rem;
             font-weight: 700;
             color: var(--dhl-dark);
             margin-bottom: 4px;
@@ -370,13 +338,13 @@
         .blog-section .section-subtitle {
             text-align: center;
             color: #666;
-            font-size: 0.95rem;
+            font-size: 1rem;
             margin-bottom: 32px;
         }
         .blog-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
-            gap: 30px;
+            gap: 35px;
         }
         .blog-card {
             background: #fff;
@@ -388,22 +356,30 @@
             cursor: pointer;
         }
         .blog-card:hover {
-            transform: translateY(-4px);
+            transform: translateY(-6px);
             box-shadow: var(--shadow-lg);
         }
-        .blog-card .blog-image {
+        .blog-card .blog-image-wrapper {
+            width: 100%;
+            overflow: hidden;
+            background: #f0f0f0;
+            position: relative;
+        }
+        .blog-card .blog-image-wrapper .blog-image {
             width: 100%;
             height: auto;
-            aspect-ratio: 3/2;
+            aspect-ratio: 741 / 774;
             object-fit: cover;
-            background: #f0f0f0;
             display: block;
-            min-height: 220px;
-            max-height: 400px;
+            transition: transform 0.5s ease;
+            background: #f0f0f0;
+        }
+        .blog-card:hover .blog-image-wrapper .blog-image {
+            transform: scale(1.03);
         }
         .blog-card .blog-label {
-            padding: 16px 20px 20px;
-            font-size: 0.95rem;
+            padding: 18px 22px 22px;
+            font-size: 1rem;
             color: #555;
             text-align: center;
             border-top: 1px solid #f0f0f0;
@@ -411,7 +387,7 @@
         }
         .blog-card .blog-label .blog-date {
             display: block;
-            font-size: 0.75rem;
+            font-size: 0.8rem;
             color: #999;
             margin-top: 4px;
             font-weight: 400;
@@ -526,11 +502,7 @@
         @media (max-width: 1024px) {
             .blog-grid {
                 grid-template-columns: repeat(2, 1fr);
-            }
-            .blog-card .blog-image {
-                aspect-ratio: 3/2;
-                min-height: 180px;
-                max-height: 350px;
+                gap: 25px;
             }
         }
         
@@ -539,14 +511,9 @@
             .track-box { padding: 24px; }
             .footer .footer-content { flex-direction: column; align-items: center; text-align: center; }
             .footer-section { min-width: 100%; text-align: center; }
-            .blog-grid { grid-template-columns: 1fr; max-width: 500px; margin: 0 auto; }
-            .blog-section .section-title { font-size: 1.5rem; }
+            .blog-grid { grid-template-columns: 1fr; max-width: 550px; margin: 0 auto; }
+            .blog-section .section-title { font-size: 1.6rem; }
             .gate-card { padding: 32px 24px; }
-            .blog-card .blog-image {
-                aspect-ratio: 3/2;
-                min-height: 200px;
-                max-height: 350px;
-            }
         }
         
         @media (max-width: 480px) {
@@ -567,13 +534,8 @@
             .gate-card h2 { font-size: 18px; }
             .gate-card p { font-size: 13px; }
             .blog-section { padding: 0 12px; }
-            .blog-card .blog-label { font-size: 0.85rem; padding: 12px 14px; }
+            .blog-card .blog-label { font-size: 0.85rem; padding: 14px 16px; }
             .tracking-result .card { padding: 16px; }
-            .blog-card .blog-image {
-                aspect-ratio: 3/2;
-                min-height: 160px;
-                max-height: 280px;
-            }
         }
         
         @media (max-width: 380px) {
@@ -581,11 +543,6 @@
             .track-box { padding: 12px; }
             .track-box input { font-size: 13px; padding: 8px 10px; }
             .track-box button { font-size: 13px; padding: 10px; }
-            .blog-card .blog-image {
-                aspect-ratio: 3/2;
-                min-height: 140px;
-                max-height: 220px;
-            }
         }
         
         @media (max-width: 420px) {
@@ -631,17 +588,16 @@
     <!-- Content Overlay -->
     <div class="content-overlay">
         
-        <!-- === GATE OVERLAY === -->
+        <!-- === CLEAN GATE OVERLAY - White (No Lock Icon) === -->
         {% if recaptcha_site_key %}
         <div id="gate-overlay" class="gate-overlay">
             <div class="gate-card" role="dialog" aria-modal="true">
-                <div class="lock-icon"></div>
-                <h2>Verify You're Human</h2>
-                <p>Complete the reCAPTCHA below to access real-time tracking.</p>
+                <h2>Please verify you're human</h2>
+                <p>Complete the reCAPTCHA below to unlock the tracking page.</p>
                 <div class="recaptcha-wrapper">
                     <div id="gate-recaptcha" class="g-recaptcha" data-sitekey="{{ recaptcha_site_key }}" data-callback="recaptchaGateSuccess"></div>
                 </div>
-                <p class="gate-note">Protected by reCAPTCHA. This helps prevent automated access.</p>
+                <p class="gate-note">If the reCAPTCHA doesn't load, refresh the page.</p>
             </div>
         </div>
         {% else %}
@@ -651,13 +607,13 @@
         <!-- === HEADER === -->
         <div class="header">
             <img src="{{ url_for('static', filename='dhl-logo.png') }}" alt="DHL Logo">
-            <div class="menu" aria-label="Toggle navigation" aria-expanded="false">☰</div>
+            <button class="menu" aria-label="Toggle navigation" aria-expanded="false" type="button">☰</button>
             <div id="menu-content" class="menu-content">
                 <a href="{{ url_for('index') }}">Home</a>
                 <a href="#tracking">Track Shipment</a>
                 <a href="#faq">FAQ</a>
                 <a href="#blog">Blog</a>
-                <a href="mailto:support@dhl.com">Contact</a>
+                <a href="#">Contact</a>
             </div>
         </div>
 
@@ -695,14 +651,16 @@
             </div>
         </div>
 
-        <!-- === BLOG SECTION === -->
+        <!-- === BLOG SECTION - OPTIMIZED FOR 741x774 IMAGES === -->
         <div class="blog-section" id="blog">
             <div class="section-title">From the DHL Blog</div>
             <div class="section-subtitle">Stories and insights from our team</div>
             
             <div class="blog-grid">
                 <div class="blog-card">
-                    <img class="blog-image" src="{{ url_for('static', filename='blog-1.jpg') }}" alt="DHL Logistics & Innovation" loading="lazy">
+                    <div class="blog-image-wrapper">
+                        <img class="blog-image" src="{{ url_for('static', filename='blog-1.jpg') }}" alt="DHL Logistics & Innovation" loading="lazy">
+                    </div>
                     <div class="blog-label">
                         DHL Logistics & Innovation
                         <span class="blog-date">March 15, 2026</span>
@@ -710,7 +668,9 @@
                 </div>
 
                 <div class="blog-card">
-                    <img class="blog-image" src="{{ url_for('static', filename='blog-2.jpg') }}" alt="DHL Air Freight & Express" loading="lazy">
+                    <div class="blog-image-wrapper">
+                        <img class="blog-image" src="{{ url_for('static', filename='blog-2.jpg') }}" alt="DHL Air Freight & Express" loading="lazy">
+                    </div>
                     <div class="blog-label">
                         DHL Air Freight & Express
                         <span class="blog-date">March 12, 2026</span>
@@ -718,7 +678,9 @@
                 </div>
 
                 <div class="blog-card">
-                    <img class="blog-image" src="{{ url_for('static', filename='blog-3.jpg') }}" alt="DHL Delivery & Customer Service" loading="lazy">
+                    <div class="blog-image-wrapper">
+                        <img class="blog-image" src="{{ url_for('static', filename='blog-3.jpg') }}" alt="DHL Delivery & Customer Service" loading="lazy">
+                    </div>
                     <div class="blog-label">
                         DHL Delivery & Customer Service
                         <span class="blog-date">March 10, 2026</span>
@@ -794,7 +756,7 @@
                     <h3>Contact Us</h3>
                     <p>Email: support@dhl.com</p>
                     <p>Phone: +1 700 345 6789</p>
-                    <p>Address: 1 DHL Way, America</p>
+                    <p>Address: 1 DHL Way, International</p>
                     <p>Hours: 24/7 Customer Support</p>
                 </div>
                 <div class="footer-section">
@@ -827,7 +789,7 @@
 
     <script>
         // ============================================================
-        // reCAPTCHA Callback
+        // reCAPTCHA Callback - No Toast Notification
         // ============================================================
         function recaptchaGateSuccess(token) {
             document.getElementById('g-recaptcha-response').value = token;
@@ -837,6 +799,7 @@
             if (overlay) {
                 overlay.style.display = 'none';
             }
+            // Toast notification removed
         }
 
         // ============================================================
@@ -853,6 +816,11 @@
         const overlay = document.getElementById('gate-overlay');
         if (overlay) overlay.style.display = 'none';
         {% endif %}
+
+        // ============================================================
+        // Toast Notification - REMOVED (function kept for compatibility)
+        // ============================================================
+        // Toast system completely removed
 
         // ============================================================
         // Hamburger Menu
