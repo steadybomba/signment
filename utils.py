@@ -1,356 +1,408 @@
 import os
+from dotenv import load_dotenv
 import re
 import json
 import logging
-import threading
+import socket
 import time
-from datetime import datetime
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from telebot import TeleBot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from functools import wraps
 from collections import deque
-
-import validators
-import requests
 from rich.console import Console
-from rich.panel import Panel
-from telebot import TeleBot, types
+from flask_sqlalchemy import SQLAlchemy
+from flask import Flask
+from math import radians, sin, cos, sqrt, atan2
+from typing import Optional, List, Tuple, Dict, Any
+from urllib.parse import quote_plus, urlparse
 
-# Load environment variables
-from dotenv import load_dotenv
 load_dotenv()
 
-# ============================================================
-# Console and Logging
-# ============================================================
+# === LOGGING & CONSOLE ===
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+LOG_FORMAT = os.getenv('LOG_FORMAT', '%(asctime)s %(levelname)s [%(name)s] %(message)s')
+
+def configure_logging() -> None:
+    level = getattr(logging, LOG_LEVEL, logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(level)
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        root.addHandler(handler)
+    else:
+        for handler in root.handlers:
+            if not handler.formatter:
+                handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.getLogger('werkzeug').setLevel(level)
+    # Allow SQLAlchemy logging to be less verbose by default; configurable via env
+    sa_level_name = os.getenv('SQLALCHEMY_LOG_LEVEL', 'WARNING').upper()
+    sa_level = getattr(logging, sa_level_name, logging.WARNING)
+    logging.getLogger('sqlalchemy.engine').setLevel(sa_level)
+
+configure_logging()
+
+bot_logger = logging.getLogger('telegram_bot')
 console = Console()
-logger = logging.getLogger('utils')
 
-# ============================================================
-# Rate Limit Defaults
-# ============================================================
-RATE_LIMIT_WINDOW = int(os.getenv('RATE_LIMIT_WINDOW', '60'))
-RATE_LIMIT_MAX = int(os.getenv('RATE_LIMIT_MAX', '5'))
+# === REDIS CLIENT ===
 
-# ============================================================
-# Event Logging Helpers
-# ============================================================
-recent_socket_events = deque(maxlen=200)
-recent_socket_events_lock = threading.Lock()
+class RedisClientProxy:
+    def __init__(self):
+        self._client = None
 
-def add_socket_event(evt: dict):
-    try:
-        with recent_socket_events_lock:
-            recent_socket_events.appendleft({'ts': datetime.utcnow().isoformat() + 'Z', **evt})
-    except Exception:
-        pass
+    def set_client(self, client):
+        self._client = client
 
-recent_client_errors = deque(maxlen=200)
-recent_client_errors_lock = threading.Lock()
+    def get_client(self):
+        return self._client
 
-def add_client_error(evt: dict):
-    try:
-        with recent_client_errors_lock:
-            recent_client_errors.appendleft({'ts': datetime.utcnow().isoformat() + 'Z', **evt})
-    except Exception:
-        pass
+    def __bool__(self):
+        return self._client is not None
 
-# ============================================================
-# Configuration
-# ============================================================
-@dataclass
-class BotConfig:
-    telegram_bot_token: str = ""
-    redis_url: Optional[str] = None
-    redis_token: str = ""
-    webhook_url: str = ""
-    websocket_server: str = ""
-    allowed_admins: List[int] = field(default_factory=list)
-    valid_statuses: List[str] = field(default_factory=lambda: [
-        "Pending", "On_Hold", "In_Transit", "Out_for_Delivery", 
-        "Delivered", "Returned", "Delayed"
-    ])
-    route_templates: Dict[str, Any] = field(default_factory=lambda: {"Lagos, NG": ["Lagos, NG"]})
-    smtp_host: str = "smtp.gmail.com"
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_pass: str = ""
-    smtp_from: str = "no-reply@example.com"
+    def __getattr__(self, name):
+        def _missing(*args, **kwargs):
+            client = self._client
+            if client is None:
+                raise RuntimeError(f"Redis client is not initialized: {name}")
+            return getattr(client, name)(*args, **kwargs)
+
+        return _missing
 
 
-config = BotConfig(
-    telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_TOKEN", "")),
-    redis_url=os.getenv("REDIS_URL"),
-    redis_token=os.getenv("REDIS_TOKEN", ""),
-    webhook_url=os.getenv("WEBHOOK_URL", ""),
-    websocket_server=os.getenv("WEBSOCKET_SERVER", ""),
-    allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-    valid_statuses=os.getenv("VALID_STATUSES", "Pending,On_Hold,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-    route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-    smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-    smtp_port=int(os.getenv("SMTP_PORT", 587)),
-    smtp_user=os.getenv("SMTP_USER", ""),
-    smtp_pass=os.getenv("SMTP_PASS", ""),
-    smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-)
+redis_client = RedisClientProxy()
+redis_url = os.getenv("REDIS_URL", "").strip()
+redis_token = os.getenv("REDIS_TOKEN", "")
+redis_user = os.getenv("REDISUSER", os.getenv("REDIS_USER", "default"))
+redis_password = os.getenv("REDIS_PASSWORD", os.getenv("REDISPASSWORD", os.getenv("REDIS_PASS", "")))
+redis_host = os.getenv("REDISHOST", os.getenv("REDIS_HOST", "")).strip()
+redis_port = os.getenv("REDISPORT", os.getenv("REDIS_PORT", "6379")).strip()
 
-# ============================================================
-# Redis Client
-# ============================================================
-redis_client = None
+# Redis disable metrics and reconnect/backoff settings
+redis_disable_count = 0
+last_redis_disable = None
+REDIS_RECONNECT_BASE = int(os.getenv('REDIS_RECONNECT_BASE_SECONDS', '5'))
+REDIS_RECONNECT_MAX = int(os.getenv('REDIS_RECONNECT_MAX_SECONDS', '60'))
 
-# Email throttle caches - declared ONCE here
+# === EMAIL THROTTLING CACHE ===
 email_throttle_cache = {}
 email_digest_cache = {}
 
+EMAIL_TEST_MODE = os.getenv('EMAIL_TEST_MODE', 'false').lower() == 'true'
+EMAIL_ENABLED = os.getenv('EMAIL_ENABLED', 'true').lower() == 'true'
+AUTO_EMAIL_ENABLED = os.getenv('AUTO_EMAIL_ENABLED', 'true').lower() == 'true'
+EMAIL_THROTTLE_MINUTES = int(os.getenv('EMAIL_THROTTLE_MINUTES', '60'))
+
+# === SOCKET EVENT / CLIENT ERROR TRACKING ===
+recent_socket_events = deque(maxlen=200)
+recent_client_errors = deque(maxlen=200)
+
+# Simulator concurrency throttle
+SIMULATOR_THREAD_LIMIT = int(os.getenv('SIMULATOR_THREAD_LIMIT', '8'))
+_simulator_thread_count = 0
+_simulator_thread_lock = None
+
+
+def _get_simulator_thread_lock():
+    global _simulator_thread_lock
+    if _simulator_thread_lock is None:
+        import threading
+        _simulator_thread_lock = threading.Lock()
+    return _simulator_thread_lock
+
+
+def can_start_simulation() -> bool:
+    global _simulator_thread_count
+    lock = _get_simulator_thread_lock()
+    with lock:
+        return _simulator_thread_count < SIMULATOR_THREAD_LIMIT
+
+
+def register_simulation_start() -> bool:
+    global _simulator_thread_count
+    lock = _get_simulator_thread_lock()
+    with lock:
+        if _simulator_thread_count >= SIMULATOR_THREAD_LIMIT:
+            return False
+        _simulator_thread_count += 1
+        return True
+
+
+def register_simulation_stop() -> None:
+    global _simulator_thread_count
+    lock = _get_simulator_thread_lock()
+    with lock:
+        _simulator_thread_count = max(0, _simulator_thread_count - 1)
+
+
+def add_socket_event(details: dict):
+    try:
+        recent_socket_events.append({**details, 'timestamp': datetime.utcnow().isoformat()})
+    except Exception:
+        pass
+
+
+def add_client_error(payload: dict):
+    try:
+        recent_client_errors.append({**payload, 'timestamp': datetime.utcnow().isoformat()})
+    except Exception:
+        pass
+
+
+def spawn_simulation(tracking_number: str):
+    if not register_simulation_start():
+        return None
+
+    def _runner():
+        try:
+            import importlib
+            try:
+                app_module = importlib.import_module('app')
+            except Exception:
+                app_module = None
+            if app_module and hasattr(app_module, 'simulate_tracking'):
+                app_module.simulate_tracking(tracking_number)
+        finally:
+            register_simulation_stop()
+
+    try:
+        import threading
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+        return thread
+    except Exception:
+        register_simulation_stop()
+        pass
+    return None
+
+
+def _resolve_template_url(url: str) -> str:
+    if not url:
+        return url
+    resolved = url.strip()
+    placeholders = {
+        "${{REDISUSER}}": redis_user,
+        "${{REDIS_PASSWORD}}": redis_password,
+        "${{REDISPASSWORD}}": redis_password,
+        "${{REDISHOST}}": redis_host,
+        "${{REDISPORT}}": redis_port,
+        "${REDISUSER}": redis_user,
+        "${REDIS_PASSWORD}": redis_password,
+        "${REDISPASSWORD}": redis_password,
+        "${REDISHOST}": redis_host,
+        "${REDISPORT}": redis_port,
+        "{{REDISUSER}}": redis_user,
+        "{{REDIS_PASSWORD}}": redis_password,
+        "{{REDISPASSWORD}}": redis_password,
+        "{{REDISHOST}}": redis_host,
+        "{{REDISPORT}}": redis_port,
+    }
+    for placeholder, value in placeholders.items():
+        resolved = resolved.replace(placeholder, value)
+    if "{{" in resolved or "}}" in resolved:
+        return ""
+    return resolved
+
+
+def _build_redis_url(user: str, password: str, host: str, port: str) -> str:
+    if not host:
+        return ""
+    auth = ""
+    if user:
+        auth = quote_plus(user)
+        if password:
+            auth = f"{auth}:{quote_plus(password)}"
+    return f"redis://{auth + '@' if auth else ''}{host}:{port}"
+
+
+def _is_hostname_resolvable(hostname: str) -> bool:
+    if not hostname:
+        return False
+    try:
+        socket.getaddrinfo(hostname, None)
+        return True
+    except Exception as e:
+        console.print(f"[yellow]Redis hostname not resolvable: {hostname} ({e})[/yellow]")
+        return False
+
+
+def _initialize_redis_client() -> None:
+    if not redis_url:
+        redis_client.set_client(None)
+        return
+
+    redis_url_local = redis_url.strip()
+    parsed_url = urlparse(redis_url_local)
+    scheme = parsed_url.scheme.lower()
+    hostname = parsed_url.hostname
+
+    if hostname and not _is_hostname_resolvable(hostname):
+        console.print(f"[yellow]Redis hostname lookup warning: {hostname}[/yellow]")
+
+    try:
+        if scheme in ("https", "http") or "upstash" in redis_url_local.lower() or scheme.startswith("upstash"):
+            from upstash_redis import Redis as UpstashRedis
+
+            client = UpstashRedis(url=redis_url_local, token=redis_token)
+            client.set("health_check", "ok", ex=10)
+            client.delete("health_check")
+            redis_client.set_client(client)
+            console.print("[green]Upstash Redis connected[/green]")
+        elif scheme in ("redis", "rediss"):
+            try:
+                from redis import Redis as RedisClient, ConnectionPool
+
+                max_conn = int(os.getenv('REDIS_MAX_CONNECTIONS', '4'))
+                pool = ConnectionPool.from_url(redis_url_local, decode_responses=True, max_connections=max_conn, socket_timeout=3, socket_connect_timeout=3)
+                client = RedisClient(connection_pool=pool, decode_responses=True)
+                client.ping()
+                redis_client.set_client(client)
+                console.print(f"[green]Redis connected (max_connections={max_conn})[/green]")
+            except Exception as e:
+                console.print(f"[yellow]Redis connect failed: {e}[/yellow]")
+                redis_client.set_client(None)
+        else:
+            console.print(f"[yellow]Redis unavailable: unsupported Redis scheme '{scheme}'[/yellow]")
+            redis_client.set_client(None)
+    except Exception as e:
+        if scheme in ("redis", "rediss") or redis_url_local.lower().startswith("redis://"):
+            try:
+                from redis import Redis as RedisClient
+
+                client = RedisClient.from_url(redis_url_local, decode_responses=True)
+                client.ping()
+                redis_client.set_client(client)
+                console.print("[green]Redis connected via redis-py fallback[/green]")
+            except Exception as fallback_error:
+                console.print(f"[yellow]Redis unavailable: {fallback_error}[/yellow]")
+                redis_client.set_client(None)
+        else:
+            console.print(f"[yellow]Redis unavailable: {e}[/yellow]")
+            redis_client.set_client(None)
+
+
 def get_redis_client():
-    global redis_client
-    if redis_client is not None:
-        return redis_client
-    try:
-        import redis as _redis
-        url = os.getenv('REDIS_URL') or None
-        token = os.getenv('REDIS_TOKEN', '')
-        max_conn = int(os.getenv('REDIS_MAX_CONNECTIONS', '50'))
-        if not url:
-            return None
-        pool = _redis.ConnectionPool.from_url(url, password=token or None, max_connections=max_conn)
-        redis_client = _redis.Redis(connection_pool=pool)
-        return redis_client
-    except Exception:
-        return None
+    if not redis_client:
+        _initialize_redis_client()
+    return redis_client.get_client()
 
-redis_client = get_redis_client()
 
-def safe_redis_operation(func, *args, **kwargs):
-    try:
-        return func(*args, **kwargs)
-    except Exception:
-        return None
+if redis_url:
+    redis_url = _resolve_template_url(redis_url)
 
-# ============================================================
-# Safe Redis Wrappers
-# ============================================================
-def r_ping():
-    try:
-        if not redis_client:
-            return False
-        return redis_client.ping()
-    except Exception:
-        return False
+if not redis_url and redis_host:
+    redis_url = _build_redis_url(redis_user, redis_password, redis_host, redis_port)
 
-def r_get(key):
-    try:
-        if not redis_client:
-            return None
-        v = redis_client.get(key)
-        if v is None:
-            return None
-        return v.decode() if isinstance(v, bytes) else v
-    except Exception:
-        return None
+_initialize_redis_client()
 
-def r_set(key, value, ex=None):
-    try:
-        if not redis_client:
-            return None
-        if ex:
-            return redis_client.set(key, value, ex=ex)
-        return redis_client.set(key, value)
-    except Exception:
-        return None
 
-def r_lpop(key):
-    global redis_client
-    try:
-        if not redis_client:
-            return None
-        v = redis_client.lpop(key)
-        if v is None:
-            return None
-        return v.decode() if isinstance(v, bytes) else v
-    except Exception:
-        redis_client = None
-        return None
+def _redis_reconnect_loop():
+    """Background thread: monitor Redis and attempt reconnect with exponential backoff."""
+    import threading
+    backoff = REDIS_RECONNECT_BASE
+    while True:
+        try:
+            client = redis_client.get_client()
+            if client:
+                try:
+                    # ping to ensure health
+                    client.ping()
+                    backoff = REDIS_RECONNECT_BASE
+                except Exception:
+                    # Mark client as disabled and attempt reconnect next loop
+                    try:
+                        redis_client.set_client(None)
+                    except Exception:
+                        pass
+            else:
+                # attempt to initialize
+                _initialize_redis_client()
+                if not redis_client.get_client():
+                    time.sleep(min(backoff, REDIS_RECONNECT_MAX))
+                    backoff = min(backoff * 2, REDIS_RECONNECT_MAX)
+                else:
+                    backoff = REDIS_RECONNECT_BASE
+        except Exception:
+            # ensure loop doesn't die
+            try:
+                time.sleep(REDIS_RECONNECT_BASE)
+            except Exception:
+                pass
 
-def r_lpush(key, value):
-    global redis_client
-    try:
-        if not redis_client:
-            return None
-        return redis_client.lpush(key, value)
-    except Exception:
-        redis_client = None
-        return None
 
-def r_ltrim(key, start, end):
-    try:
-        if not redis_client:
-            return None
-        return redis_client.ltrim(key, start, end)
-    except Exception:
-        return None
+# start background reconnect thread
+try:
+    import threading
+    t = threading.Thread(target=_redis_reconnect_loop, daemon=True)
+    t.start()
+except Exception:
+    pass
 
-def r_sadd(key, member):
-    try:
-        if not redis_client:
-            return None
-        return redis_client.sadd(key, member)
-    except Exception:
-        return None
 
-def r_srem(key, member):
-    try:
-        if not redis_client:
-            return None
-        return redis_client.srem(key, member)
-    except Exception:
-        return None
+def get_redis_metrics() -> Dict[str, Any]:
+    """Return simple Redis metrics for diagnostics."""
+    return {
+        'connected': bool(redis_client.get_client()),
+        'disable_count': globals().get('redis_disable_count', 0),
+        'last_disable': globals().get('last_redis_disable')
+    }
 
-def r_smembers(key):
-    try:
-        if not redis_client:
-            return set()
-        members = redis_client.smembers(key) or set()
-        return {m.decode() if isinstance(m, bytes) else m for m in members}
-    except Exception:
-        return set()
+# === CONFIGURATION CLASS (EXPORTED) ===
+class BotConfig:
+    def __init__(
+        self,
+        telegram_bot_token=None,
+        redis_url=None,
+        redis_token=None,
+        webhook_url=None,
+        websocket_server=None,
+        allowed_admins=None,
+        valid_statuses=None,
+        route_templates=None,
+        smtp_host=None,
+        smtp_port=None,
+        smtp_user=None,
+        smtp_pass=None,
+        smtp_from=None,
+    ):
+        self.telegram_bot_token = (
+            telegram_bot_token
+            if telegram_bot_token is not None
+            else os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_TOKEN", ""))
+        )
+        self.redis_url = redis_url if redis_url is not None else os.getenv("REDIS_URL")
+        self.redis_token = redis_token if redis_token is not None else os.getenv("REDIS_TOKEN", "")
+        self.webhook_url = webhook_url if webhook_url is not None else os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook")
+        self.websocket_server = websocket_server if websocket_server is not None else os.getenv("WEBSOCKET_SERVER", "https://signment-9a96.onrender.com")
+        self.allowed_admins = (
+            allowed_admins
+            if allowed_admins is not None
+            else [int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid.strip()]
+        )
+        self.valid_statuses = (
+            valid_statuses
+            if valid_statuses is not None
+            else os.getenv("VALID_STATUSES", "Pending,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(",")
+        )
+        self.route_templates = (
+            route_templates
+            if route_templates is not None
+            else json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}'))
+        )
+        self.smtp_host = smtp_host if smtp_host is not None else os.getenv("SMTP_HOST", "smtp.gmail.com")
+        self.smtp_port = smtp_port if smtp_port is not None else int(os.getenv("SMTP_PORT", 587))
+        self.smtp_user = smtp_user if smtp_user is not None else os.getenv("SMTP_USER", "")
+        self.smtp_pass = smtp_pass if smtp_pass is not None else os.getenv("SMTP_PASS", "")
+        self.smtp_from = smtp_from if smtp_from is not None else os.getenv("SMTP_FROM", "no-reply@example.com")
 
-def r_scan_iter(pattern):
-    try:
-        if not redis_client:
-            return []
-        keys = list(redis_client.scan_iter(pattern))
-        return [k.decode() if isinstance(k, bytes) else k for k in keys]
-    except Exception:
-        return []
+try:
+    config = BotConfig()
+except Exception as e:
+    bot_logger.error(f"Config init failed: {e}")
+    raise
 
-def r_keys(pattern):
-    try:
-        if not redis_client:
-            return []
-        keys = redis_client.keys(pattern) or []
-        return [k.decode() if isinstance(k, bytes) else k for k in keys]
-    except Exception:
-        return []
-
-def r_hget(key, field):
-    try:
-        if not redis_client:
-            return None
-        v = redis_client.hget(key, field)
-        if v is None:
-            return None
-        return v.decode() if isinstance(v, bytes) else v
-    except Exception:
-        return None
-
-def r_hset(key, field, value):
-    try:
-        if not redis_client:
-            return None
-        return redis_client.hset(key, field, value)
-    except Exception:
-        return None
-
-def r_hgetall(key):
-    try:
-        if not redis_client:
-            return {}
-        d = redis_client.hgetall(key) or {}
-        return {(k.decode() if isinstance(k, bytes) else k): (v.decode() if isinstance(v, bytes) else v) 
-                for k, v in d.items()}
-    except Exception:
-        return {}
-
-def r_hlen(key):
-    try:
-        if not redis_client:
-            return 0
-        return redis_client.hlen(key)
-    except Exception:
-        return 0
-
-def r_exists(key):
-    try:
-        if not redis_client:
-            return False
-        return bool(redis_client.exists(key))
-    except Exception:
-        return False
-
-def r_llen(key):
-    try:
-        if not redis_client:
-            return 0
-        return redis_client.llen(key)
-    except Exception:
-        return 0
-
-# ============================================================
-# Validation Helpers
-# ============================================================
-def sanitize_tracking_number(tn: str) -> str:
-    if not tn:
-        return ''
-    return re.sub(r'[^A-Za-z0-9]', '', tn).upper()
-
-def validate_email(email: str) -> bool:
-    try:
-        return bool(validators.email(email))
-    except Exception:
-        return False
-
-def validate_location(loc: str) -> bool:
-    return isinstance(loc, str) and len(loc) > 0
-
-def validate_webhook_url(url: str) -> bool:
-    try:
-        return bool(validators.url(url))
-    except Exception:
-        return False
-
-# ============================================================
-# Bot Helpers
-# ============================================================
-def get_bot():
-    token = os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN')
-    if not token:
-        return None
-    try:
-        return TeleBot(token)
-    except Exception:
-        return None
-
-def is_admin(user_id) -> bool:
-    allowed_admins = config.allowed_admins or []
-    return user_id in allowed_admins
-
-# ============================================================
-# ID Generation
-# ============================================================
-def generate_unique_id(prefix: str = 'JD') -> str:
-    import random
-    import string as _string
-    return f"{prefix}{''.join(random.choices(_string.digits, k=10))}"
-
-# ============================================================
-# Route Templates Cache
-# ============================================================
-_route_templates_cache: Dict[str, Any] = {}
-
-def cache_route_templates():
-    global _route_templates_cache
-    try:
-        _route_templates_cache = config.route_templates or {}
-    except Exception:
-        _route_templates_cache = {}
-
-def get_cached_route_templates() -> Dict[str, Any]:
-    return _route_templates_cache or config.route_templates
-
-# ============================================================
-# DHL Configuration
-# ============================================================
+# === DHL CONFIG ===
 DHL_CONFIG = {
     "name": "DHL Express",
     "primary_color": "#D40511",
@@ -358,410 +410,539 @@ DHL_CONFIG = {
     "logo_url": "https://www.dhl.com/etc.clientlibs/dhl/clientlibs/clientlib-site/resources/images/dhl-logo.svg",
     "tracking_prefix": "JD",
     "tracking_format": r"^JD\d{10}$",
+    "status_flow": {
+        "Pending": {"next": ["In_Transit"], "delay": [60, 180]},
+        "On_Hold": {"next": ["In_Transit", "Delayed"], "delay": [3600, 86400]},
+        "In_Transit": {"next": ["Out_for_Delivery", "Delayed"], "delay": [120, 600], "probabilities": [0.92, 0.08]},
+        "Out_for_Delivery": {"next": ["Delivered"], "delay": [60, 240]},
+        "Delayed": {"next": ["Out_for_Delivery"], "delay": [300, 900]},
+        "Delivered": {"next": [], "delay": [0, 0]},
+        "Returned": {"next": [], "delay": [0, 0]}
+    },
+    "events": {
+        "In_Transit": ["Shipment picked up", "Departed origin facility", "Arrived at sort facility", "Processed at hub"],
+        "Out_for_Delivery": ["Out for delivery", "With delivery courier"],
+        "Delayed": ["Held at customs", "Weather delay", "Routing delay"],
+        "On_Hold": ["Held for customs clearance", "Awaiting clearance documentation"]
+    }
 }
 
-# ============================================================
-# Distance Estimation Helper
-# ============================================================
-def estimate_distance(origin: str, destination: str) -> float:
-    """Estimate distance between two locations in kilometers.
-    Uses a simple city-based lookup with fallback.
-    """
-    if not origin or not destination:
-        return 1000
-    
-    # City coordinates database
-    city_coords = {
-        "lagos": (6.5244, 3.3792),
-        "abuja": (9.0579, 7.4951),
-        "port harcourt": (4.8156, 7.0498),
-        "kano": (12.0001, 8.5167),
-        "ibadan": (7.3775, 3.9470),
-        "enugu": (6.4584, 7.5170),
-        "new york": (40.7128, -74.0060),
-        "los angeles": (34.0522, -118.2437),
-        "london": (51.5074, -0.1278),
-        "dubai": (25.2048, 55.2708),
-        "tokyo": (35.6762, 139.6503),
-        "sydney": (-33.8688, 151.2093),
-        "paris": (48.8566, 2.3522),
-        "berlin": (52.5200, 13.4050),
-        "mumbai": (19.0760, 72.8777),
-        "singapore": (1.3521, 103.8198),
-        "hong kong": (22.3193, 114.1694),
-        "sao paulo": (-23.5505, -46.6333),
-        "johannesburg": (-26.2041, 28.0473),
-        "cairo": (30.0444, 31.2357),
-        "moscow": (55.7558, 37.6173),
-        "toronto": (43.6532, -79.3832),
-        "mexico city": (19.4326, -99.1332),
-        "seoul": (37.5665, 126.9780),
-        "bangkok": (13.7563, 100.5018),
-        "jakarta": (-6.2088, 106.8456),
-        "delhi": (28.7041, 77.1025),
-        "beijing": (39.9042, 116.4074),
-        "shanghai": (31.2304, 121.4737),
-        "istanbul": (41.0082, 28.9784),
-        "karachi": (24.8607, 67.0011),
-        "buenos aires": (-34.6037, -58.3816),
-        "rio de janeiro": (-22.9068, -43.1729),
-        "lima": (-12.0464, -77.0428),
-        "bogota": (4.7110, -74.0721),
-        "santiago": (-33.4489, -70.6693),
-        "cape town": (-33.9249, 18.4241),
-        "nairobi": (-1.2921, 36.8219),
-        "accra": (5.6037, -0.1870),
-        "addis ababa": (8.9806, 38.7578),
-        "kuala lumpur": (3.1390, 101.6869),
-        "hanoi": (21.0285, 105.8342),
-        "manila": (14.5995, 120.9842),
-        "taipei": (25.0330, 121.5654),
-        "riyadh": (24.7136, 46.6753),
-        "tel aviv": (32.0853, 34.7818),
-        "athens": (37.9838, 23.7275),
-        "lisbon": (38.7223, -9.1393),
-        "stockholm": (59.3293, 18.0686),
-        "oslo": (59.9139, 10.7522),
-        "helsinki": (60.1699, 24.9384),
-        "warsaw": (52.2297, 21.0122),
-        "prague": (50.0755, 14.4378),
-        "budapest": (47.4979, 19.0402),
-        "vienna": (48.2082, 16.3738),
-        "zurich": (47.3769, 8.5417),
-        "amsterdam": (52.3676, 4.9041),
-        "brussels": (50.8476, 4.3572),
-        "dublin": (53.3498, -6.2603),
-        "madrid": (40.4168, -3.7038),
-        "rome": (41.9028, 12.4964),
-        "milan": (45.4642, 9.1900),
-        "barcelona": (41.3851, 2.1734),
-        "cincinnati": (39.1031, -84.5120),
-        "miami": (25.7617, -80.1918),
-        "frankfurt": (50.1109, 8.6821),
-        "leipzig": (51.3397, 12.3731),
-    }
-    
-    def find_city(location: str):
-        location_lower = location.lower()
-        for city, _ in city_coords.items():
-            if city in location_lower or location_lower in city:
-                return city
+# === FLASK & DB ===
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI', 'sqlite:///shipments.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['RATELIMIT_STORAGE_URI'] = os.getenv('RATELIMIT_STORAGE_URI', 'memory://')
+app.config['RATELIMIT_DEFAULTS'] = os.getenv('RATELIMIT_DEFAULTS', '200 per day,50 per hour').split(',')
+app.config['WEBSOCKET_SERVER'] = os.getenv('WEBSOCKET_SERVER', 'https://signment-9a96.onrender.com')
+app.config['SMTP_HOST'] = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+app.config['SMTP_PORT'] = int(os.getenv('SMTP_PORT', 587))
+app.config['SMTP_USER'] = os.getenv('SMTP_USER', '')
+app.config['SMTP_PASS'] = os.getenv('SMTP_PASS', '')
+app.config['SMTP_FROM'] = os.getenv('SMTP_FROM', 'no-reply@example.com')
+app.config['RECAPTCHA_SITE_KEY'] = os.getenv('RECAPTCHA_SITE_KEY', 'your-site-key')
+app.config['RECAPTCHA_SECRET_KEY'] = os.getenv('RECAPTCHA_SECRET_KEY', 'your-secret-key')
+app.config['RECAPTCHA_VERIFY_URL'] = os.getenv('RECAPTCHA_VERIFY_URL', 'https://www.google.com/recaptcha/api/siteverify')
+app.config['TAWK_PROPERTY_ID'] = os.getenv('TAWK_PROPERTY_ID', 'your-tawk-property-id')
+app.config['TAWK_WIDGET_ID'] = os.getenv('TAWK_WIDGET_ID', 'your-tawk-widget-id')
+app.config['ADMIN_PASSWORD'] = os.getenv('ADMIN_PASSWORD', 'admin')
+# Tune SQLAlchemy engine options to mitigate pool exhaustion. Values are configurable via environment.
+engine_opts = {
+    'pool_size': int(os.getenv('SQLALCHEMY_POOL_SIZE', '20')),
+    'max_overflow': int(os.getenv('SQLALCHEMY_MAX_OVERFLOW', '40')),
+    'pool_timeout': int(os.getenv('SQLALCHEMY_POOL_TIMEOUT', '60')),
+    'pool_pre_ping': True,
+}
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_opts
+
+db = SQLAlchemy(app)
+
+class Shipment(db.Model):
+    __tablename__ = 'shipments'
+    id = db.Column(db.Integer, primary_key=True)
+    tracking_number = db.Column(db.String(50), unique=True, nullable=False)
+    status = db.Column(db.String(50), nullable=False)
+    checkpoints = db.Column(db.Text)
+    delivery_location = db.Column(db.String(100), nullable=False)
+    last_updated = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    recipient_email = db.Column(db.String(120), nullable=True)
+    origin_location = db.Column(db.String(100), nullable=True)
+    origin_lat = db.Column(db.Float, nullable=True)
+    origin_lon = db.Column(db.Float, nullable=True)
+    delivery_lat = db.Column(db.Float, nullable=True)
+    delivery_lon = db.Column(db.Float, nullable=True)
+    webhook_url = db.Column(db.Text, nullable=True)
+    email_notifications = db.Column(db.Boolean, default=True)
+    carrier = db.Column(db.String(20), default="DHL")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'tracking_number': self.tracking_number,
+            'status': self.status,
+            'delivery_location': self.delivery_location,
+            'last_updated': self.last_updated.isoformat(),
+            'created_at': self.created_at.isoformat(),
+            'recipient_email': self.recipient_email,
+            'origin_location': self.origin_location,
+            'origin_lat': self.origin_lat,
+            'origin_lon': self.origin_lon,
+            'delivery_lat': self.delivery_lat,
+            'delivery_lon': self.delivery_lon,
+            'webhook_url': self.webhook_url,
+            'email_notifications': self.email_notifications,
+            'carrier': self.carrier,
+            'checkpoints': (self.checkpoints or "").split(";") if self.checkpoints else []
+        }
+
+# === REDIS HELPERS ===
+def safe_redis_operation(func, *args, **kwargs):
+    client = get_redis_client()
+    if not client:
         return None
-    
-    origin_city = find_city(origin)
-    dest_city = find_city(destination)
-    
-    if origin_city and dest_city:
-        from math import radians, sin, cos, sqrt, atan2
-        lat1, lon1 = city_coords[origin_city]
-        lat2, lon2 = city_coords[dest_city]
-        
-        rlat1, rlon1, rlat2, rlon2 = map(radians, (lat1, lon1, lat2, lon2))
-        dlon = rlon2 - rlon1
-        dlat = rlat2 - rlat1
-        a = sin(dlat/2)**2 + cos(rlat1) * cos(rlat2) * sin(dlon/2)**2
-        return round(6371 * 2 * atan2(sqrt(a), sqrt(1-a)), 1)
-    
-    return 1000  # Default fallback
-
-# ============================================================
-# Database Helpers (Lazy imports to avoid circular)
-# ============================================================
-def get_shipment_list(page=1, per_page=10):
     try:
-        from app import app, Shipment
-        with app.app_context():
-            q = Shipment.query.order_by(Shipment.created_at.desc())
-            total = q.count()
-            items = q.offset((page - 1) * per_page).limit(per_page).all()
-            return [s.to_dict() for s in items], total
-    except Exception:
-        return [], 0
-
-def get_shipment_details(tracking_number):
-    try:
-        from app import app, Shipment
-        with app.app_context():
-            s = Shipment.query.filter_by(tracking_number=tracking_number).first()
-            return s.to_dict() if s else None
-    except Exception:
-        return None
-
-def save_shipment(tracking_number, status, checkpoints, delivery_location, 
-                  recipient_email=None, origin_location=None, webhook_url=None, carrier="DHL"):
-    try:
-        from app import app, db, Shipment
-        with app.app_context():
-            existing = Shipment.query.filter_by(tracking_number=tracking_number).first()
-            if existing:
-                existing.status = status
-                existing.checkpoints = checkpoints
-                existing.delivery_location = delivery_location
-                existing.recipient_email = recipient_email or existing.recipient_email
-                existing.origin_location = origin_location or existing.origin_location
-                existing.webhook_url = webhook_url or existing.webhook_url
-                existing.carrier = carrier or existing.carrier
-                existing.last_updated = datetime.utcnow()
-            else:
-                s = Shipment(
-                    tracking_number=tracking_number,
-                    status=status,
-                    checkpoints=checkpoints,
-                    delivery_location=delivery_location,
-                    last_updated=datetime.utcnow(),
-                    recipient_email=recipient_email or '',
-                    created_at=datetime.utcnow(),
-                    origin_location=origin_location or '',
-                    webhook_url=webhook_url or '',
-                    email_notifications=bool(recipient_email),
-                    carrier=carrier or 'DHL'
-                )
-                db.session.add(s)
-            db.session.commit()
-            return True
-    except Exception:
-        try:
-            from app import db
-            db.session.rollback()
-        except Exception:
-            pass
-        return False
-
-def update_shipment(tracking_number: str, **fields) -> bool:
-    try:
-        from app import app, db, Shipment
-        with app.app_context():
-            s = Shipment.query.filter_by(tracking_number=tracking_number).first()
-            if not s:
-                return False
-            for k, v in fields.items():
-                if hasattr(s, k):
-                    setattr(s, k, v)
-            s.last_updated = datetime.utcnow()
-            db.session.commit()
-            return True
-    except Exception:
-        try:
-            from app import db
-            db.session.rollback()
-        except Exception:
-            pass
-        return False
-
-def invalidate_cache(*args, **kwargs):
-    return None
-
-def export_shipments() -> str:
-    try:
-        from app import app, Shipment
-        with app.app_context():
-            items = Shipment.query.order_by(Shipment.created_at.desc()).all()
-            return json.dumps([s.to_dict() for s in items])
-    except Exception:
-        return '[]'
-
-def search_shipments(query: str, page: int = 1, per_page: int = 10):
-    try:
-        from app import app, Shipment
-        with app.app_context():
-            q = f"%{query}%"
-            results = Shipment.query.filter(
-                (Shipment.tracking_number.like(q)) | 
-                (Shipment.delivery_location.like(q)) | 
-                (Shipment.origin_location.like(q))
-            ).order_by(Shipment.created_at.desc()).offset((page-1)*per_page).limit(per_page).all()
-            total = Shipment.query.filter(
-                (Shipment.tracking_number.like(q)) | 
-                (Shipment.delivery_location.like(q)) | 
-                (Shipment.origin_location.like(q))
-            ).count()
-            return [s.tracking_number for s in results], total
-    except Exception:
-        return [], 0
-
-def get_recent_logs(limit: int = 10):
-    try:
-        log_file = 'flask_app.log'
-        if os.path.exists(log_file):
-            with open(log_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()[-limit:]
-                return [l.strip() for l in lines]
-    except Exception:
-        pass
-    return []
-
-# ============================================================
-# Telegram Menu Helpers
-# ============================================================
-def send_dynamic_menu(chat_id, page: int = 1, message_id: int = None):
-    try:
-        bot = get_bot()
-        if not bot:
-            return None
-        shipments, total = get_shipment_list(page=page)
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for s in shipments:
-            tn = s.get('tracking_number')
-            label = f"{tn} [{s.get('status', '')}]"
-            markup.add(types.InlineKeyboardButton(label, callback_data=f"view_{tn}"))
-        if total > page * 10:
-            markup.add(types.InlineKeyboardButton('Next', callback_data=f'list_{page+1}'))
-        markup.add(types.InlineKeyboardButton('🏠 Home', callback_data='menu_page_1'))
-        text = f"*📋 Shipment List* (Page {page}, {total} total):"
-        if message_id:
+        return func(*args, **kwargs)
+    except Exception as e:
+        msg = str(e).lower()
+        bot_logger.error(f"Redis error: {e}")
+        # If Redis reports too many clients or similar, disable redis client to avoid repeated failures
+        global redis_disable_count, last_redis_disable
+        if "max number of clients" in msg or "too many connections" in msg or "max clients" in msg:
             try:
-                bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, 
-                                    parse_mode='Markdown', reply_markup=markup)
-                return True
+                redis_client.set_client(None)
+                redis_disable_count += 1
+                last_redis_disable = datetime.utcnow()
+                bot_logger.warning("Redis client disabled due to server-side max-connections error")
             except Exception:
                 pass
-        bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
-        return True
-    except Exception:
         return None
 
-def show_shipment_menu(call_or_chat, page: int = 1, mode: str = 'view', title: str = 'Select shipment'):
-    try:
-        if hasattr(call_or_chat, 'message'):
-            chat_id = call_or_chat.message.chat.id
-            message_id = call_or_chat.message.message_id
-            return send_dynamic_menu(chat_id, page=page, message_id=message_id)
-        else:
-            return send_dynamic_menu(call_or_chat, page=page)
-    except Exception:
-        return None
+# === UTILS ===
+class DummyBot:
+    def message_handler(self, *args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
-# ============================================================
-# Simulation Run Guard
-# ============================================================
-_running_simulations = set()
-_running_simulations_lock = threading.Lock()
+    def callback_query_handler(self, *args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
-def spawn_simulation(tn):
+    def reply_to(self, message, text, **kwargs):
+        bot_logger.info(f"DummyBot reply_to: {text}")
+
+    def send_message(self, chat_id, text, **kwargs):
+        bot_logger.info(f"DummyBot send_message to {chat_id}: {text}")
+
+    def edit_message_text(self, text, chat_id, message_id, **kwargs):
+        bot_logger.info(f"DummyBot edit_message_text: {text}")
+
+    def answer_callback_query(self, callback_query_id, text=None, show_alert=False, **kwargs):
+        bot_logger.info(f"DummyBot answer_callback_query: {text}")
+
+    def remove_webhook(self):
+        bot_logger.info("DummyBot remove_webhook called")
+
+    def set_webhook(self, url=None):
+        bot_logger.info(f"DummyBot set_webhook called with url={url}")
+
+    def get_webhook_info(self):
+        class Info:
+            url = None
+        return Info()
+
+
+def get_bot() -> TeleBot:
+    token = config.telegram_bot_token
+    if not token or ':' not in token:
+        bot_logger.warning("Invalid or missing Telegram token; using DummyBot")
+        return DummyBot()
+    return TeleBot(token)
+
+def is_admin(user_id: int) -> bool:
+    return user_id in config.allowed_admins
+
+def sanitize_tracking_number(tn: str) -> Optional[str]:
     if not tn:
+        return None
+    tn = re.sub(r'\W+', '', tn.upper())
+    return tn if re.match(DHL_CONFIG['tracking_format'], tn) else None
+
+def generate_unique_id() -> str:
+    import secrets
+    return f"JD{secrets.randbelow(10**10):010d}"
+
+def validate_email(email: str) -> bool:
+    return bool(email and re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email))
+
+def validate_location(location: str) -> bool:
+    return bool(location and isinstance(location, str) and len(location) <= 100)
+
+def validate_webhook_url(url: str) -> bool:
+    return bool(url and re.match(r'^https?://[^\s/$.?#].[^\s]*$', url))
+
+# === EMAIL THROTTLING ===
+def should_send_email(tn: str, status: str, checkpoints):
+    if not AUTO_EMAIL_ENABLED:
         return False
-    with _running_simulations_lock:
-        if tn in _running_simulations:
-            return False
-        _running_simulations.add(tn)
+    shipment = Shipment.query.filter_by(tracking_number=tn).first()
+    if not shipment or not shipment.recipient_email or not shipment.email_notifications:
+        return False
+    important_statuses = {"Pending", "In_Transit", "Out_for_Delivery", "Delivered", "Exception", "Delayed"}
+    final_statuses = {"Delivered", "Exception"}
+    if status not in important_statuses:
+        return False
+    if isinstance(checkpoints, str):
+        checkpoints_list = [c for c in checkpoints.split(";") if c]
+    else:
+        checkpoints_list = [c for c in checkpoints if c]
+    if not checkpoints_list:
+        return False
+    latest_checkpoint = checkpoints_list[-1].strip()
+    digest = f"{status}:{latest_checkpoint}"
 
-    def _runner():
+    client = get_redis_client()
+    last_email_key = f"last_email:{tn}"
+    digest_key = f"last_email_digest:{tn}"
+    now = datetime.now()
+
+    if client:
         try:
-            from app import simulate_tracking
-            simulate_tracking(tn)
-        except Exception as e:
-            logger.error(f"Simulation error for {tn}: {e}")
-        finally:
-            with _running_simulations_lock:
-                _running_simulations.discard(tn)
-
-    try:
-        import eventlet
-        return bool(eventlet.spawn(_runner))
-    except Exception:
-        t = threading.Thread(target=_runner, daemon=True)
-        t.start()
-        return True
-
-# ============================================================
-# Notification Helper
-# ============================================================
-def enqueue_notification(payload: dict):
-    try:
-        client = get_redis_client()
-        if client:
-            client.lpush('notifications', json.dumps(payload))
-            return
-
-        payload_type = payload.get('type')
-        data = payload.get('data', {}) or {}
-        if payload_type == 'email':
-            from app import send_email_notification
-            send_email_notification(
-                data.get('recipient_email'),
-                data.get('subject', 'Shipment Update'),
-                html_body=data.get('html_body'),
-                plain_body=data.get('plain_body'),
-                tracking_number=payload.get('tracking_number')
-            )
-        elif payload_type == 'webhook':
-            url = data.get('webhook_url')
-            if url:
-                try:
-                    requests.post(url, json={**data, 'tracking_number': payload.get('tracking_number')}, timeout=10)
-                except Exception as e:
-                    console.print(Panel(f"[warning]Webhook send failed: {e}[/warning]"))
-        else:
-            console.print(Panel(f"[info]Notification queued (fallback): {payload}[/info]"))
-    except Exception:
-        pass
-
-# ============================================================
-# Keep Alive Helper
-# ============================================================
-def keep_alive():
-    """Start a background thread for periodic health checks.
-    Returns the started thread.
-    """
-    import threading
-    import time
-    
-    def _keep_alive_loop():
-        while True:
+            current_digest = client.get(digest_key)
+            if current_digest:
+                current_digest = current_digest.decode() if isinstance(current_digest, bytes) else current_digest
+                if current_digest == digest:
+                    return False
+        except Exception:
+            pass
+        if status not in final_statuses:
             try:
-                # Check Redis connection if available
-                if redis_client:
-                    try:
-                        redis_client.ping()
-                        logger.debug("Keep-alive: Redis ping successful")
-                    except Exception as e:
-                        logger.warning(f"Keep-alive: Redis ping failed: {e}")
-                
-                # Check database connection
-                try:
-                    from app import app, db
-                    from sqlalchemy import text
-                    with app.app_context():
-                        db.session.execute(text('SELECT 1'))
-                        logger.debug("Keep-alive: Database check successful")
-                except Exception as e:
-                    logger.warning(f"Keep-alive: Database check failed: {e}")
-                
-            except Exception as e:
-                logger.error(f"Keep-alive: Health check error: {e}")
-            
-            # Sleep for 5 minutes between checks
-            time.sleep(300)
-    
-    # Start the keep-alive thread as a daemon
-    thread = threading.Thread(target=_keep_alive_loop, daemon=True)
-    thread.start()
-    logger.info("Keep-alive thread started")
-    return thread
+                last_sent = client.get(last_email_key)
+                if last_sent:
+                    last_time = datetime.fromisoformat(last_sent.decode() if isinstance(last_sent, bytes) else last_sent)
+                    if now - last_time < timedelta(minutes=EMAIL_THROTTLE_MINUTES):
+                        return False
+            except Exception:
+                pass
+    else:
+        current_digest_entry = email_digest_cache.get(tn)
+        if current_digest_entry:
+            current_digest, expiry = current_digest_entry
+            if expiry and now < expiry and current_digest == digest:
+                return False
+        last_sent = email_throttle_cache.get(tn)
+        if status not in final_statuses and last_sent and now - last_sent < timedelta(minutes=EMAIL_THROTTLE_MINUTES):
+            return False
 
-# ============================================================
-# Exports
-# ============================================================
-__all__ = [
-    'console', 'logger',
-    'RATE_LIMIT_WINDOW', 'RATE_LIMIT_MAX',
-    'BotConfig', 'config',
-    'redis_client', 'get_redis_client', 'safe_redis_operation',
-    'r_ping', 'r_get', 'r_set', 'r_lpop', 'r_lpush', 'r_ltrim',
-    'r_sadd', 'r_srem', 'r_smembers', 'r_scan_iter', 'r_keys',
-    'r_hget', 'r_hset', 'r_hgetall', 'r_hlen', 'r_exists', 'r_llen',
-    'sanitize_tracking_number', 'validate_email', 'validate_location', 'validate_webhook_url',
-    'get_bot', 'is_admin',
-    'generate_unique_id',
-    'cache_route_templates', 'get_cached_route_templates',
-    'DHL_CONFIG', 'estimate_distance',
-    'get_shipment_list', 'get_shipment_details', 'save_shipment', 'update_shipment',
-    'invalidate_cache', 'export_shipments', 'search_shipments', 'get_recent_logs',
-    'send_dynamic_menu', 'show_shipment_menu',
-    'spawn_simulation',
-    'enqueue_notification',
-    'keep_alive',
-    'add_socket_event', 'recent_socket_events',
-    'add_client_error', 'recent_client_errors',
-    'email_throttle_cache', 'email_digest_cache'
-]
+    if client:
+        try:
+            ttl = 86400 if status in final_statuses else EMAIL_THROTTLE_MINUTES * 60
+            client.set(last_email_key, now.isoformat(), ex=ttl)
+            client.set(digest_key, digest, ex=6 * 3600)
+        except Exception:
+            pass
+    else:
+        email_throttle_cache[tn] = now
+        email_digest_cache[tn] = (digest, now + timedelta(hours=6))
+
+    return True
+
+# === DISTANCE CALCULATION (50+ CITIES) ===
+def estimate_distance(origin: str, dest: str) -> float:
+    city_coords = {
+        "Lagos, NG": (6.5244, 3.3792), "Abuja, NG": (9.0579, 7.4951), "Port Harcourt, NG": (4.8156, 7.0498),
+        "Kano, NG": (12.0001, 8.5167), "Ibadan, NG": (7.3775, 3.9470), "Enugu, NG": (6.4584, 7.5170),
+        "New York, NY": (40.7128, -74.0060), "Los Angeles, CA": (34.0522, -118.2437), "London, UK": (51.5074, -0.1278),
+        "Dubai, UAE": (25.2048, 55.2708), "Tokyo, JP": (35.6762, 139.6503), "Sydney, AU": (-33.8688, 151.2093),
+        "Paris, FR": (48.8566, 2.3522), "Berlin, DE": (52.5200, 13.4050), "Mumbai, IN": (19.0760, 72.8777),
+        "Singapore, SG": (1.3521, 103.8198), "Hong Kong, HK": (22.3193, 114.1694), "São Paulo, BR": (-23.5505, -46.6333),
+        "Johannesburg, ZA": (-26.2041, 28.0473), "Cairo, EG": (30.0444, 31.2357), "Moscow, RU": (55.7558, 37.6173),
+        "Toronto, CA": (43.6532, -79.3832), "Mexico City, MX": (19.4326, -99.1332), "Seoul, KR": (37.5665, 126.9780),
+        "Bangkok, TH": (13.7563, 100.5018), "Jakarta, ID": (-6.2088, 106.8456), "Delhi, IN": (28.7041, 77.1025),
+        "Beijing, CN": (39.9042, 116.4074), "Shanghai, CN": (31.2304, 121.4737), "Istanbul, TR": (41.0082, 28.9784),
+        "Karachi, PK": (24.8607, 67.0011), "Buenos Aires, AR": (-34.6037, -58.3816), "Rio de Janeiro, BR": (-22.9068, -43.1729),
+        "Lima, PE": (-12.0464, -77.0428), "Bogotá, CO": (4.7110, -74.0721), "Santiago, CL": (-33.4489, -70.6693),
+        "Cape Town, ZA": (-33.9249, 18.4241), "Nairobi, KE": (-1.2921, 36.8219), "Accra, GH": (5.6037, -0.1870),
+        "Addis Ababa, ET": (8.9806, 38.7578), "Kuala Lumpur, MY": (3.1390, 101.6869), "Hanoi, VN": (21.0285, 105.8342),
+        "Manila, PH": (14.5995, 120.9842), "Taipei, TW": (25.0330, 121.5654), "Riyadh, SA": (24.7136, 46.6753),
+        "Tel Aviv, IL": (32.0853, 34.7818), "Athens, GR": (37.9838, 23.7275), "Lisbon, PT": (38.7223, -9.1393),
+        "Stockholm, SE": (59.3293, 18.0686), "Oslo, NO": (59.9139, 10.7522), "Helsinki, FI": (60.1699, 24.9384),
+        "Warsaw, PL": (52.2297, 21.0122), "Prague, CZ": (50.0755, 14.4378), "Budapest, HU": (47.4979, 19.0402),
+        "Vienna, AT": (48.2082, 16.3738), "Zurich, CH": (47.3769, 8.5417), "Amsterdam, NL": (52.3676, 4.9041),
+        "Brussels, BE": (50.8476, 4.3572), "Dublin, IE": (53.3498, -6.2603), "Madrid, ES": (40.4168, -3.7038),
+        "Rome, IT": (41.9028, 12.4964), "Milan, IT": (45.4642, 9.1900), "Barcelona, ES": (41.3851, 2.1734)
+    }
+    origin_key = next((k for k in city_coords if origin.lower() in k.lower() or k.lower().startswith(origin.lower())), None)
+    dest_key = next((k for k in city_coords if dest.lower() in k.lower() or k.lower().startswith(dest.lower())), None)
+    if not origin_key or not dest_key:
+        return 1000.0
+    lat1, lon1 = map(radians, city_coords[origin_key])
+    lat2, lon2 = map(radians, city_coords[dest_key])
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return round(6371 * c, 1)
+
+# === DB OPERATIONS ===
+def get_shipment_list(page: int = 1, per_page: int = 10) -> Tuple[List[str], int]:
+    try:
+        offset = (page - 1) * per_page
+        shipments = Shipment.query.order_by(Shipment.created_at.desc()).offset(offset).limit(per_page).all()
+        total = Shipment.query.count()
+        return [s.tracking_number for s in shipments], total
+    except Exception as e:
+        bot_logger.error(f"List error: {e}")
+        return [], 0
+
+def get_shipment_details(tracking_number: str) -> Optional[Dict[str, Any]]:
+    try:
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        return shipment.to_dict() if shipment else None
+    except Exception as e:
+        bot_logger.error(f"Fetch error {tracking_number}: {e}")
+        return None
+
+def save_shipment(tracking_number: str, status: str, checkpoints: str = '', delivery_location: Optional[str] = None,
+                  recipient_email: Optional[str] = None, origin_location: Optional[str] = None,
+                  webhook_url: Optional[str] = None, carrier: str = "DHL") -> bool:
+    try:
+        shipment = Shipment(
+            tracking_number=tracking_number,
+            status=status,
+            checkpoints=checkpoints,
+            delivery_location=delivery_location or "Lagos, NG",
+            recipient_email=recipient_email,
+            origin_location=origin_location or "Lagos, NG",
+            webhook_url=webhook_url,
+            email_notifications=True,
+            carrier=carrier
+        )
+        db.session.add(shipment)
+        db.session.commit()
+        try:
+            db.session.remove()
+        except Exception:
+            pass
+        invalidate_cache(tracking_number)
+        bot_logger.info(f"Saved {tracking_number}")
+        return True
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        try:
+            db.session.remove()
+        except Exception:
+            pass
+        bot_logger.error(f"Save failed: {e}")
+        return False
+
+def update_shipment(tracking_number: str, status: Optional[str] = None, delivery_location: Optional[str] = None,
+                    recipient_email: Optional[str] = None, origin_location: Optional[str] = None,
+                    webhook_url: Optional[str] = None, carrier: Optional[str] = None) -> bool:
+    try:
+        shipment = Shipment.query.filter_by(tracking_number=tracking_number).first()
+        if not shipment:
+            return False
+        if status and status in config.valid_statuses:
+            shipment.status = status
+        if delivery_location:
+            shipment.delivery_location = delivery_location
+        if recipient_email is not None:
+            shipment.recipient_email = recipient_email
+        if origin_location is not None:
+            shipment.origin_location = origin_location
+        if webhook_url is not None:
+            shipment.webhook_url = webhook_url
+        if carrier:
+            shipment.carrier = carrier
+        shipment.last_updated = datetime.utcnow()
+        db.session.commit()
+        try:
+            db.session.remove()
+        except Exception:
+            pass
+        invalidate_cache(tracking_number)
+        bot_logger.info(f"Updated {tracking_number}")
+        return True
+    except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        try:
+            db.session.remove()
+        except Exception:
+            pass
+        bot_logger.error(f"Update failed: {e}")
+        return False
+
+def search_shipments(query: str, page: int = 1, per_page: int = 10) -> Tuple[List[str], int]:
+    try:
+        query = f"%{query}%"
+        offset = (page - 1) * per_page
+        shipments = Shipment.query.filter(
+            db.or_(
+                Shipment.tracking_number.ilike(query),
+                Shipment.delivery_location.ilike(query),
+                Shipment.origin_location.ilike(query),
+                Shipment.recipient_email.ilike(query)
+            )
+        ).order_by(Shipment.created_at.desc()).offset(offset).limit(per_page).all()
+        total = Shipment.query.filter(
+            db.or_(
+                Shipment.tracking_number.ilike(query),
+                Shipment.delivery_location.ilike(query),
+                Shipment.origin_location.ilike(query),
+                Shipment.recipient_email.ilike(query)
+            )
+        ).count()
+        return [s.tracking_number for s in shipments], total
+    except Exception as e:
+        bot_logger.error(f"Search error: {e}")
+        return [], 0
+
+def invalidate_cache(tracking_number: str):
+    if redis_client:
+        try:
+            safe_redis_operation(redis_client.delete, f"shipment:{tracking_number}")
+        except:
+            pass
+
+def enqueue_notification(data: Dict[str, Any]) -> bool:
+    if not redis_client:
+        return False
+    try:
+        redis_client.rpush("notifications", json.dumps(data))
+        return True
+    except Exception as e:
+        bot_logger.error(f"Queue failed: {e}")
+        return False
+
+def get_cached_route_templates() -> Dict[str, List[str]]:
+    return {
+        "Lagos, NG": ["Lagos, NG"],
+        "Abuja, NG": ["Abuja, NG"],
+        "Port Harcourt, NG": ["Port Harcourt, NG"]
+    }
+
+def cache_route_templates() -> bool:
+    return True
+
+# === MENU & RATE LIMIT ===
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX = 20
+
+def rate_limit(func):
+    @wraps(func)
+    def wrapper(message):
+        user_id = str(message.from_user.id)
+        key = f"rate_limit:{user_id}"
+        count = safe_redis_operation(redis_client.incr, key) if redis_client else 0
+        if count == 1:
+            safe_redis_operation(redis_client.expire, key, RATE_LIMIT_WINDOW)
+        if count > RATE_LIMIT_MAX:
+            get_bot().reply_to(message, "Rate limit exceeded. Try again later.")
+            return
+        return func(message)
+    return wrapper
+
+def send_dynamic_menu(chat_id: int, message_id: Optional[int] = None, page: int = 1):
+    shipments, total = get_shipment_list(page=page)
+    markup = InlineKeyboardMarkup(row_width=2)
+    for tn in shipments:
+        s = get_shipment_details(tn)
+        label = f"{tn} [DHL]" if s.get('carrier') == 'DHL' else f"{tn} [{s['status']}]"
+        markup.add(InlineKeyboardButton(label, callback_data=f"view_{tn}"))
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("Prev", callback_data=f"menu_page_{page-1}"))
+    if page * 10 < total:
+        nav.append(InlineKeyboardButton("Next", callback_data=f"menu_page_{page+1}"))
+    if nav:
+        markup.add(*nav)
+    markup.add(
+        InlineKeyboardButton("Generate ID", callback_data="generate_id"),
+        InlineKeyboardButton("Add Shipment", callback_data="add"),
+        InlineKeyboardButton("Search", callback_data="search_menu"),
+        InlineKeyboardButton("Bulk Actions", callback_data="bulk_action"),
+        InlineKeyboardButton("Stats", callback_data="stats"),
+        InlineKeyboardButton("Help", callback_data="help")
+    )
+    text = f"*Admin Panel* (Page {page})\nTotal: `{total}` shipments"
+    bot = get_bot()
+    if message_id:
+        bot.edit_message_text(text, chat_id, message_id, parse_mode='Markdown', reply_markup=markup)
+    else:
+        bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
+
+def export_shipments() -> Optional[str]:
+    try:
+        shipments = Shipment.query.all()
+        return json.dumps([s.to_dict() for s in shipments], indent=2, default=str)
+    except Exception as e:
+        bot_logger.error(f"Export error: {e}")
+        return None
+
+def get_recent_logs(limit: int = 5) -> List[str]:
+    return [f"{datetime.utcnow().isoformat()} - INFO - Sample log {i}" for i in range(1, limit + 1)]
+
+def show_shipment_menu(call, page: int, prefix: str, prompt: str, extra_buttons=None):
+    shipments, total = get_shipment_list(page=page)
+    if not shipments:
+        get_bot().edit_message_text("No shipments.", call.message.chat.id, call.message.message_id)
+        return
+    markup = InlineKeyboardMarkup(row_width=1)
+    for tn in shipments:
+        s = get_shipment_details(tn)
+        label = f"{tn} [DHL]" if s.get('carrier') == 'DHL' else tn
+        markup.add(InlineKeyboardButton(label, callback_data=f"{prefix}_{tn}_{page}"))
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("Prev", callback_data=f"{prefix}_menu_{page-1}"))
+    if page * 10 < total:
+        nav.append(InlineKeyboardButton("Next", callback_data=f"{prefix}_menu_{page+1}"))
+    if nav:
+        markup.add(*nav)
+    if extra_buttons:
+        markup.add(*extra_buttons)
+    get_bot().edit_message_text(f"*{prompt}* (Page {page}):", call.message.chat.id, call.message.message_id,
+                               parse_mode='Markdown', reply_markup=markup)
+
+# === WEBHOOK & KEEP-ALIVE ===
+def set_webhook():
+    try:
+        bot = get_bot()
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=config.webhook_url)
+        bot_logger.info(f"Webhook set: {config.webhook_url}")
+    except Exception as e:
+        bot_logger.error(f"Webhook failed: {e}")
+
+
+def keep_alive():
+    bot_logger.info("Keep-alive loop started")
+    console.print("[info]Keep-alive loop started[/info]")
+    while True:
+        try:
+            bot = get_bot()
+            info = bot.get_webhook_info()
+            if info.url != config.webhook_url:
+                bot_logger.warning("Webhook mismatch, resetting...")
+                set_webhook()
+            time.sleep(300)
+        except Exception as e:
+            bot_logger.error(f"Keep-alive error: {e}")
+            time.sleep(60)
+
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()
+    set_webhook()
+    console.print("[green]utils.py ready — Upstash Redis + BotConfig exported[/green]")
+    keep_alive()
