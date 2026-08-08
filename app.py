@@ -502,7 +502,66 @@ def geocode_locations(checkpoints):
 
 KNOWN_LOCATION_COORDS = {
     "Dublin, IE": {"lat": 53.349805, "lon": -6.26031},
-    "Berlin, DE": {"lat": 52.5200, "lon": 13.4050}
+    "Berlin, DE": {"lat": 52.5200, "lon": 13.4050},
+    "Lagos, NG": {"lat": 6.5244, "lon": 3.3792},
+    "Abuja, NG": {"lat": 9.0765, "lon": 7.3986},
+    "Port Harcourt, NG": {"lat": 4.8156, "lon": 7.0498},
+    "London, UK": {"lat": 51.5074, "lon": -0.1278},
+    "Paris, FR": {"lat": 48.8566, "lon": 2.3522},
+    "Madrid, ES": {"lat": 40.4168, "lon": -3.7038},
+    "Rome, IT": {"lat": 41.9028, "lon": 12.4964},
+    "Milan, IT": {"lat": 45.4642, "lon": 9.1900},
+    "Amsterdam, NL": {"lat": 52.3676, "lon": 4.9041},
+    "Brussels, BE": {"lat": 50.8503, "lon": 4.3517},
+    "Lisbon, PT": {"lat": 38.7223, "lon": -9.1393},
+    "Athens, GR": {"lat": 37.9838, "lon": 23.7275},
+    "Stockholm, SE": {"lat": 59.3293, "lon": 18.0686},
+    "Oslo, NO": {"lat": 59.9139, "lon": 10.7522},
+    "Warsaw, PL": {"lat": 52.2297, "lon": 21.0122},
+    "Prague, CZ": {"lat": 50.0755, "lon": 14.4378},
+    "Vienna, AT": {"lat": 48.2082, "lon": 16.3738},
+    "Zurich, CH": {"lat": 47.3769, "lon": 8.5417},
+    "Cairo, EG": {"lat": 30.0444, "lon": 31.2357},
+    "Johannesburg, ZA": {"lat": -26.2041, "lon": 28.0473},
+    "Nairobi, KE": {"lat": -1.2921, "lon": 36.8219},
+    "Dubai, UAE": {"lat": 25.2048, "lon": 55.2708},
+    "Mumbai, IN": {"lat": 19.0760, "lon": 72.8777},
+    "Delhi, IN": {"lat": 28.6139, "lon": 77.2090},
+    "Singapore, SG": {"lat": 1.3521, "lon": 103.8198},
+    "Hong Kong, HK": {"lat": 22.3193, "lon": 114.1694},
+    "Tokyo, JP": {"lat": 35.6762, "lon": 139.6503},
+    "Seoul, KR": {"lat": 37.5665, "lon": 126.9780},
+    "Sydney, AU": {"lat": -33.8688, "lon": 151.2093},
+    "New York, NY": {"lat": 40.7128, "lon": -74.0060},
+    "Los Angeles, CA": {"lat": 34.0522, "lon": -118.2437},
+    "Toronto, CA": {"lat": 43.6532, "lon": -79.3832},
+    "Miami, FL": {"lat": 25.7617, "lon": -80.1918},
+    "Sao Paulo, BR": {"lat": -23.5505, "lon": -46.6333},
+    "Mexico City, MX": {"lat": 19.4326, "lon": -99.1332},
+    "Jerusalem, IL": {"lat": 31.7683, "lon": 35.2137},
+    "Tel Aviv, IL": {"lat": 32.0853, "lon": 34.7818},
+    "Haifa, IL": {"lat": 32.7940, "lon": 34.9896},
+    "Eilat, IL": {"lat": 29.5581, "lon": 34.9482},
+    "Rehovot, IL": {"lat": 31.8928, "lon": 34.8111},
+    "Rishon LeZion, IL": {"lat": 31.9730, "lon": 34.7925},
+    "Petah Tikva, IL": {"lat": 32.0840, "lon": 34.8878},
+    "Ashdod, IL": {"lat": 31.8014, "lon": 34.6435},
+    "Ashkelon, IL": {"lat": 31.6688, "lon": 34.5743},
+    "Beersheba, IL": {"lat": 31.2529, "lon": 34.7915},
+    "Netanya, IL": {"lat": 32.3215, "lon": 34.8532},
+    "Holon, IL": {"lat": 32.0158, "lon": 34.7874},
+    "Bnei Brak, IL": {"lat": 32.0833, "lon": 34.8333},
+    "Herzliya, IL": {"lat": 32.1624, "lon": 34.8447},
+    "Kfar Saba, IL": {"lat": 32.1750, "lon": 34.9069},
+    "Ra'anana, IL": {"lat": 32.1848, "lon": 34.8706},
+    "Modiin, IL": {"lat": 31.8996, "lon": 35.0104},
+    "Nazareth, IL": {"lat": 32.6996, "lon": 35.3035},
+    "Tiberias, IL": {"lat": 32.7950, "lon": 35.5311},
+    "Acre, IL": {"lat": 32.9272, "lon": 35.0763},
+    "Nahariya, IL": {"lat": 33.0059, "lon": 35.0941},
+    "Safed, IL": {"lat": 32.9646, "lon": 35.4960},
+    "Kiryat Shmona, IL": {"lat": 33.2074, "lon": 35.5708},
+    "Caesarea, IL": {"lat": 32.5010, "lon": 34.9020}
 }
 
 
@@ -576,9 +635,33 @@ def resolve_location(loc):
             lat = val.get('lat')
             lon = val.get('lon')
             coords = {'lat': float(lat), 'lon': float(lon)} if lat is not None and lon is not None else None
-            return name, coords
+            if coords is not None:
+                return name, coords
     except Exception:
         pass
+
+    # Resolve built-in cities before contacting external geocoding services.
+    direct_fallback = KNOWN_LOCATION_COORDS.get(loc)
+    if direct_fallback is None:
+        try:
+            direct_fallback = DHLRealisticSimulator.DHL_HUBS.get(loc)
+        except Exception:
+            direct_fallback = None
+    if direct_fallback:
+        coords = {
+            'lat': float(direct_fallback['lat']),
+            'lon': float(direct_fallback['lon'])
+        }
+        try:
+            if redis_client:
+                redis_client.set(cache_key, json.dumps({
+                    'name': loc,
+                    'lat': coords['lat'],
+                    'lon': coords['lon']
+                }), ex=86400)
+        except Exception:
+            pass
+        return loc, coords
 
     name = normalize_location(loc)
     coords = None
@@ -2443,7 +2526,12 @@ def api_cities():
         "Cairo, EG", "Moscow, RU", "Toronto, CA", "Mexico City, MX", "Seoul, KR",
         "Bangkok, TH", "Jakarta, ID", "Delhi, IN", "Beijing, CN", "Shanghai, CN",
         "Istanbul, TR", "Karachi, PK", "Buenos Aires, AR", "Rio de Janeiro, BR",
-        "Tel Aviv, IL", "Athens, GR", "Lisbon, PT", "Stockholm, SE", "Oslo, NO",
+        "Tel Aviv, IL", "Jerusalem, IL", "Haifa, IL", "Eilat, IL", "Rehovot, IL",
+        "Rishon LeZion, IL", "Petah Tikva, IL", "Ashdod, IL", "Ashkelon, IL",
+        "Beersheba, IL", "Netanya, IL", "Holon, IL", "Bnei Brak, IL", "Herzliya, IL",
+        "Kfar Saba, IL", "Ra'anana, IL", "Modiin, IL", "Nazareth, IL", "Tiberias, IL",
+        "Acre, IL", "Nahariya, IL", "Safed, IL", "Kiryat Shmona, IL", "Caesarea, IL",
+        "Athens, GR", "Lisbon, PT", "Stockholm, SE", "Oslo, NO",
         "Helsinki, FI", "Warsaw, PL", "Prague, CZ", "Budapest, HU", "Vienna, AT",
         "Zurich, CH", "Amsterdam, NL", "Brussels, BE", "Dublin, IE", "Madrid, ES",
         "Rome, IT", "Milan, IT", "Barcelona, ES", "Cincinnati, OH", "Miami, FL",
