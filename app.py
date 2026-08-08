@@ -57,13 +57,11 @@ from math import radians, cos, sin, sqrt, atan2, ceil
 import requests
 from requests.structures import CaseInsensitiveDict
 import smtplib
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, Response
-from flask_sqlalchemy import SQLAlchemy
+from flask import render_template, request, jsonify, session, redirect, url_for, flash, Response
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
-from rich.console import Console
 from rich.panel import Panel
 import validators
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
@@ -81,95 +79,28 @@ load_dotenv()
 
 # Local imports
 from utils import (
-    BotConfig, redis_client, get_redis_client, console, enqueue_notification,
+    redis_client, get_redis_client, get_redis_metrics, console, enqueue_notification,
+    can_start_simulation, register_simulation_start, register_simulation_stop,
     email_throttle_cache, email_digest_cache,
     get_cached_route_templates, sanitize_tracking_number, validate_email,
     validate_location, validate_webhook_url,
     cache_route_templates, get_bot, get_shipment_list,
-    get_shipment_details, save_shipment, invalidate_cache, is_admin,
-    spawn_simulation, add_socket_event, recent_socket_events, add_client_error, recent_client_errors
+    get_shipment_details, save_shipment, update_shipment, invalidate_cache, is_admin,
+    DHL_CONFIG, config as bot_config, db, app as utils_app,
+    Shipment as UtilsShipment, estimate_distance, generate_unique_id, search_shipments, get_recent_logs,
+    should_send_email, spawn_simulation, add_socket_event, recent_socket_events, add_client_error, recent_client_errors,
+    EMAIL_TEST_MODE, EMAIL_ENABLED, AUTO_EMAIL_ENABLED, EMAIL_THROTTLE_MINUTES
 )
 
-# Initialize Flask app
-app = Flask(__name__)
+# Initialize Flask app from utils.py
+app = utils_app
+Shipment = UtilsShipment
+config = bot_config
 
 # Email configuration
-EMAIL_TEST_MODE = os.getenv('EMAIL_TEST_MODE', 'false').lower() == 'true'
-EMAIL_ENABLED = os.getenv('EMAIL_ENABLED', 'true').lower() == 'true'
-AUTO_EMAIL_ENABLED = os.getenv('AUTO_EMAIL_ENABLED', 'true').lower() == 'true'
-EMAIL_THROTTLE_MINUTES = int(os.getenv('EMAIL_THROTTLE_MINUTES', '60'))
-
-# Load config
-try:
-    config = BotConfig(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_TOKEN", "")),
-        redis_url=os.getenv("REDIS_URL"),
-        redis_token=os.getenv("REDIS_TOKEN", ""),
-        webhook_url=os.getenv("WEBHOOK_URL", "https://signment-9a96.onrender.com/telegram/webhook"),
-        websocket_server=os.getenv("WEBSOCKET_SERVER", ""),
-        allowed_admins=[int(uid) for uid in os.getenv("ALLOWED_ADMINS", "").split(",") if uid],
-        valid_statuses=os.getenv("VALID_STATUSES", "Pending,On_Hold,In_Transit,Out_for_Delivery,Delivered,Returned,Delayed").split(","),
-        route_templates=json.loads(os.getenv("ROUTE_TEMPLATES", '{"Lagos, NG": ["Lagos, NG"]}')),
-        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.getenv("SMTP_PORT", 587)),
-        smtp_user=os.getenv("SMTP_USER", ""),
-        smtp_pass=os.getenv("SMTP_PASS", ""),
-        smtp_from=os.getenv("SMTP_FROM", "no-reply@example.com")
-    )
-    app.config.update(
-        TELEGRAM_BOT_TOKEN=config.telegram_bot_token,
-        REDIS_URL=config.redis_url,
-        WEBSOCKET_SERVER=config.websocket_server,
-        SECRET_KEY=os.getenv("SECRET_KEY", "default-secret-key"),
-        SQLALCHEMY_DATABASE_URI=os.getenv("SQLALCHEMY_DATABASE_URI", "sqlite:///shipments.db"),
-        SQLALCHEMY_TRACK_MODIFICATIONS=False,
-        SMTP_HOST=config.smtp_host,
-        SMTP_PORT=config.smtp_port,
-        SMTP_USER=config.smtp_user,
-        SMTP_PASS=config.smtp_pass,
-        SMTP_FROM=config.smtp_from,
-        RECAPTCHA_SITE_KEY=os.getenv("RECAPTCHA_SITE_KEY", "your-site-key"),
-        RECAPTCHA_SECRET_KEY=os.getenv("RECAPTCHA_SECRET_KEY", "your-secret-key"),
-        RECAPTCHA_VERIFY_URL="https://www.google.com/recaptcha/api/siteverify",
-        GEOCODING_API_KEY=os.getenv("GEOCODING_API_KEY", ""),
-        TAWK_PROPERTY_ID=os.getenv("TAWK_PROPERTY_ID", ""),
-        TAWK_WIDGET_ID=os.getenv("TAWK_WIDGET_ID", ""),
-        RATELIMIT_DEFAULTS=['200 per day', '50 per hour'],
-        RATELIMIT_STORAGE_URI=(os.getenv("RATELIMIT_STORAGE_URI") or ("redis://" + config.redis_url if config.redis_url and bool(redis_client) else "memory://")),
-        GLOBAL_WEBHOOK_URL=os.getenv("GLOBAL_WEBHOOK_URL", config.websocket_server),
-        ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD", "admin123")
-    )
-except Exception as e:
-    console.print(Panel(f"[error]Configuration failed: {e}[/error]", title="Config Error", border_style="red"))
-    raise
-
-# === DHL CARRIER CONFIG ===
-DHL_CONFIG = {
-    "name": "DHL Express",
-    "primary_color": "#D40511",
-    "secondary_color": "#FFCC00",
-    "logo_url": "https://www.dhl.com/etc.clientlibs/dhl/clientlibs/clientlib-site/resources/images/dhl-logo.svg",
-    "tracking_prefix": "JD",
-    "tracking_format": r"^JD\d{10}$",
-    "status_flow": {
-        "Pending": {"next": ["In_Transit"], "delay": [60, 180]},
-        "On_Hold": {"next": ["In_Transit", "Delayed"], "delay": [3600, 86400]},
-        "In_Transit": {"next": ["Out_for_Delivery", "Delayed"], "delay": [120, 600], "probabilities": [0.92, 0.08]},
-        "Out_for_Delivery": {"next": ["Delivered"], "delay": [60, 240]},
-        "Delayed": {"next": ["Out_for_Delivery"], "delay": [300, 900]},
-        "Delivered": {"next": [], "delay": [0, 0]},
-        "Returned": {"next": [], "delay": [0, 0]}
-    },
-    "events": {
-        "In_Transit": ["Shipment picked up", "Departed origin facility", "Arrived at sort facility", "Processed at hub"],
-        "Out_for_Delivery": ["Out for delivery", "With delivery courier"],
-        "Delayed": ["Held at customs", "Weather delay", "Routing delay"],
-        "On_Hold": ["Held for customs clearance", "Awaiting documentation"]
-    }
-}
+# Values are defined in utils.py and baked into app config where needed
 
 # Core extensions
-db = SQLAlchemy(app)
 limiter = Limiter(get_remote_address, app=app, default_limits=app.config['RATELIMIT_DEFAULTS'], storage_uri=app.config['RATELIMIT_STORAGE_URI'])
 async_mode = 'eventlet' if hasattr(eventlet, 'sleep') and eventlet.__class__.__name__ != '_FallbackEventlet' else 'threading'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode=async_mode)
@@ -182,6 +113,73 @@ sim_logger = logging.getLogger('simulator')
 geocode_cache = {}
 in_memory_clients = {}
 in_memory_sim = {}
+# Per-tracking-number last lightweight broadcast timestamp
+sim_last_broadcast = {}
+
+# Minimum seconds between lightweight simulator broadcasts per tracking number
+SIM_BROADCAST_INTERVAL_SEC = float(os.getenv('SIM_BROADCAST_INTERVAL_SEC', '2.0') or '2.0')
+
+def sim_emit_light(tn, progress=None, current_location=None, current_lat=None, current_lon=None,
+                   status=None, delivery_location=None, last_updated=None,
+                   service_level=None, delivery_window=None, proof_of_delivery=None,
+                   checkpoints=None):
+    """Emit a lightweight tracking_update containing only coords and progress, rate-limited per-TN.
+    This avoids recomputing heavy route data in `broadcast_update`.
+    """
+    try:
+        # Only emit if there are active clients viewing this tracking number
+        try:
+            clients = get_clients(tn) or set()
+            if not clients:
+                return
+        except Exception:
+            # If client lookup fails, be conservative and skip emitting
+            return
+
+        now = time.time()
+        last = sim_last_broadcast.get(tn, 0)
+        if now - last < SIM_BROADCAST_INTERVAL_SEC:
+            return
+        sim_last_broadcast[tn] = now
+        payload = {'tracking_number': tn}
+        if status is not None:
+            payload['status'] = status
+        if delivery_location is not None:
+            payload['delivery_location'] = delivery_location
+        if progress is not None:
+            try:
+                payload['progress'] = float(progress)
+            except Exception:
+                payload['progress'] = progress
+        if current_location is not None:
+            payload['current_location'] = current_location
+        if current_lat is not None:
+            try:
+                payload['current_lat'] = float(current_lat)
+            except Exception:
+                payload['current_lat'] = current_lat
+        if current_lon is not None:
+            try:
+                payload['current_lon'] = float(current_lon)
+            except Exception:
+                payload['current_lon'] = current_lon
+        if checkpoints is not None:
+            payload['checkpoints'] = checkpoints
+        if last_updated is not None:
+            payload['last_updated'] = last_updated
+        if service_level is not None:
+            payload['service_level'] = service_level
+        if delivery_window is not None:
+            payload['delivery_window'] = delivery_window
+        if proof_of_delivery is not None:
+            payload['proof_of_delivery'] = proof_of_delivery
+        try:
+            socketio.emit('tracking_update', payload, namespace='/', broadcast=True)
+            sim_logger.debug(f"SIM_LIGHT_EMIT|{tn}|{payload}")
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def rget(field, tn, default=None):
@@ -338,29 +336,6 @@ class TrackForm(FlaskForm):
     tracking_number = StringField('Tracking Number', validators=[DataRequired()])
     email = StringField('Email (Optional)')
     submit = SubmitField('Track')
-
-# Models
-class Shipment(db.Model):
-    __tablename__ = 'shipments'
-    id = db.Column(db.Integer, primary_key=True)
-    tracking_number = db.Column(db.String(50), unique=True, nullable=False)
-    status = db.Column(db.String(50), nullable=False)
-    checkpoints = db.Column(db.Text)
-    delivery_location = db.Column(db.String(100), nullable=False)
-    last_updated = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    recipient_email = db.Column(db.String(120))
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    origin_location = db.Column(db.String(100))
-    origin_lat = db.Column(db.Float)
-    origin_lon = db.Column(db.Float)
-    delivery_lat = db.Column(db.Float)
-    delivery_lon = db.Column(db.Float)
-    webhook_url = db.Column(db.String(200))
-    email_notifications = db.Column(db.Boolean, default=True)
-    carrier = db.Column(db.String(20), default="DHL")
-
-    def to_dict(self):
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
 
 # DB Init
 def init_db():
@@ -1050,72 +1025,6 @@ def handle_exception(tn, shipment, reason):
     broadcast_update(tn)
     eventlet.sleep(3600)
 
-# === EMAIL THROTTLING ===
-def should_send_email(tn, status, checkpoints):
-    if not AUTO_EMAIL_ENABLED:
-        return False
-    shipment = Shipment.query.filter_by(tracking_number=tn).first()
-    if not shipment or not shipment.recipient_email or not shipment.email_notifications:
-        return False
-    important_statuses = {"Pending", "In_Transit", "Out_for_Delivery", "Delivered", "Exception", "Delayed"}
-    final_statuses = {"Delivered", "Exception"}
-    if status not in important_statuses:
-        return False
-    if isinstance(checkpoints, str):
-        checkpoints_list = [c for c in checkpoints.split(";") if c]
-    else:
-        checkpoints_list = [c for c in checkpoints if c]
-    if not checkpoints_list:
-        return False
-    latest_checkpoint = checkpoints_list[-1].strip()
-    digest = f"{status}:{latest_checkpoint}"
-
-    client = get_redis_client()
-    last_email_key = f"last_email:{tn}"
-    digest_key = f"last_email_digest:{tn}"
-    now = datetime.now()
-
-    if client:
-        try:
-            current_digest = client.get(digest_key)
-            if current_digest:
-                current_digest = current_digest.decode() if isinstance(current_digest, bytes) else current_digest
-                if current_digest == digest:
-                    return False
-        except Exception:
-            pass
-        if status not in final_statuses:
-            try:
-                last_sent = client.get(last_email_key)
-                if last_sent:
-                    last_time = datetime.fromisoformat(last_sent.decode() if isinstance(last_sent, bytes) else last_sent)
-                    if now - last_time < timedelta(minutes=EMAIL_THROTTLE_MINUTES):
-                        return False
-            except Exception:
-                pass
-    else:
-        current_digest_entry = email_digest_cache.get(tn)
-        if current_digest_entry:
-            current_digest, expiry = current_digest_entry
-            if expiry and now < expiry and current_digest == digest:
-                return False
-        last_sent = email_throttle_cache.get(tn)
-        if status not in final_statuses and last_sent and now - last_sent < timedelta(minutes=EMAIL_THROTTLE_MINUTES):
-            return False
-
-    if client:
-        try:
-            ttl = 86400 if status in final_statuses else EMAIL_THROTTLE_MINUTES * 60
-            client.set(last_email_key, now.isoformat(), ex=ttl)
-            client.set(digest_key, digest, ex=6 * 3600)
-        except Exception:
-            pass
-    else:
-        email_throttle_cache[tn] = now
-        email_digest_cache[tn] = (digest, now + timedelta(hours=6))
-
-    return True
-
 def enhanced_full_simulate_tracking(tn):
     with app.app_context():
         shipment = Shipment.query.filter_by(tracking_number=tn).first()
@@ -1141,12 +1050,51 @@ def enhanced_full_simulate_tracking(tn):
         last_route_index = -1
         last_checkpoint_progress = 0.0
         sim_min_checkpoint_delta = float(os.getenv('SIM_MIN_CHECKPOINT_DELTA', '0.05') or '0.05')
+        sim_days = float(rget('sim_days', tn, os.getenv('SIM_DEFAULT_DAYS', '10')) or os.getenv('SIM_DEFAULT_DAYS', '10'))
+        sim_days = max(1.0, min(365.0, sim_days))
         start_time = datetime.now()
         delivery_attempts = 0
         max_attempts = 3 if random.random() < 0.15 else 1
         stage = "pickup"
         sim_accel = float(os.getenv('SIM_ACCEL', '1.0') or '1.0')
-        while datetime.now() - start_time < timedelta(days=10):
+        while datetime.now() - start_time < timedelta(days=sim_days):
+            latest_shipment = reload_shipment(tn)
+            if latest_shipment:
+                if latest_shipment.delivery_location != destination or latest_shipment.origin_location != origin:
+                    origin = latest_shipment.origin_location or "Lagos, NG"
+                    destination = latest_shipment.delivery_location
+                    origin_norm, origin_coords = resolve_location(origin)
+                    destination_norm, dest_coords = resolve_location(destination)
+                    distance_km = estimate_distance(origin_norm, destination_norm)
+                    hubs = DHLRealisticSimulator.build_route_hubs(origin_coords, dest_coords, distance_km)
+                    route_template = [origin_norm] + hubs + [destination_norm]
+                    pickup_location = DHLRealisticSimulator.generate_pickup_location(origin_norm)
+                    delivery_address = DHLRealisticSimulator.generate_delivery_location(destination_norm)
+                    if latest_shipment.status != current_status:
+                    current_status = latest_shipment.status
+                if latest_shipment.checkpoints and latest_shipment.checkpoints != ";".join(checkpoints):
+                    checkpoints = (latest_shipment.checkpoints or "").split(";")
+                    current_idx = len([c for c in checkpoints if any(phrase in c for phrase in event_phrases)])
+                if latest_shipment.delivery_location != destination or latest_shipment.origin_location != origin:
+                    origin = latest_shipment.origin_location or "Lagos, NG"
+                    destination = latest_shipment.delivery_location
+                    origin_norm, origin_coords = resolve_location(origin)
+                    destination_norm, dest_coords = resolve_location(destination)
+                    distance_km = estimate_distance(origin_norm, destination_norm)
+                    transport_mode = rget("transport_mode", tn, "air" if distance_km > 1000 else "ground")
+                    transport_mode = (transport_mode or "ground").lower()
+                    hubs = DHLRealisticSimulator.build_route_hubs(origin_coords, dest_coords, distance_km)
+                    if transport_mode == "air" and hubs:
+                        route_template = [origin_norm] + hubs + [destination_norm]
+                    else:
+                        route_template = [origin_norm, destination_norm] if not hubs else [origin_norm] + hubs + [destination_norm]
+                    pickup_location = DHLRealisticSimulator.generate_pickup_location(origin_norm)
+                    delivery_address = DHLRealisticSimulator.generate_delivery_location(destination_norm)
+            stage = rget('stage', tn, stage) or stage
+            speed_multiplier = float(rget("sim_speed_multipliers", tn, "1.0") or "1.0")
+            speed_multiplier = max(0.1, min(5.0, speed_multiplier))
+            sim_days = float(rget('sim_days', tn, os.getenv('SIM_DEFAULT_DAYS', '10')) or os.getenv('SIM_DEFAULT_DAYS', '10'))
+            sim_days = max(1.0, min(365.0, sim_days))
             if rget("paused_simulations", tn, "false") == "true":
                 eventlet.sleep(10)
                 continue
@@ -1295,6 +1243,24 @@ def enhanced_full_simulate_tracking(tn):
                         if current_lat is not None and current_lon is not None:
                             rset('current_lat', tn, str(current_lat))
                             rset('current_lon', tn, str(current_lon))
+                            # Immediately emit a lightweight, rate-limited update (coords + progress)
+                            try:
+                                sim_emit_light(
+                                    tn,
+                                    status=current_status,
+                                    delivery_location=shipment.delivery_location,
+                                    progress=progress,
+                                    current_location=(city if 'city' in locals() and city else (destination_norm or '')),
+                                    current_lat=current_lat,
+                                    current_lon=current_lon,
+                                    checkpoints=(shipment.checkpoints or '').split(';') if shipment.checkpoints else [],
+                                    last_updated=shipment.last_updated.isoformat() if shipment.last_updated else datetime.now().isoformat(),
+                                    service_level=rget('service_level', tn, 'DHL Express'),
+                                    delivery_window=rget('delivery_window', tn, 'Calculating...'),
+                                    proof_of_delivery=rget('proof_of_delivery', tn, 'Pending')
+                                )
+                            except Exception:
+                                pass
                     except Exception:
                         pass
 
@@ -1395,6 +1361,8 @@ def basic_simulate_tracking(tn):
         elif isinstance(values, str):
             event_phrases.append(values)
     current_idx = len([c for c in checkpoints if any(phrase in c for phrase in event_phrases)])
+    sim_days = float(rget('sim_days', tn, os.getenv('SIM_DEFAULT_DAYS', '7')) or os.getenv('SIM_DEFAULT_DAYS', '7'))
+    sim_days = max(1.0, min(365.0, sim_days))
     start_time = datetime.now()
     if transport_mode == "air":
         base_hours = max(6, min(48, distance_km / 850))
@@ -1402,12 +1370,37 @@ def basic_simulate_tracking(tn):
         base_hours = max(24, min(120, distance_km / 90))
     speed_multiplier = float(rget("sim_speed_multipliers", tn, "1.0") or "1.0")
     speed_multiplier = max(0.1, min(10.0, speed_multiplier))
-    while datetime.now() - start_time < timedelta(days=7):
+    while datetime.now() - start_time < timedelta(days=sim_days):
+        latest_shipment = reload_shipment(tn)
+        if latest_shipment:
+            if latest_shipment.delivery_location != destination or latest_shipment.origin_location != origin:
+                origin = latest_shipment.origin_location or "Lagos, NG"
+                destination = latest_shipment.delivery_location
+                origin_norm, origin_coords = resolve_location(origin)
+                destination_norm, dest_coords = resolve_location(destination)
+                distance_km = estimate_distance(origin_norm, destination_norm)
+                default_mode = "air" if distance_km > 1000 else "ground"
+                transport_mode = rget("transport_mode", tn, default_mode)
+                transport_mode = (transport_mode or default_mode).lower()
+                hubs = DHLRealisticSimulator.build_route_hubs(origin_coords, dest_coords, distance_km)
+                if transport_mode == "air" and hubs:
+                    route_template = [origin_norm] + hubs + [destination_norm]
+                else:
+                    route_template = [origin_norm, destination_norm] if not hubs else [origin_norm] + hubs + [destination_norm]
+            if latest_shipment.status != shipment.status:
+                shipment = latest_shipment
+                current_status = shipment.status
+            if latest_shipment.checkpoints and latest_shipment.checkpoints != ";".join(checkpoints):
+                checkpoints = (latest_shipment.checkpoints or "").split(";")
+                current_idx = len([c for c in checkpoints if any(phrase in c for phrase in event_phrases)])
+        speed_multiplier = float(rget("sim_speed_multipliers", tn, "1.0") or "1.0")
+        speed_multiplier = max(0.1, min(10.0, speed_multiplier))
+        sim_days = float(rget('sim_days', tn, os.getenv('SIM_DEFAULT_DAYS', '7')) or os.getenv('SIM_DEFAULT_DAYS', '7'))
+        sim_days = max(1.0, min(365.0, sim_days))
         if rget("paused_simulations", tn, "false") == "true":
             eventlet.sleep(10)
             continue
         try:
-            current_status = shipment.status
             if current_idx < len(route_template) and current_status not in ["Delivered", "Returned"]:
                 city = route_template[current_idx]
                 event_pool = config["events"].get(current_status, ["Processed at facility"])
@@ -1456,41 +1449,47 @@ def build_dhl_email_html(tn, status, latest_checkpoint, destination, service_lev
     delivery_info = ""
     if status in ["In_Transit", "Out_for_Delivery", "Delayed"]:
         if delivery_window:
-            delivery_info = f"<p><strong>Estimated Delivery:</strong> {delivery_window}</p>"
+            delivery_info = f"<p style='margin: 0.3rem 0 0; color: #374151;'><strong>Estimated Delivery:</strong> {delivery_window}</p>"
         else:
-            delivery_info = "<p><strong>Estimated Delivery:</strong> Pending</p>"
+            delivery_info = "<p style='margin: 0.3rem 0 0; color: #374151;'><strong>Estimated Delivery:</strong> Pending</p>"
+
     hold_info = ""
     if status in ["On_Hold"]:
-        hold_info = (
-            "<p style='color:#b45309;'><strong>Important:</strong> Your shipment is on hold for customs "
-            "clearance. Additional documentation or actions may be required. We will notify you when the "
-            "shipment is released. If you have questions, please contact support.</p>"
-        )
+        hold_info = """
+        <div style="margin: 1rem 0; padding: 1rem 1.1rem; background: #fff7ed; border: 1px solid #fdba74; border-left: 4px solid #b45309; border-radius: 8px;">
+          <p style="margin: 0 0 0.4rem; font-size: 1rem; font-weight: 700; color: #9a2c00;">Customs Clearance Hold</p>
+          <p style="margin: 0; color: #7c2d12; line-height: 1.6;">
+            Your shipment is currently on hold for customs clearance. Additional documentation or action may be required before it can continue.
+            We will notify you as soon as the shipment is released.
+          </p>
+        </div>
+        """
+
     return f"""
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; border-radius: 8px; overflow: hidden;">
-      <div style="background: #D40511; padding: 1rem; text-align: center;">
-        <img src="{DHL_CONFIG['logo_url']}" alt="DHL" width="120">
+    <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; background-color: #f9fafb;">
+      <div style="background: linear-gradient(90deg, #D40511 0%, #b2040f 100%); padding: 1.2rem; text-align: center;">
+        <img src="{DHL_CONFIG['logo_url']}" alt="DHL" width="120" style="display: inline-block;">
       </div>
       <div style="padding: 1.5rem; background: #fff;">
-        <h3 style="color: #D40511; margin-top: 0;">Shipment Update</h3>
-        <p><strong>Waybill:</strong> <code style="background:#f5f5f5;padding:2px 6px;border-radius:4px;">{tn}</code></p>
-        <p><strong>Status:</strong> <span style="color:#D40511;font-weight:bold;">{status}</span></p>
-        <p><strong>Location:</strong> {location}</p>
-        <p><strong>Destination:</strong> {destination}</p>
+        <h3 style="color: #D40511; margin: 0 0 0.8rem; font-size: 1.25rem;">Shipment Update</h3>
+        <p style="margin: 0.3rem 0; color: #374151;"><strong>Waybill:</strong> <span style="background:#f3f4f6;padding:2px 6px;border-radius:4px;font-family:monospace;">{tn}</span></p>
+        <p style="margin: 0.3rem 0; color: #374151;"><strong>Status:</strong> <span style="color:#D40511;font-weight:bold;">{status}</span></p>
+        <p style="margin: 0.3rem 0; color: #374151;"><strong>Location:</strong> {location}</p>
+        <p style="margin: 0.3rem 0; color: #374151;"><strong>Destination:</strong> {destination}</p>
         {delivery_info}
         {hold_info}
-        <p><strong>{service_text}</strong></p>
-        <hr style="border:0;border-top:1px solid #eee;margin:1.5rem 0;">
+        <p style="margin: 1rem 0 0; color: #374151;"><strong>{service_text}</strong></p>
+        <hr style="border:0;border-top:1px solid #e5e7eb;margin:1.25rem 0;">
         <div style="text-align: center;">
-          <a href="{app.config['WEBSOCKET_SERVER']}/track/{tn}" style="background:#D40511;color:white;padding:12px 24px;text-decoration:none;border-radius:4px;display:inline-block;">
+          <a href="{app.config['WEBSOCKET_SERVER']}/track/{tn}" style="background:#D40511;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;display:inline-block;font-weight:bold;">
             Track Shipment
           </a>
         </div>
-        <p style="font-size:0.9rem;color:#666;margin-top:1rem;">
+        <p style="font-size:0.9rem;color:#6b7280;margin:1rem 0 0; text-align:center;">
           Need help? Contact DHL Express Support
         </p>
       </div>
-      <div style="background:#FFCC00;padding:0.8rem;text-align:center;font-size:0.8rem;color:#000;">
+      <div style="background:#FFCC00;padding:0.8rem;text-align:center;font-size:0.8rem;color:#111827;">
         © {datetime.now().year} DHL International GmbH. All rights reserved.
       </div>
     </div>
@@ -1597,6 +1596,9 @@ def broadcast_update(tn):
     service_level = rget("service_level", tn, "DHL Express") or "DHL Express"
     delivery_window = rget("delivery_window", tn, "Calculating...") or "Calculating..."
     proof_of_delivery = rget("proof_of_delivery", tn, "Pending") or "Pending"
+    current_location = rget('current_location', tn, '') or ''
+    current_lat = rget('current_lat', tn, None)
+    current_lon = rget('current_lon', tn, None)
     data = {
         "tracking_number": tn,
         "status": shipment.status,
@@ -1606,6 +1608,9 @@ def broadcast_update(tn):
         "route_coords": route_coords,
         "last_updated": shipment.last_updated.isoformat(),
         "progress": progress,
+        "current_location": current_location,
+        "current_lat": float(current_lat) if current_lat is not None else None,
+        "current_lon": float(current_lon) if current_lon is not None else None,
         "service_level": service_level,
         "delivery_window": delivery_window,
         "proof_of_delivery": proof_of_delivery,
@@ -1635,6 +1640,51 @@ def admin_required(f):
             return redirect(url_for('admin_login'))
         return f(*args, **kwargs)
     return decorated
+
+# Admin diagnostics endpoints
+@app.route('/admin/api/redis_metrics')
+@admin_required
+def admin_redis_metrics():
+    try:
+        metrics = get_redis_metrics()
+        return jsonify(metrics)
+    except Exception as e:
+        flask_logger.error(f"Failed to fetch redis metrics: {e}")
+        return jsonify({'error': 'Could not retrieve metrics'}), 500
+
+@app.route('/admin/api/logs')
+@admin_required
+def admin_logs():
+    try:
+        lines = int(request.args.get('lines', 200))
+    except Exception:
+        lines = 200
+    log_file = app.config.get('LOG_FILE', 'app.log')
+    try:
+        import os
+        if os.path.exists(log_file):
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                data = f.readlines()[-lines:]
+            return Response(''.join(data), mimetype='text/plain')
+    except Exception:
+        pass
+    recent = get_recent_logs(min(lines, 50))
+    return jsonify({'logs': recent})
+
+@app.route('/admin/api/simulator_status')
+@admin_required
+def admin_simulator_status():
+    try:
+        from utils import SIMULATOR_THREAD_LIMIT, _simulator_thread_count, can_start_simulation
+        return jsonify({
+            'active_simulators': _simulator_thread_count,
+            'limit': SIMULATOR_THREAD_LIMIT,
+            'can_start': can_start_simulation(),
+            'throttle_active': not can_start_simulation()
+        })
+    except Exception as e:
+        flask_logger.error(f"Failed to fetch simulator status: {e}")
+        return jsonify({'error': 'Could not retrieve simulator status'}), 500
 
 # === FAVICON ROUTE ===
 @app.route('/favicon.ico')
@@ -1675,11 +1725,6 @@ def track():
         else:
             return _render_tracking_response(render_template('tracking_result.html', error='Invalid form submission', coords=[]), 400)
     
-    # reCAPTCHA REMOVED - Already on main page
-    # recaptcha = request.form.get('g-recaptcha-response')
-    # if app.config['RECAPTCHA_SITE_KEY'] and 'your-site-key' not in app.config['RECAPTCHA_SITE_KEY']:
-    #     if not verify_recaptcha(recaptcha):
-    #         return _render_tracking_response(render_template('tracking_result.html', error='reCAPTCHA failed', coords=[]), 400)
     
     tn = sanitize_tracking_number(form.tracking_number.data)
     email = form.email.data
@@ -1709,18 +1754,30 @@ def track():
     proof_of_delivery = DHLRealisticSimulator.generate_pod_info()
     if shipment.status not in ['Delivered', 'Returned']:
         try:
-            spawn_simulation(tn)
+            if can_start_simulation():
+                spawn_simulation(tn)
+            else:
+                flask_logger.info(f"Simulator throttle active; skipping new thread for {tn}")
         except Exception:
             try:
-                eventlet.spawn(simulate_tracking, tn)
+                if can_start_simulation():
+                    eventlet.spawn(simulate_tracking, tn)
+                else:
+                    flask_logger.info(f"Simulator throttle active; skipping eventlet spawn for {tn}")
             except Exception:
-                threading.Thread(target=simulate_tracking, args=(tn,), daemon=True).start()
+                if can_start_simulation():
+                    threading.Thread(target=simulate_tracking, args=(tn,), daemon=True).start()
+                else:
+                    flask_logger.info(f"Simulator throttle active; skipping thread start for {tn}")
     progress = float(rget('progress', tn, '0') or '0')
+    current_location = rget('current_location', tn, '') or ''
+    current_lat = rget('current_lat', tn, None)
+    current_lon = rget('current_lon', tn, None)
     
     # Check if this is an AJAX request
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
         result_html = render_template(
-            'tracking_result_content.html',
+            'tracking_result.html',
             shipment=shipment,
             checkpoints=checkpoints,
             coords=coords_list,
@@ -1728,7 +1785,12 @@ def track():
             service_level=service_level,
             delivery_window=delivery_window,
             proof_of_delivery=proof_of_delivery,
-            progress=progress
+            progress=progress,
+            current_location=current_location,
+            current_lat=current_lat,
+            current_lon=current_lon,
+            tawk_property_id=app.config['TAWK_PROPERTY_ID'],
+            tawk_widget_id=app.config['TAWK_WIDGET_ID']
         )
         return jsonify({'html': result_html})
     
@@ -1736,6 +1798,7 @@ def track():
         'tracking_result.html', shipment=shipment, checkpoints=checkpoints, coords=coords_list,
         route_coords=route_coords, service_level=service_level, delivery_window=delivery_window,
         proof_of_delivery=proof_of_delivery, progress=progress,
+        current_location=current_location, current_lat=current_lat, current_lon=current_lon,
         tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID']
     )
     return _render_tracking_response(rendered, 200)
@@ -1765,17 +1828,30 @@ def track_direct(tracking_number):
     proof_of_delivery = DHLRealisticSimulator.generate_pod_info()
     if shipment.status not in ['Delivered', 'Returned']:
         try:
-            spawn_simulation(tn)
+            if can_start_simulation():
+                spawn_simulation(tn)
+            else:
+                flask_logger.info(f"Simulator throttle active; skipping new thread for {tn}")
         except Exception:
             try:
-                eventlet.spawn(simulate_tracking, tn)
+                if can_start_simulation():
+                    eventlet.spawn(simulate_tracking, tn)
+                else:
+                    flask_logger.info(f"Simulator throttle active; skipping eventlet spawn for {tn}")
             except Exception:
-                threading.Thread(target=simulate_tracking, args=(tn,), daemon=True).start()
+                if can_start_simulation():
+                    threading.Thread(target=simulate_tracking, args=(tn,), daemon=True).start()
+                else:
+                    flask_logger.info(f"Simulator throttle active; skipping thread start for {tn}")
     progress = float(rget('progress', tn, '0') or '0')
+    current_location = rget('current_location', tn, '') or ''
+    current_lat = rget('current_lat', tn, None)
+    current_lon = rget('current_lon', tn, None)
     return render_template(
         'tracking_result.html', shipment=shipment, checkpoints=checkpoints, coords=coords_list,
         route_coords=route_coords, service_level=service_level, delivery_window=delivery_window,
         proof_of_delivery=proof_of_delivery, progress=progress,
+        current_location=current_location, current_lat=current_lat, current_lon=current_lon,
         tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID']
     )
 
@@ -1831,6 +1907,36 @@ def health_check():
     # Only return 500 if critical services are down
     critical_ok = status['database'] == 'ok' and status['redis'] != 'error'
     return jsonify(status), 200 if critical_ok else 500
+
+
+@app.route('/debug/tn/<tracking_number>')
+def debug_tracking_number(tracking_number):
+    """Return a small JSON snapshot of Redis-backed live fields for a tracking number.
+    Only enabled in debug/development mode."""
+    # Allow in debug/development or when caller is localhost (safe for local debugging)
+    remote = request.remote_addr
+    if not (app.debug or app.config.get('FLASK_ENV') == 'development' or remote in ('127.0.0.1', '::1')):
+        return jsonify({'error': 'Not available'}), 403
+    tn = sanitize_tracking_number(tracking_number)
+    if not tn:
+        return jsonify({'error': 'Invalid tracking number'}), 400
+    try:
+        fields = ['progress', 'current_location', 'current_lat', 'current_lon', 'service_level', 'delivery_window', 'paused']
+        snapshot = {}
+        for f in fields:
+            v = rget(f, tn, None)
+            try:
+                # try to coerce numeric
+                if v is not None and isinstance(v, str) and v.replace('.', '', 1).isdigit():
+                    snapshot[f] = float(v)
+                else:
+                    snapshot[f] = v
+            except Exception:
+                snapshot[f] = v
+        return jsonify({'tracking_number': tn, 'snapshot': snapshot})
+    except Exception as e:
+        flask_logger.exception('Debug TN fetch failed: %s', e)
+        return jsonify({'error': 'Failed to fetch'}), 500
 
 @app.route('/debug')
 def debug_info():
@@ -2084,6 +2190,7 @@ def api_shipment_detail(tn):
     service_level = rget("service_level", tn, "DHL Express") or "DHL Express"
     delivery_window = rget("delivery_window", tn, "") or ""
     proof_of_delivery = rget("proof_of_delivery", tn, "") or ""
+    sim_days = rget("sim_days", tn, os.getenv('SIM_DEFAULT_DAYS', '10')) or os.getenv('SIM_DEFAULT_DAYS', '10')
     temperature = rget("temperature", tn, None)
     current_lat = rget('current_lat', tn, None)
     current_lon = rget('current_lon', tn, None)
@@ -2109,6 +2216,7 @@ def api_shipment_detail(tn):
         'service_level': service_level,
         'delivery_window': delivery_window,
         'proof_of_delivery': proof_of_delivery,
+        'sim_days': float(sim_days) if str(sim_days).replace('.', '', 1).isdigit() else 10.0,
         'temperature': temperature,
         'progress': progress,
         'current_lat': float(current_lat) if current_lat is not None else None,
@@ -2167,7 +2275,7 @@ def api_shipment_update(tn):
     data = request.get_json() or {}
     editable = {
         'status', 'stage', 'service_level', 'delivery_window', 'proof_of_delivery',
-        'recipient_email', 'delivery_location', 'paused', 'speed', 'email_notifications', 'checkpoints'
+        'recipient_email', 'delivery_location', 'paused', 'speed', 'days', 'email_notifications', 'checkpoints'
     }
 
     updated = {}
@@ -2189,12 +2297,27 @@ def api_shipment_update(tn):
                     rset('sim_speed_multipliers', tn, str(speed))
                 updated['speed'] = speed
                 continue
+            if k == 'stage':
+                if redis_client:
+                    rset('stage', tn, v)
+                updated['stage'] = v
+                continue
             if k == 'service_level' and redis_client:
                 rset('service_level', tn, v)
             if k == 'delivery_window' and redis_client:
                 rset('delivery_window', tn, v)
             if k == 'proof_of_delivery' and redis_client:
                 rset('proof_of_delivery', tn, v)
+            if k == 'days':
+                try:
+                    days_value = float(v)
+                except Exception:
+                    days_value = float(os.getenv('SIM_DEFAULT_DAYS', '10'))
+                days_value = max(1.0, min(365.0, days_value))
+                if redis_client:
+                    rset('sim_days', tn, str(days_value))
+                updated['days'] = days_value
+                continue
 
             if k == 'checkpoints':
                 if isinstance(v, list):
@@ -2349,10 +2472,16 @@ def create_shipment_record(origin, destination, recipient_email=None, service_le
             flask_logger.warning(f"Redis error for {tracking_number}: {redis_err}")
 
     try:
-        spawn_simulation(tracking_number)
+        if can_start_simulation():
+            spawn_simulation(tracking_number)
+        else:
+            flask_logger.info(f"Simulator throttle active; skipping create_shipment launch for {tracking_number}")
     except Exception:
         try:
-            eventlet.spawn(simulate_tracking, tracking_number)
+            if can_start_simulation():
+                eventlet.spawn(simulate_tracking, tracking_number)
+            else:
+                flask_logger.info(f"Simulator throttle active; skipping create_shipment eventlet spawn for {tracking_number}")
         except Exception as sim_err:
             flask_logger.warning(f"Simulation start error for {tracking_number}: {sim_err}")
 
@@ -2610,11 +2739,20 @@ def on_request(data):
     )
     delivery_window = DHLRealisticSimulator.get_delivery_window(service_level, distance_km)
     proof_of_delivery = DHLRealisticSimulator.generate_pod_info()
+    # include any current live position values from Redis so client can show immediate location
+    current_location = rget('current_location', tn, '') or ''
+    current_lat = rget('current_lat', tn, None)
+    current_lon = rget('current_lon', tn, None)
+    last_updated = shipment.last_updated.isoformat() if shipment.last_updated else None
+
     emit('tracking_update', {
         'tracking_number': tn, 'status': shipment.status, 'delivery_location': shipment.delivery_location,
         'checkpoints': checkpoints, 'coords': [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords],
         'route_coords': route_coords, 'service_level': service_level, 'delivery_window': delivery_window,
         'proof_of_delivery': proof_of_delivery, 'progress': progress,
+        'current_location': current_location, 'current_lat': float(current_lat) if current_lat is not None else None,
+        'current_lon': float(current_lon) if current_lon is not None else None,
+        'last_updated': last_updated,
         'speed_multiplier': speed, 'paused': paused, 'mode': mode, 'carrier': shipment.carrier
     })
 
@@ -2637,11 +2775,14 @@ def start_background_services():
         cache_route_templates()
         try:
             with app.app_context():
-                active_shipments = Shipment.query.filter(Shipment.status.notin_(["Delivered", "Returned"]))
-                for s in active_shipments:
+                active_shipments = Shipment.query.filter(Shipment.status.notin_(["Delivered", "Returned"])).order_by(Shipment.last_updated.desc()).limit(8).all()
+                for index, s in enumerate(active_shipments):
                     try:
+                        if not can_start_simulation():
+                            flask_logger.info("Simulator throttle reached; stopping resume fan-out")
+                            break
                         flask_logger.info(f"Resuming simulation for {s.tracking_number}")
-                        eventlet.spawn(simulate_tracking, s.tracking_number)
+                        spawn_simulation(s.tracking_number)
                     except Exception as e:
                         flask_logger.warning(f"Failed to spawn simulation for {s.tracking_number}: {e}")
         except Exception:
