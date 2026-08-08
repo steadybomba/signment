@@ -469,35 +469,6 @@
             color: #94a3b8;
         }
 
-        /* === TOAST === */
-        .toast-container {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            z-index: 9999;
-            max-width: 400px;
-        }
-        .toast {
-            background: #333;
-            color: white;
-            padding: 14px 24px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-            transform: translateY(100px);
-            opacity: 0;
-            transition: all 0.4s ease;
-            font-size: 0.95rem;
-            border-left: 4px solid transparent;
-            margin-top: 8px;
-        }
-        .toast.show {
-            transform: translateY(0);
-            opacity: 1;
-        }
-        .toast.success { background: #16a34a; border-left-color: #14532d; }
-        .toast.error { background: #dc2626; border-left-color: #7f1d1d; }
-        .toast.info { background: #2563eb; border-left-color: #1e3a5f; }
-        
         /* === FOOTER === */
         .footer {
             background: linear-gradient(to right, var(--dhl-yellow), #fff);
@@ -707,11 +678,6 @@
                 font-size: 0.75rem;
                 padding: 4px 12px;
             }
-            .toast-container {
-                left: 16px;
-                right: 16px;
-                bottom: 16px;
-            }
         }
     </style>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -904,14 +870,6 @@
                     <a href="{{ url_for('index') }}" class="back-button">← Back to home</a>
                 </div>
 
-                <!-- Toast Container -->
-                <div id="toast-container" class="toast-container"></div>
-                <div id="debugPanel" class="debug-panel" style="display:none;">
-                    <div style="font-weight:700; margin-bottom:6px;color:#b91c1c;">Live Debug</div>
-                    <div><strong>Socket:</strong> <span id="debugSocketStatus">idle</span></div>
-                    <div style="margin-top:6px;"><strong>Last payload:</strong></div>
-                    <pre id="debugPayload">(none)</pre>
-                </div>
             </div>
         </div>
     {% endif %}
@@ -951,25 +909,6 @@
 
     <script>
         // ============================================================
-        // TOAST
-        // ============================================================
-        function showToast(message, type = 'success') {
-            const container = document.getElementById('toast-container');
-            if (!container) return;
-            
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            toast.textContent = message;
-            container.appendChild(toast);
-            
-            setTimeout(() => toast.classList.add('show'), 10);
-            setTimeout(() => {
-                toast.classList.remove('show');
-                setTimeout(() => toast.remove(), 400);
-            }, 4000);
-        }
-
-        // ============================================================
         // REFRESH
         // ============================================================
         const trackingNumber = "{{ shipment.tracking_number if shipment else '' }}";
@@ -984,7 +923,6 @@
             if (!btn || btn.disabled) return;
             btn.disabled = true;
             btn.textContent = 'Updating...';
-            showToast('Refreshing tracking data...', 'info');
             requestTracking();
             setTimeout(() => {
                 btn.disabled = false;
@@ -1371,21 +1309,16 @@
             console.log('Socket.IO connected');
             updateConnectionStatus(true);
             requestTracking();
-            showToast('Connected to live tracking', 'success');
-            // show debug
-            try { document.getElementById('debugPanel').style.display = 'block'; document.getElementById('debugSocketStatus').textContent = 'connected'; } catch(e){}
         });
 
         socket.on('tracking_update', (data) => {
             console.log('Received tracking update:', data);
-            try { document.getElementById('debugPayload').textContent = JSON.stringify(data, null, 2); } catch(e){}
             
             if (data.error) {
                 document.getElementById('status').textContent = 'Not Found';
                 document.getElementById('status').className = 'status-badge-header pending';
                 document.getElementById('delivery_location').textContent = 'N/A';
                 document.getElementById('checkpoints').innerHTML = '<div class="checkpoint"><div class="dot pending"></div><div><div class="location">Shipment not found</div></div></div>';
-                showToast('Error: ' + data.error, 'error');
                 updateConnectionStatus(false);
                 return;
             }
@@ -1512,20 +1445,16 @@
                 // Preserve the existing map/route state for lightweight updates that carry only live position.
             }
 
-            showToast('Status updated: ' + statusValue, 'success');
-            try { document.getElementById('debugSocketStatus').textContent = 'updated ' + (new Date()).toLocaleTimeString(); } catch(e){}
         });
 
         socket.on('disconnect', () => {
             console.log('Socket.IO disconnected');
             updateConnectionStatus(false);
-            showToast('Disconnected from live tracking', 'error');
         });
 
         socket.on('connect_error', (error) => {
             console.error('Socket.IO connection error:', error);
             updateConnectionStatus(false);
-            showToast('Connection error. Retrying...', 'error');
         });
 
         // ============================================================
