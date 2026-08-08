@@ -282,6 +282,7 @@
             border-radius: 999px;
             font-size: 0.8rem;
             font-weight: 600;
+            white-space: nowrap;
         }
         .position-grid {
             display: grid;
@@ -577,29 +578,65 @@
             .details-grid {
                 grid-template-columns: 1fr;
             }
-            .live-indicator,
-            .connection-dot,
-            #connectionStatus,
-            #refreshBtn,
-            #refresh-hint {
-                display: block;
-                width: 100%;
-            }
-            .refresh-btn {
-                margin-top: 10px;
-            }
             .tracking-number-display {
                 font-size: 1rem;
-            }
-            .status-badge-header {
-                width: 100%;
-                white-space: normal;
-                word-break: break-word;
             }
             .menu-content {
                 right: 10px;
                 left: auto;
                 width: 180px;
+            }
+            
+            /* FIX: Status and controls stay inline on mobile */
+            .flex.items-center.justify-between.flex-wrap.gap-3 {
+                flex-wrap: nowrap !important;
+                gap: 8px !important;
+            }
+            .flex.items-center.justify-between.flex-wrap.gap-3 > div {
+                flex-shrink: 0;
+            }
+            .status-badge-header {
+                width: auto !important;
+                white-space: nowrap !important;
+                font-size: 0.75rem !important;
+                padding: 4px 12px !important;
+            }
+            .tracking-number-display {
+                font-size: 0.85rem !important;
+                padding: 2px 10px !important;
+            }
+            
+            /* FIX: Live Tracking controls stay inline */
+            .flex.items-center.gap-3.mt-4.flex-wrap {
+                flex-wrap: nowrap !important;
+                gap: 6px !important;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            .flex.items-center.gap-3.mt-4.flex-wrap > * {
+                flex-shrink: 0;
+            }
+            .refresh-btn {
+                font-size: 0.75rem !important;
+                padding: 4px 12px !important;
+                margin-top: 0 !important;
+            }
+            .refresh-hint {
+                font-size: 0.7rem !important;
+            }
+            .live-indicator {
+                width: 8px !important;
+                height: 8px !important;
+            }
+            .connection-dot {
+                width: 6px !important;
+                height: 6px !important;
+            }
+            #connectionStatus {
+                font-size: 0.7rem !important;
+            }
+            .text-sm.text-gray-500.font-medium {
+                font-size: 0.75rem !important;
             }
         }
 
@@ -643,6 +680,22 @@
                 min-width: 100%;
                 text-align: left;
             }
+            
+            /* FIX: Position pill on mobile */
+            .position-pill {
+                font-size: 0.65rem !important;
+                padding: 3px 8px !important;
+            }
+            .position-title {
+                font-size: 0.85rem !important;
+            }
+            .position-subtitle {
+                font-size: 0.7rem !important;
+            }
+            .position-grid {
+                grid-template-columns: 1fr !important;
+                gap: 6px !important;
+            }
         }
 
         @media (max-width: 420px) {
@@ -653,12 +706,23 @@
                 padding: 14px 12px;
             }
             .tracking-number-display {
-                font-size: 0.9rem;
-                padding: 2px 10px;
+                font-size: 0.8rem !important;
+                padding: 2px 8px !important;
             }
             .status-badge-header {
-                font-size: 0.75rem;
-                padding: 4px 12px;
+                font-size: 0.65rem !important;
+                padding: 3px 10px !important;
+            }
+            .flex.items-center.justify-between.flex-wrap.gap-3 {
+                gap: 4px !important;
+            }
+            .flex.items-center.gap-3.mt-4.flex-wrap {
+                gap: 4px !important;
+            }
+            
+            /* FIX: Hide refresh hint on very small screens */
+            .refresh-hint {
+                display: none !important;
             }
         }
     </style>
@@ -709,14 +773,14 @@
 
                 <!-- === DETAILS === -->
                 <div class="details" id="details">
-                    <!-- Tracking Number & Status -->
+                    <!-- Tracking Number & Status - FIXED MOBILE LAYOUT -->
                     <div class="flex items-center justify-between flex-wrap gap-3">
-                        <div>
-                            <span class="text-sm text-gray-400 font-medium">Tracking Number</span>
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm text-gray-400 font-medium hidden sm:inline">Tracking</span>
                             <span class="tracking-number-display">{{ shipment.tracking_number }}</span>
                         </div>
-                        <div>
-                            <span class="text-sm text-gray-400 font-medium mr-2">Status</span>
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm text-gray-400 font-medium hidden sm:inline mr-1">Status</span>
                             <span id="status" class="status-badge-header 
                                 {% if shipment.status == 'Delivered' %}delivered
                                 {% elif shipment.status == 'In_Transit' %}in-transit
@@ -729,14 +793,14 @@
                         </div>
                     </div>
 
-                    <!-- Live Tracking Controls -->
+                    <!-- Live Tracking Controls - FIXED MOBILE LAYOUT -->
                     <div class="flex items-center gap-3 mt-4 flex-wrap">
                         <span class="live-indicator"></span>
-                        <span class="text-sm text-gray-500 font-medium">Live Tracking</span>
+                        <span class="text-sm text-gray-500 font-medium">Live</span>
                         <span class="connection-dot connected" id="connectionDot"></span>
                         <span id="connectionStatus" class="text-xs text-gray-500">Connected</span>
                         <button class="refresh-btn" onclick="refreshTracking()" id="refreshBtn" disabled>Refresh</button>
-                        <span id="refresh-hint" class="refresh-hint">Waiting for connection...</span>
+                        <span id="refresh-hint" class="refresh-hint">Live connection active</span>
                     </div>
 
                     <!-- Live Shipment Position -->
@@ -747,7 +811,7 @@
                                 <div class="position-subtitle">Current location</div>
                             </div>
                             <div class="position-pill">
-                                <span class="live-indicator"></span>
+                                <span class="live-indicator" style="width:6px;height:6px;margin-right:4px;"></span>
                                 <span id="positionStatusText">Tracking live</span>
                             </div>
                         </div>
@@ -1186,7 +1250,6 @@
                 lastUpdatedEl.textContent = 'Last updated: ' + ({{ (shipment.last_updated.strftime('%Y-%m-%d %H:%M:%S') if shipment.last_updated else 'N/A') | tojson }});
             }
 
-            // Compute initial next checkpoint (first unchecked after last)
             const checkpointsArr = {{ checkpoints | tojson }} || [];
             const progressVal = parseFloat(initialProgress) || 0;
             function computeNextCheckpoint(arr, progress) {
@@ -1245,7 +1308,6 @@
             document.getElementById('resetView').disabled = true;
         }
 
-        // Ensure Leaflet properly sizes the map after it's been rendered
         setTimeout(() => {
             try { map.invalidateSize(); } catch (e) { console.warn('map.invalidateSize failed', e); }
         }, 300);
@@ -1274,7 +1336,7 @@
                 refreshBtn.disabled = !connected;
                 refreshBtn.title = connected ? 'Refresh live tracking data' : 'Waiting for connection...';
             }
-            if (refreshHint) refreshHint.textContent = connected ? 'Live connection is active.' : 'Waiting for connection...';
+            if (refreshHint) refreshHint.textContent = connected ? 'Live connection active' : 'Waiting for connection...';
         }
 
         function initConnectionStatus() {
@@ -1305,7 +1367,6 @@
 
             updateConnectionStatus(true);
 
-            // Update status
             const statusEl = document.getElementById('status');
             const statusValue = data.status || 'Unknown';
             statusEl.textContent = statusValue;
@@ -1317,13 +1378,11 @@
                 statusValue === 'Exception' ? 'exception' : 'pending'
             );
 
-            // Update details
             document.getElementById('delivery_location').textContent = data.delivery_location || 'N/A';
             if (data.service_level) document.getElementById('service_level').textContent = data.service_level;
             if (data.delivery_window) document.getElementById('delivery_window').textContent = data.delivery_window;
             if (data.proof_of_delivery) document.getElementById('proof_of_delivery').textContent = data.proof_of_delivery;
 
-            // Update checkpoints only when checkpoint data is present
             if (data.checkpoints && data.checkpoints.length) {
                 const checkpointsDiv = document.getElementById('checkpoints');
                 const oldCount = checkpointsDiv.querySelectorAll('.checkpoint').length;
@@ -1345,14 +1404,12 @@
                 });
             }
 
-            // Update progress
             if (data.progress !== undefined) {
                 const percent = Math.round(data.progress * 100);
                 document.getElementById('progress-percent').textContent = percent + '%';
                 document.getElementById('progress-fill').style.width = percent + '%';
             }
 
-            // Update live position
             const currentLocationEl = document.getElementById('currentLocation');
             const currentCoordsEl = document.getElementById('currentCoordinates');
             const positionStatusText = document.getElementById('positionStatusText');
@@ -1371,7 +1428,7 @@
             if (positionStatusText) positionStatusText.textContent = currentLat !== undefined && currentLon !== undefined ? 'Moving now' : 'Tracking live';
             if (estimatedArrivalEl) estimatedArrivalEl.textContent = data.delivery_window || 'Calculating...';
             if (lastCheckpointEl && data.checkpoints && data.checkpoints.length) lastCheckpointEl.textContent = data.checkpoints[data.checkpoints.length - 1];
-            // Update next checkpoint based on incoming checkpoints and progress
+            
             const nextElLive = document.getElementById('nextCheckpoint');
             try {
                 if (nextElLive) {
@@ -1409,13 +1466,11 @@
                 map.setView([window.currentPosition.lat, window.currentPosition.lon], Math.max(map.getZoom(), 8));
             }
 
-            // Update last updated
             if (data.last_updated) {
                 const date = new Date(data.last_updated);
                 document.getElementById('lastUpdated').textContent = 'Last updated: ' + date.toLocaleString();
             }
 
-            // Update map
             const routeData = (data.route_coords && data.route_coords.length) ? data.route_coords : data.coords;
             if (routeData && routeData.length) {
                 updateMap(routeData);
