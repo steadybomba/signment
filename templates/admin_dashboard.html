@@ -431,15 +431,11 @@
       .stat-card .icon { font-size: 1.5rem; }
       .table td, .table th { padding: 0.25rem 0.35rem; font-size: 0.62rem; }
       .table th, .table td { white-space: normal; }
-      .table-responsive { overflow-x: auto; }
+      .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .table-responsive table { min-width: 100%; }
-      #shipment-table th:nth-child(5),
-      #shipment-table th:nth-child(6),
-      #shipment-table th:nth-child(8),
-      #shipment-table td:nth-child(5),
-      #shipment-table td:nth-child(6),
-      #shipment-table td:nth-child(8) {
-        display: none !important;
+      .table-responsive table th,
+      .table-responsive table td {
+        white-space: nowrap;
       }
       .speed-slider { width: 100%; }
       .proof-signature { max-width: 100px; }
@@ -515,9 +511,9 @@
       <div class="row align-items-center">
         <div class="col-md-6">
           <div class="d-flex align-items-center gap-3">
-            <img src="https://www.dhl.com/etc.clientlibs/dhl/clientlibs/clientlib-site/resources/images/dhl-logo-white.svg" 
+            <img src="{{ url_for('static', filename='dhl-logo.png') }}" 
                  alt="DHL" height="40" style="filter: brightness(0) invert(1);">
-            <h3 class="mb-0 fw-bold">Express Dashboard</h3>
+            <h3 class="mb-0 fw-bold">Admin Dashboard</h3>
           </div>
         </div>
         <div class="col-md-6 text-end">
@@ -1065,6 +1061,10 @@
                   <input class="form-check-input" type="checkbox" id="editPaused">
                   <label class="form-check-label" for="editPaused">Pause simulation</label>
                 </div>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fw-bold">Simulation Days</label>
+                <input class="form-control" id="editDays" type="number" step="1" min="1" />
               </div>
               <div class="col-12">
                 <label class="form-label fw-bold">Delivery Location</label>
@@ -1930,6 +1930,7 @@
           document.getElementById('editRecipientEmail').value = data.recipient_email || '';
           document.getElementById('editProofOfDelivery').value = data.proof_of_delivery || '';
           document.getElementById('editSpeed').value = data.speed_multiplier || 1.0;
+          document.getElementById('editDays').value = data.sim_days || 10;
           document.getElementById('editPaused').checked = !!data.paused;
           document.getElementById('editDeliveryLocation').value = data.delivery_location || '';
           // store current tn
@@ -1987,6 +1988,7 @@
         recipient_email: document.getElementById('editRecipientEmail').value,
         proof_of_delivery: document.getElementById('editProofOfDelivery').value,
         speed: parseFloat(document.getElementById('editSpeed').value) || 1.0,
+        days: parseFloat(document.getElementById('editDays').value) || 10,
         paused: document.getElementById('editPaused').checked,
         delivery_location: document.getElementById('editDeliveryLocation').value
       };
