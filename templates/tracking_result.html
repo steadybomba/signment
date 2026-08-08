@@ -126,6 +126,24 @@
             width: 100%;
             z-index: 1;
         }
+
+        /* Debug overlay for troubleshooting live updates */
+        .debug-panel {
+            position: fixed;
+            right: 12px;
+            bottom: 12px;
+            width: 320px;
+            max-height: 280px;
+            overflow: auto;
+            background: rgba(255,255,255,0.95);
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 8px;
+            font-size: 12px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+            z-index: 1200;
+        }
+        .debug-panel pre { white-space: pre-wrap; word-break: break-word; margin:0; }
         
         /* Leaflet control custom styling */
         .leaflet-control-custom {
@@ -247,6 +265,80 @@
             border-radius: 4px;
             transition: width 1s ease;
         }
+
+        .position-card {
+            margin: 16px 0 18px;
+            padding: 16px 18px;
+            border: 1px solid #f1d8d9;
+            background: linear-gradient(135deg, #fff8f8 0%, #ffffff 100%);
+            border-radius: 14px;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
+        }
+        .position-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .position-title {
+            font-weight: 700;
+            color: var(--dhl-dark);
+            font-size: 1rem;
+        }
+        .position-subtitle {
+            font-size: 0.84rem;
+            color: #6b7280;
+        }
+        .position-pill {
+            display: inline-flex;
+            align-items: center;
+            background: #fef2f2;
+            color: var(--dhl-red);
+            border: 1px solid #f5c2c7;
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .position-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .position-grid .detail-label {
+            margin-bottom: 2px;
+        }
+
+        .arrival-card {
+            margin: 14px 0 18px;
+            padding: 14px 16px;
+            border-radius: 12px;
+            background: #fcfcfd;
+            border: 1px solid #ececec;
+        }
+        .arrival-card .arrival-title {
+            font-size: 0.82rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #6b7280;
+            margin-bottom: 6px;
+        }
+        .arrival-card .arrival-value {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--dhl-dark);
+        }
+        .next-checkpoint {
+            margin: 10px 0 12px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            background: #fff7ef;
+            border: 1px solid #fde3c7;
+        }
+        .next-checkpoint .label { font-size: 0.78rem; color: #92400e; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
+        .next-checkpoint .value { font-size: 0.98rem; color: #7c2d12; font-weight: 600; }
         
         .error-message {
             max-width: 760px;
@@ -699,6 +791,46 @@
                         <span id="refresh-hint" class="refresh-hint">Waiting for connection...</span>
                     </div>
 
+                    <!-- Live Shipment Position -->
+                    <div class="position-card" id="positionCard">
+                        <div class="position-header">
+                            <div>
+                                <div class="position-title">Live Shipment Position</div>
+                                <div class="position-subtitle">Current location</div>
+                            </div>
+                            <div class="position-pill">
+                                <span class="live-indicator"></span>
+                                <span id="positionStatusText">Tracking live</span>
+                            </div>
+                        </div>
+                        <div class="position-grid">
+                            <div>
+                                <div class="detail-label">Current City</div>
+                                <div class="detail-value" id="currentLocation">{{ current_location | default('Calculating...') }}</div>
+                            </div>
+                            <div>
+                                <div class="detail-label">Coordinates</div>
+                                <div class="detail-value" id="currentCoordinates">{{ current_lat | default('') }}{% if current_lat is not none and current_lon is not none %}, {% endif %}{{ current_lon | default('') }}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Estimated Arrival and Last Checkpoint -->
+                    <div class="arrival-card">
+                        <div class="arrival-title">Estimated Arrival</div>
+                        <div class="arrival-value" id="estimatedArrival">{{ delivery_window | default('Calculating...') }}</div>
+                    </div>
+                    <div class="arrival-card">
+                        <div class="arrival-title">Last Checkpoint</div>
+                        <div class="arrival-value" id="lastCheckpoint">{{ checkpoints[-1] if checkpoints else 'Waiting for first scan' }}</div>
+                    </div>
+
+                    <!-- Next Checkpoint (upcoming) -->
+                    <div class="next-checkpoint" id="nextCheckpointCard">
+                        <div class="label">Next Checkpoint</div>
+                        <div class="value" id="nextCheckpoint">{{ checkpoints[1] if checkpoints and checkpoints|length > 1 else 'Next scan pending' }}</div>
+                    </div>
+
                     <!-- Progress Bar -->
                     <div class="progress-container">
                         <div class="progress-label">
@@ -769,11 +901,17 @@
                     </div>
 
                     <!-- Back Button -->
-                    <a href="{{ url_for('index') }}" class="back-button">← Back to Tracking</a>
+                    <a href="{{ url_for('index') }}" class="back-button">← Back to home</a>
                 </div>
 
                 <!-- Toast Container -->
                 <div id="toast-container" class="toast-container"></div>
+                <div id="debugPanel" class="debug-panel" style="display:none;">
+                    <div style="font-weight:700; margin-bottom:6px;color:#b91c1c;">Live Debug</div>
+                    <div><strong>Socket:</strong> <span id="debugSocketStatus">idle</span></div>
+                    <div style="margin-top:6px;"><strong>Last payload:</strong></div>
+                    <pre id="debugPayload">(none)</pre>
+                </div>
             </div>
         </div>
     {% endif %}
@@ -784,8 +922,8 @@
             <div class="footer-section">
                 <h3>Contact Us</h3>
                 <p>Email: support@dhl.com</p>
-                <p>Phone: +234 700 345 6789</p>
-                <p>Address: 1 DHL Way, Lagos, Nigeria</p>
+                <p>Phone: +1 700 345 6789</p>
+                <p>Address: 1 DHL Way, Int</p>
             </div>
             <div class="footer-section">
                 <h3>Follow Us</h3>
@@ -869,6 +1007,13 @@
 
         let routePolyline = null, animatedPolyline = null, animationFrameId = null, routeBounds = null;
         let isAnimationEnabled = true;
+        let liveMarker = null;
+        let liveMarkerPulse = null;
+        let markerAnimationFrame = null;
+        let markerPath = [];
+        let markerIndex = 0;
+        let markerProgress = 0;
+        let nextCheckpointIndex = null;
 
         function sortCoordsByTimestamp(coords) {
             return coords.map((coord, index) => ({ coord, index }))
@@ -939,6 +1084,56 @@
             animateNextSegment();
         }
 
+        function stopMarkerAnimation() {
+            if (markerAnimationFrame) {
+                cancelAnimationFrame(markerAnimationFrame);
+                markerAnimationFrame = null;
+            }
+        }
+
+        function animateMarkerAlongRoute(coords) {
+            if (!coords || coords.length < 2) return;
+            stopMarkerAnimation();
+            markerPath = coords;
+            markerIndex = 0;
+            markerProgress = 0;
+            if (!window.currentPosition || window.currentPosition.lat === undefined || window.currentPosition.lon === undefined) {
+                const start = coords[0];
+                window.currentPosition = { lat: start.lat, lon: start.lon, label: 'Route start' };
+            }
+            const markerIcon = L.divIcon({
+                html: '<div style="background:#d40511;border:3px solid white;border-radius:50%;width:16px;height:16px;box-shadow:0 0 0 6px rgba(212,5,17,0.18);"></div>',
+                className: '',
+                iconSize: [20, 20],
+                iconAnchor: [10, 10]
+            });
+            function step(timestamp) {
+                const totalSegments = markerPath.length - 1;
+                if (totalSegments <= 0) return;
+                const duration = Math.max(1200, 1800 / Math.max(totalSegments, 1));
+                const progress = Math.min((timestamp % (duration * totalSegments)) / duration, totalSegments);
+                const segmentIndex = Math.min(Math.floor(progress), totalSegments - 1);
+                const localProgress = progress - segmentIndex;
+                const start = markerPath[segmentIndex];
+                const end = markerPath[segmentIndex + 1];
+                const lat = start.lat + (end.lat - start.lat) * localProgress;
+                const lon = start.lon + (end.lon - start.lon) * localProgress;
+                if (liveMarker) map.removeLayer(liveMarker);
+                if (liveMarkerPulse) map.removeLayer(liveMarkerPulse);
+                liveMarker = L.marker([lat, lon], { icon: markerIcon, zIndexOffset: 1000 }).addTo(map);
+                liveMarker.bindPopup(`Current location: ${window.currentPosition.label || 'Live position'}`);
+                liveMarkerPulse = L.circle([lat, lon], {
+                    color: '#d40511',
+                    fillColor: '#d40511',
+                    fillOpacity: 0.15,
+                    radius: 1200,
+                    interactive: false
+                }).addTo(map);
+                markerAnimationFrame = requestAnimationFrame(step);
+            }
+            markerAnimationFrame = requestAnimationFrame(step);
+        }
+
         function updateMap(coords) {
             map.eachLayer(layer => {
                 if (layer instanceof L.Marker || layer instanceof L.Polyline) map.removeLayer(layer);
@@ -977,6 +1172,28 @@
                     opacity: 0.7
                 }).addTo(map);
             }
+            if (window.currentPosition && window.currentPosition.lat !== undefined && window.currentPosition.lon !== undefined) {
+                if (isAnimationEnabled && sortedCoords.length >= 2) {
+                    animateMarkerAlongRoute(sortedCoords);
+                } else {
+                    const positionLatLng = [window.currentPosition.lat, window.currentPosition.lon];
+                    const markerIcon = L.divIcon({
+                        html: '<div style="background:#d40511;border:3px solid white;border-radius:50%;width:16px;height:16px;box-shadow:0 0 0 6px rgba(212,5,17,0.18);"></div>',
+                        className: '',
+                        iconSize: [20, 20],
+                        iconAnchor: [10, 10]
+                    });
+                    liveMarker = L.marker(positionLatLng, { icon: markerIcon, zIndexOffset: 1000 }).addTo(map);
+                    liveMarker.bindPopup(`Current location: ${window.currentPosition.label || 'Live position'}`);
+                    liveMarkerPulse = L.circle(positionLatLng, {
+                        color: '#d40511',
+                        fillColor: '#d40511',
+                        fillOpacity: 0.15,
+                        radius: 1200,
+                        interactive: false
+                    }).addTo(map);
+                }
+            }
             map.fitBounds(routeBounds);
         }
 
@@ -988,7 +1205,18 @@
         const initialProgress = {{ progress | default(0) }};
         const hasInitialRoute = (initialRouteCoords && initialRouteCoords.length) || (initialCoords && initialCoords.length);
 
-        function renderInitialProgress() {
+        function setInitialPageState() {
+            const statusEl = document.getElementById('status');
+            if (statusEl && {{ shipment.status | tojson }}) {
+                statusEl.textContent = {{ shipment.status | tojson }};
+                statusEl.className = 'status-badge-header ' + (
+                    {{ shipment.status | tojson }} === 'Delivered' ? 'delivered' :
+                    {{ shipment.status | tojson }} === 'In_Transit' ? 'in-transit' :
+                    {{ shipment.status | tojson }} === 'Out_for_Delivery' ? 'out-for-delivery' :
+                    {{ shipment.status | tojson }} === 'Delayed' ? 'delayed' :
+                    {{ shipment.status | tojson }} === 'Exception' ? 'exception' : 'pending'
+                );
+            }
             const progressPercent = document.getElementById('progress-percent');
             const progressFill = document.getElementById('progress-fill');
             if (progressPercent && progressFill) {
@@ -996,6 +1224,65 @@
                 progressPercent.textContent = `${percent}%`;
                 progressFill.style.width = `${percent}%`;
             }
+            const initialCurrentLocation = {{ current_location | default('Calculating...') | tojson }};
+            const initialCurrentLat = {{ current_lat | default('') | tojson }};
+            const initialCurrentLon = {{ current_lon | default('') | tojson }};
+            const parsedInitialLat = initialCurrentLat !== '' && initialCurrentLat !== null ? parseFloat(initialCurrentLat) : undefined;
+            const parsedInitialLon = initialCurrentLon !== '' && initialCurrentLon !== null ? parseFloat(initialCurrentLon) : undefined;
+            window.currentPosition = {
+                lat: parsedInitialLat,
+                lon: parsedInitialLon,
+                label: initialCurrentLocation
+            };
+            const currentLocationEl = document.getElementById('currentLocation');
+            if (currentLocationEl) {
+                currentLocationEl.textContent = initialCurrentLocation;
+            }
+            const currentCoordsEl = document.getElementById('currentCoordinates');
+            if (currentCoordsEl) {
+                currentCoordsEl.textContent = (parsedInitialLat !== undefined && parsedInitialLon !== undefined) ? `${parsedInitialLat}, ${parsedInitialLon}` : 'Pending';
+            }
+            const positionStatusText = document.getElementById('positionStatusText');
+            if (positionStatusText) {
+                positionStatusText.textContent = (parsedInitialLat !== undefined && parsedInitialLon !== undefined) ? 'Moving now' : 'Tracking live';
+            }
+            const deliveryLocationEl = document.getElementById('delivery_location');
+            if (deliveryLocationEl) {
+                deliveryLocationEl.textContent = {{ shipment.delivery_location | tojson }} || 'N/A';
+            }
+            const serviceLevelEl = document.getElementById('service_level');
+            if (serviceLevelEl) {
+                serviceLevelEl.textContent = {{ service_level | default('DHL Express') | tojson }};
+            }
+            const deliveryWindowEl = document.getElementById('delivery_window');
+            if (deliveryWindowEl) {
+                deliveryWindowEl.textContent = {{ delivery_window | default('Calculating...') | tojson }};
+            }
+            const proofOfDeliveryEl = document.getElementById('proof_of_delivery');
+            if (proofOfDeliveryEl) {
+                proofOfDeliveryEl.textContent = {{ proof_of_delivery | default('Pending') | tojson }};
+            }
+            const lastUpdatedEl = document.getElementById('lastUpdated');
+            if (lastUpdatedEl) {
+                lastUpdatedEl.textContent = 'Last updated: ' + ({{ (shipment.last_updated.strftime('%Y-%m-%d %H:%M:%S') if shipment.last_updated else 'N/A') | tojson }});
+            }
+
+            // Compute initial next checkpoint (first unchecked after last)
+            const checkpointsArr = {{ checkpoints | tojson }} || [];
+            const progressVal = parseFloat(initialProgress) || 0;
+            function computeNextCheckpoint(arr, progress) {
+                if (!arr || !arr.length) return 'Next scan pending';
+                // If progress near start, next is index 1 else estimate by progress
+                const idx = Math.min(Math.max(1, Math.round(progress * (arr.length - 1))), arr.length - 1);
+                nextCheckpointIndex = idx;
+                return arr[idx];
+            }
+            const nextEl = document.getElementById('nextCheckpoint');
+            if (nextEl) nextEl.textContent = computeNextCheckpoint(checkpointsArr, progressVal) || 'Next scan pending';
+        }
+
+        function renderInitialProgress() {
+            setInitialPageState();
         }
 
         const ToggleAnimationControl = L.Control.extend({
@@ -1040,6 +1327,11 @@
             document.getElementById('resetView').disabled = true;
         }
 
+        // Ensure Leaflet properly sizes the map after it's been rendered
+        setTimeout(() => {
+            try { map.invalidateSize(); } catch (e) { console.warn('map.invalidateSize failed', e); }
+        }, 300);
+
         // ============================================================
         // SOCKET.IO
         // ============================================================
@@ -1080,10 +1372,13 @@
             updateConnectionStatus(true);
             requestTracking();
             showToast('Connected to live tracking', 'success');
+            // show debug
+            try { document.getElementById('debugPanel').style.display = 'block'; document.getElementById('debugSocketStatus').textContent = 'connected'; } catch(e){}
         });
 
         socket.on('tracking_update', (data) => {
             console.log('Received tracking update:', data);
+            try { document.getElementById('debugPayload').textContent = JSON.stringify(data, null, 2); } catch(e){}
             
             if (data.error) {
                 document.getElementById('status').textContent = 'Not Found';
@@ -1115,11 +1410,11 @@
             if (data.delivery_window) document.getElementById('delivery_window').textContent = data.delivery_window;
             if (data.proof_of_delivery) document.getElementById('proof_of_delivery').textContent = data.proof_of_delivery;
 
-            // Update checkpoints
-            const checkpointsDiv = document.getElementById('checkpoints');
-            const oldCount = checkpointsDiv.querySelectorAll('.checkpoint').length;
-            checkpointsDiv.innerHTML = '';
+            // Update checkpoints only when checkpoint data is present
             if (data.checkpoints && data.checkpoints.length) {
+                const checkpointsDiv = document.getElementById('checkpoints');
+                const oldCount = checkpointsDiv.querySelectorAll('.checkpoint').length;
+                checkpointsDiv.innerHTML = '';
                 data.checkpoints.forEach((cp, index) => {
                     const parts = cp.split(' - ');
                     const div = document.createElement('div');
@@ -1135,8 +1430,6 @@
                     `;
                     checkpointsDiv.appendChild(div);
                 });
-            } else {
-                checkpointsDiv.innerHTML = '<div class="checkpoint"><div class="dot pending"></div><div><div class="location">No checkpoints available</div></div></div>';
             }
 
             // Update progress
@@ -1144,6 +1437,63 @@
                 const percent = Math.round(data.progress * 100);
                 document.getElementById('progress-percent').textContent = percent + '%';
                 document.getElementById('progress-fill').style.width = percent + '%';
+            }
+
+            // Update live position
+            const currentLocationEl = document.getElementById('currentLocation');
+            const currentCoordsEl = document.getElementById('currentCoordinates');
+            const positionStatusText = document.getElementById('positionStatusText');
+            const estimatedArrivalEl = document.getElementById('estimatedArrival');
+            const lastCheckpointEl = document.getElementById('lastCheckpoint');
+            const currentLocation = data.current_location || data.currentLocation || 'Calculating...';
+            const currentLat = data.current_lat ?? data.currentLat;
+            const currentLon = data.current_lon ?? data.currentLon;
+            window.currentPosition = {
+                lat: currentLat,
+                lon: currentLon,
+                label: currentLocation
+            };
+            if (currentLocationEl) currentLocationEl.textContent = currentLocation;
+            if (currentCoordsEl) currentCoordsEl.textContent = (currentLat !== undefined && currentLon !== undefined && currentLat !== null && currentLon !== null) ? `${currentLat}, ${currentLon}` : 'Pending';
+            if (positionStatusText) positionStatusText.textContent = currentLat !== undefined && currentLon !== undefined ? 'Moving now' : 'Tracking live';
+            if (estimatedArrivalEl) estimatedArrivalEl.textContent = data.delivery_window || 'Calculating...';
+            if (lastCheckpointEl && data.checkpoints && data.checkpoints.length) lastCheckpointEl.textContent = data.checkpoints[data.checkpoints.length - 1];
+            // Update next checkpoint based on incoming checkpoints and progress
+            const nextElLive = document.getElementById('nextCheckpoint');
+            try {
+                if (nextElLive) {
+                    const cks = data.checkpoints || [];
+                    const p = parseFloat(data.progress || 0) || 0;
+                    let computed = 'Next scan pending';
+                    if (cks && cks.length) {
+                        const idx = Math.min(Math.max(1, Math.round(p * (cks.length - 1))), cks.length - 1);
+                        computed = cks[idx];
+                        nextCheckpointIndex = idx;
+                    }
+                    nextElLive.textContent = computed;
+                }
+            } catch (e) {
+                console.warn('Next checkpoint compute failed', e);
+            }
+            if (window.currentPosition.lat !== undefined && window.currentPosition.lon !== undefined) {
+                const markerIcon = L.divIcon({
+                    html: '<div style="background:#d40511;border:3px solid white;border-radius:50%;width:16px;height:16px;box-shadow:0 0 0 6px rgba(212,5,17,0.18);"></div>',
+                    className: '',
+                    iconSize: [20, 20],
+                    iconAnchor: [10, 10]
+                });
+                if (liveMarker) map.removeLayer(liveMarker);
+                if (liveMarkerPulse) map.removeLayer(liveMarkerPulse);
+                liveMarker = L.marker([window.currentPosition.lat, window.currentPosition.lon], { icon: markerIcon, zIndexOffset: 1000 }).addTo(map);
+                liveMarker.bindPopup(`Current location: ${currentLocation}`);
+                liveMarkerPulse = L.circle([window.currentPosition.lat, window.currentPosition.lon], {
+                    color: '#d40511',
+                    fillColor: '#d40511',
+                    fillOpacity: 0.15,
+                    radius: 1200,
+                    interactive: false
+                }).addTo(map);
+                map.setView([window.currentPosition.lat, window.currentPosition.lon], Math.max(map.getZoom(), 8));
             }
 
             // Update last updated
@@ -1159,11 +1509,11 @@
                 document.getElementById('toggleAnimation').disabled = routeData.length < 2;
                 document.getElementById('resetView').disabled = false;
             } else {
-                document.getElementById('toggleAnimation').disabled = true;
-                document.getElementById('resetView').disabled = true;
+                // Preserve the existing map/route state for lightweight updates that carry only live position.
             }
 
             showToast('Status updated: ' + statusValue, 'success');
+            try { document.getElementById('debugSocketStatus').textContent = 'updated ' + (new Date()).toLocaleTimeString(); } catch(e){}
         });
 
         socket.on('disconnect', () => {
