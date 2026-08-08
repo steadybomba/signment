@@ -279,34 +279,6 @@
     .service-level-badge.express { background: #dbeafe; color: #1e40af; }
     .service-level-badge.economy { background: #f1f5f9; color: #64748b; }
     
-    .toast-container {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      z-index: 9999;
-      max-width: 380px;
-    }
-    .toast-custom {
-      background: white;
-      border-radius: 12px;
-      padding: 16px 20px;
-      box-shadow: 0 8px 30px rgba(0,0,0,0.12);
-      border-left: 4px solid var(--dhl-red);
-      margin-bottom: 10px;
-      animation: toastSlide 0.3s ease;
-      backdrop-filter: blur(10px);
-    }
-    .toast-custom.success { border-left-color: #22c55e; }
-    .toast-custom.error { border-left-color: #dc2626; }
-    .toast-custom.warning { border-left-color: #f59e0b; }
-    .toast-custom .toast-title { font-weight: 600; font-size: 0.9rem; }
-    .toast-custom .toast-message { font-size: 0.85rem; color: #6b7280; }
-    
-    @keyframes toastSlide {
-      from { transform: translateX(100px); opacity: 0; }
-      to { transform: translateX(0); opacity: 1; }
-    }
-    
     .pagination .page-link {
       color: var(--dhl-red);
       border-radius: 8px;
@@ -405,7 +377,6 @@
       .table td, .table th { padding: 0.4rem; font-size: 0.7rem; }
       #map { height: 250px; }
       .speed-slider { width: 40px; }
-      .toast-container { max-width: 300px; right: 10px; }
       .btn-pause, .btn-resume, .btn-view, .btn-email { 
         font-size: 0.6rem; 
         padding: 2px 6px; 
@@ -439,7 +410,6 @@
       }
       .speed-slider { width: 100%; }
       .proof-signature { max-width: 100px; }
-      .toast-container { top: auto; bottom: 15px; right: 10px; left: 10px; max-width: calc(100% - 20px); }
       .modal-dialog { margin: 1rem; max-width: calc(100% - 2rem); }
       .modal-lg { max-width: 100%; }
     }
@@ -492,7 +462,6 @@
       .modal-content { background: #16213e; color: #e2e8f0; }
       .modal-header { border-bottom-color: #1e293b; }
       .modal-footer { border-top-color: #1e293b; }
-      .toast-custom { background: #1e293b; color: #e2e8f0; }
       .created-shipment { background: #0f172a; }
       .pagination .page-link { background: #1e293b; color: #94a3b8; }
       .pagination .page-link:hover { background: #334155; color: white; }
@@ -840,15 +809,6 @@
   </script>
   <datalist id="citiesList"></datalist>
 
-  <!-- === EMAIL SEND MODAL === -->
-  <div class="modal fade" id="emailModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-      <div class="modal-content">
-        <div class="modal-header" style="background: var(--dhl-red); color: white;">
-          <h5 class="modal-title"><i class="bi bi-envelope me-2"></i>Send Email Update</h5>
-          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-        </div>
-        <div class="modal-body">
           <div class="row g-3 mb-3" id="emailShipmentInfo">
             <div class="col-md-6">
               <div class="p-2 bg-light rounded">
@@ -919,15 +879,6 @@
     </div>
   </div>
 
-  <!-- Create Shipment Modal -->
-  <div class="modal fade" id="createModal" tabindex="-1" data-bs-backdrop="static">
-    <div class="modal-dialog modal-lg">
-      <div class="modal-content">
-        <div class="modal-header" style="background:var(--dhl-red);color:white;">
-          <h5 class="modal-title"><i class="bi bi-plus-circle me-2"></i>Create New Shipment</h5>
-          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-        </div>
-        <div class="modal-body">
           <form id="createForm">
             <div class="row g-3">
               <div class="col-md-6">
@@ -986,9 +937,6 @@
     </div>
   </div>
 
-  <!-- Detail Modal -->
-  <div class="modal fade" id="detailModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
       <div class="modal-content">
         <div class="modal-header" style="background:var(--dhl-red);color:white;">
           <h5 class="modal-title"><i class="bi bi-truck me-2"></i>Shipment Details</h5>
@@ -1001,9 +949,6 @@
     </div>
   </div>
 
-  <!-- Edit Shipment Modal -->
-  <div class="modal fade" id="editModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
       <div class="modal-content">
         <div class="modal-header" style="background:var(--dhl-red);color:white;">
           <h5 class="modal-title"><i class="bi bi-pencil-square me-2"></i>Edit Shipment</h5>
@@ -1087,47 +1032,9 @@
     </div>
   </div>
 
-  <!-- Toast Container -->
-  <div id="toastContainer" class="toast-container"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
-    // ============================================================
-    // TOAST NOTIFICATIONS
-    // ============================================================
-    function showToast(message, type = 'info', title = '') {
-      const container = document.getElementById('toastContainer');
-      const toast = document.createElement('div');
-      toast.className = `toast-custom ${type}`;
-      const icons = {
-        success: 'bi-check-circle-fill text-success',
-        error: 'bi-exclamation-circle-fill text-danger',
-        warning: 'bi-exclamation-triangle-fill text-warning',
-        info: 'bi-info-circle-fill text-primary'
-      };
-      const icon = icons[type] || icons.info;
-      const titles = {
-        success: 'Success',
-        error: 'Error',
-        warning: 'Warning',
-        info: 'Info'
-      };
-      toast.innerHTML = `
-        <div class="d-flex align-items-start gap-3">
-          <i class="bi ${icon}" style="font-size: 1.25rem;"></i>
-          <div>
-            <div class="toast-title">${title || titles[type] || 'Info'}</div>
-            <div class="toast-message">${message}</div>
-          </div>
-          <button type="button" class="btn-close ms-auto" onclick="this.parentElement.parentElement.remove()"></button>
-        </div>
-      `;
-      container.appendChild(toast);
-      setTimeout(() => {
-        if (toast.parentElement) toast.remove();
-      }, 6000);
-    }
-
     // ============================================================
     // CLOCK
     // ============================================================
@@ -1141,10 +1048,7 @@
     // ============================================================
     // MODALS
     // ============================================================
-    const createModal = new bootstrap.Modal(document.getElementById('createModal'));
-    const detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
-    const emailModal = new bootstrap.Modal(document.getElementById('emailModal'));
-    // Force polling transport to avoid websocket upgrade errors when server uses threading fallback
+    const detailModal = new bootstrap.Modal(document.getElementById('detailModal'));    // Force polling transport to avoid websocket upgrade errors when server uses threading fallback
     const socket = io({ transports: ['polling'] });
     let currentEmailTn = null;
 
@@ -1176,13 +1080,10 @@
       const listDiv = document.getElementById('createdList');
       resultDiv.style.display = 'block';
 
-      console.log('Showing result:', data);
-
       if (data.error) {
         alertDiv.className = 'alert alert-danger';
         alertDiv.innerHTML = '<i class="bi bi-exclamation-triangle me-2"></i> Error: ' + data.error;
         listDiv.innerHTML = '';
-        showToast(data.error, 'error');
         return;
       }
 
@@ -1205,19 +1106,16 @@
               </a>
             </div>
           `).join('');
-          showToast(`Created ${createdList.length} shipment(s) successfully!`, 'success');
           // Refresh the page after a short delay
           setTimeout(() => location.reload(), 2000);
         } else {
           alertDiv.innerHTML = '<i class="bi bi-info-circle me-2"></i> No shipments were created';
           listDiv.innerHTML = '';
-          showToast('No shipments were created', 'info');
         }
       } else {
         alertDiv.className = 'alert alert-warning';
         alertDiv.innerHTML = '<i class="bi bi-info-circle me-2"></i> Unexpected response';
         listDiv.innerHTML = '';
-        showToast('Unexpected response from server', 'error');
       }
     }
 
@@ -1240,11 +1138,9 @@
           })
           .then(response => response.json())
           .then(data => {
-            console.log('Bulk create response:', data);
             showCreateResult(data);
           })
           .catch(err => {
-            console.error('Bulk create error:', err);
             showCreateResult({ error: err.message || 'Network error' });
           })
           .finally(() => {
@@ -1252,7 +1148,6 @@
             btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
           });
         } catch (err) {
-          console.error('JSON parse error:', err);
           showCreateResult({ error: 'Invalid JSON: ' + err.message });
           btn.disabled = false;
           btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
@@ -1268,7 +1163,6 @@
         recipient_email: document.getElementById('recipientEmail').value
       };
 
-      console.log('Creating shipment:', data);
 
       if (!data.origin || !data.destination) {
         showCreateResult({ error: 'Origin and destination are required' });
@@ -1284,7 +1178,6 @@
       })
       .then(response => response.json())
       .then(data => {
-        console.log('Create response:', data);
         if (data.success) {
           showCreateResult({
             success: true,
@@ -1298,7 +1191,6 @@
         }
       })
       .catch(err => {
-        console.error('Create error:', err);
         showCreateResult({ error: err.message || 'Network error' });
       })
       .finally(() => {
@@ -1444,15 +1336,12 @@
         if (result.success) {
           showEmailStatus('success', `✅ Email sent successfully to ${result.recipient}`);
           loadEmailHistory(currentEmailTn);
-          showToast(`Email sent to ${result.recipient}`, 'success');
         } else {
           showEmailStatus('error', `❌ ${result.error || 'Unable to send email'}`);
-          showToast(result.error || 'Failed to send email', 'error');
         }
       })
       .catch(err => {
         showEmailStatus('error', '❌ Failed to send email: ' + (err.message || 'Unknown error'));
-        showToast('Failed to send email', 'error');
       })
       .finally(() => {
         btn.disabled = false;
@@ -1682,7 +1571,7 @@
           marker.setLatLng([lat, lon]);
           if (tRaw >= 1) delete markerAnims[tn];
         }
-      } catch (e) { console.error('Marker animation error', e); }
+      } catch (e) { }
       requestAnimationFrame(animateMarkers);
     })(performance.now());
 
@@ -1704,10 +1593,9 @@
         fetch(`/admin/api/shipment/${tn}`)
           .then(r => r.json())
           .then(data => updateMap(data))
-          .catch(err => console.error('Failed to load shipment for map:', err));
+          .catch(() => {});
       });
       
-      showToast('Map refreshed', 'info');
     }
 
     // ============================================================
@@ -1810,7 +1698,6 @@
       .then(r => r.json())
       .then(d => { 
         if (d.success) {
-          showToast(`Shipment ${pause ? 'paused' : 'resumed'} successfully`, 'success');
           setTimeout(() => location.reload(), 1000);
         }
       })
@@ -1833,7 +1720,6 @@
       })
       .then(r => r.json())
       .then(d => {
-        if (d.success) showToast(`Speed updated to ${speed}x`, 'success');
       });
     }
 
@@ -1910,7 +1796,6 @@
         .catch(err => {
           document.getElementById('detailContent').innerHTML = 
             '<div class="alert alert-danger">Error loading details</div>';
-          showToast('Failed to load shipment details', 'error');
         });
     }
 
@@ -1938,8 +1823,7 @@
           const editModal = new bootstrap.Modal(document.getElementById('editModal'));
           editModal.show();
         })
-        .catch(err => {
-          showToast('Failed to load shipment for editing', 'error');
+        .catch(() => {
         });
     }
 
@@ -1960,17 +1844,11 @@
       .then(r => r.json())
       .then(d => {
         if (d && d.success) {
-          showToast('Shipment deleted', 'success');
           setTimeout(() => location.reload(), 800);
         } else {
-          showToast(d.error || 'Failed to delete shipment', 'error');
-          console.error('Delete failed', d);
         }
       })
-      .catch(err => {
-        showToast('Failed to delete shipment', 'error');
-        console.error(err);
-      })
+      .catch(() => {})
       .finally(() => {
         deleteBtn.disabled = false;
         deleteBtn.innerHTML = '<i class="bi bi-trash me-1"></i>Delete Shipment';
@@ -1979,7 +1857,7 @@
     function saveShipmentEdits(){
       const frm = document.getElementById('editForm');
       const tn = frm.dataset.tn;
-      if (!tn) { showToast('No shipment selected', 'error'); return; }
+      if (!tn) return;
       const payload = {
         status: document.getElementById('editStatus').value,
         stage: document.getElementById('editStage').value,
@@ -2004,17 +1882,11 @@
       .then(r => r.json())
       .then(d => {
         if (d && d.success) {
-          showToast('Shipment updated', 'success');
           setTimeout(() => location.reload(), 800);
         } else {
-          showToast('Failed to update shipment', 'error');
-          console.error('Update failed', d);
         }
       })
-      .catch(err => {
-        showToast('Failed to update shipment', 'error');
-        console.error(err);
-      })
+      .catch(() => {})
       .finally(() => {
         saveBtn.disabled = false;
         saveBtn.innerHTML = '<i class="bi bi-save me-1"></i>Save Changes';
@@ -2051,7 +1923,7 @@
         fetch(`/admin/api/shipment/${tn}`)
           .then(r => r.json())
           .then(data => updateMap(data))
-          .catch(err => console.error('Failed to load shipment for map:', err));
+          .catch(() => {});
       });
       
       // Set map status after loading
@@ -2061,8 +1933,6 @@
           `Live (${count} active)` : 'No active shipments';
       }, 3000);
       
-      console.log('✅ Admin Dashboard loaded');
-      showToast('Dashboard loaded successfully', 'success');
     });
   </script>
   <script>
