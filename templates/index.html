@@ -348,7 +348,7 @@
         .toast.error { background: #dc2626; border-left-color: #7f1d1d; }
         .toast.info { background: #2563eb; border-left-color: #1e3a5f; }
         
-        /* === BLOG SECTION - LARGER IMAGES WITH PERFECT FIT === */
+        /* === BLOG SECTION - OPTIMIZED FOR 741x774 IMAGES === */
         .blog-section {
             max-width: 1400px;
             margin: 50px auto 30px;
@@ -391,12 +391,15 @@
             background: #f0f0f0;
             position: relative;
         }
+        /* Force exact 741x774 ratio with object-fit cover */
         .blog-card .blog-image-wrapper .blog-image {
             width: 100%;
-            height: 500px;
+            height: auto;
+            aspect-ratio: 741 / 774;
             object-fit: cover;
             display: block;
             transition: transform 0.5s ease;
+            background: #f0f0f0;
         }
         .blog-card:hover .blog-image-wrapper .blog-image {
             transform: scale(1.03);
@@ -528,9 +531,6 @@
                 grid-template-columns: repeat(2, 1fr);
                 gap: 25px;
             }
-            .blog-card .blog-image-wrapper .blog-image {
-                height: 400px;
-            }
         }
         
         @media (max-width: 768px) {
@@ -540,9 +540,6 @@
             .footer-section { min-width: 100%; text-align: center; }
             .blog-grid { grid-template-columns: 1fr; max-width: 550px; margin: 0 auto; }
             .blog-section .section-title { font-size: 1.6rem; }
-            .blog-card .blog-image-wrapper .blog-image {
-                height: 400px;
-            }
             .gate-card { padding: 32px 24px; }
         }
         
@@ -568,9 +565,6 @@
             .blog-section { padding: 0 12px; }
             .blog-card .blog-label { font-size: 0.85rem; padding: 14px 16px; }
             .tracking-result .card { padding: 16px; }
-            .blog-card .blog-image-wrapper .blog-image {
-                height: 300px;
-            }
         }
         
         @media (max-width: 380px) {
@@ -578,9 +572,6 @@
             .track-box { padding: 12px; }
             .track-box input { font-size: 13px; padding: 8px 10px; }
             .track-box button { font-size: 13px; padding: 10px; }
-            .blog-card .blog-image-wrapper .blog-image {
-                height: 250px;
-            }
         }
         
         @media (max-width: 420px) {
@@ -692,7 +683,7 @@
         <!-- Toast Container -->
         <div id="toast-container" class="toast-container"></div>
 
-        <!-- === BLOG SECTION - LARGER IMAGES === -->
+        <!-- === BLOG SECTION - OPTIMIZED FOR 741x774 IMAGES === -->
         <div class="blog-section" id="blog">
             <div class="section-title">From the DHL Blog</div>
             <div class="section-subtitle">Stories and insights from our team</div>
