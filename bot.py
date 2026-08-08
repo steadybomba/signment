@@ -827,9 +827,12 @@ if bot is not None:
             # Don't return - we'll try anyway
 
         try:
-            # First, try to delete any existing webhook
+            # First, try to delete any existing webhook before setting a new one
             try:
-                bot.delete_webhook()
+                if hasattr(bot, 'remove_webhook'):
+                    bot.remove_webhook()
+                elif hasattr(bot, 'delete_webhook'):
+                    bot.delete_webhook()
                 bot_logger.info("Deleted existing webhook")
             except Exception as e:
                 bot_logger.warning(f"Could not delete existing webhook: {e}")
@@ -866,22 +869,50 @@ if bot is not None:
         if bot is None:
             return
 
+        global _polling_thread
+        try:
+            if '_polling_thread' in globals() and _polling_thread and _polling_thread.is_alive():
+                bot_logger.info("Polling already running; skipping start")
+                return
+        except Exception:
+            pass
+
         def poll():
+            max_retries = 5
+            retries = 0
+            backoff = 10
             while True:
                 try:
                     bot_logger.info("Starting polling mode...")
                     bot.polling(none_stop=True, interval=1, timeout=30)
+                except RecursionError as re:
+                    bot_logger.error(f"Polling hit recursion error: {re}; will stop polling thread to avoid crash.")
+                    break
                 except Exception as e:
-                    bot_logger.error(f"Polling failed: {e}")
-                    time.sleep(60)
+                    retries += 1
+                    bot_logger.error(f"Polling failed (attempt {retries}): {e}")
+                    if retries >= max_retries:
+                        bot_logger.error("Max polling retries reached; giving up until manual restart.")
+                        break
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 300)
                     continue
                 else:
                     bot_logger.info("Bot polling stopped normally.")
                     break
 
-        # Start polling in a separate thread
-        poll_thread = threading.Thread(target=poll, daemon=True)
-        poll_thread.start()
+        # Ensure webhook is removed before polling so Telegram switches to getUpdates
+        try:
+            if hasattr(bot, 'remove_webhook'):
+                bot.remove_webhook()
+            elif hasattr(bot, 'delete_webhook'):
+                bot.delete_webhook()
+        except Exception as e:
+            bot_logger.warning(f"Could not remove webhook before polling: {e}")
+
+        # Start polling in a separate thread and store a global reference
+        _polling_thread = threading.Thread(target=poll, daemon=True)
+        _polling_thread.start()
         bot_logger.info("Polling thread started as fallback")
 
     def start_bot_service() -> None:
