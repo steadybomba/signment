@@ -865,17 +865,20 @@ if bot is not None:
         """Start the bot in polling mode as a fallback when webhook fails."""
         if bot is None:
             return
-            
+
         def poll():
-            try:
-                bot_logger.info("Starting polling mode...")
-                bot.polling(none_stop=True, interval=1, timeout=30)
-            except Exception as e:
-                bot_logger.error(f"Polling failed: {e}")
-                # Retry polling after a delay
-                time.sleep(60)
-                poll()
-        
+            while True:
+                try:
+                    bot_logger.info("Starting polling mode...")
+                    bot.polling(none_stop=True, interval=1, timeout=30)
+                except Exception as e:
+                    bot_logger.error(f"Polling failed: {e}")
+                    time.sleep(60)
+                    continue
+                else:
+                    bot_logger.info("Bot polling stopped normally.")
+                    break
+
         # Start polling in a separate thread
         poll_thread = threading.Thread(target=poll, daemon=True)
         poll_thread.start()
