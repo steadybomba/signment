@@ -389,7 +389,9 @@
       color: #9ca3af;
     }
     
-    /* Responsive */
+    /* ============================================================
+       FIXED MOBILE RESPONSIVE
+    ============================================================ */
     @media (max-width: 992px) {
       .dhl-header { padding: 1rem; }
       .dhl-header .btn { font-size: 0.75rem; padding: 0.25rem 0.5rem; }
@@ -398,74 +400,180 @@
     }
     
     @media (max-width: 768px) {
-      .dhl-header .row { flex-direction: column; text-align: center; gap: 0.5rem; }
-      .dhl-header .col-md-6.text-end { text-align: center !important; }
+      /* Header - keep inline on mobile */
+      .dhl-header .row { 
+        flex-direction: row !important;
+        flex-wrap: wrap;
+        text-align: left !important;
+        gap: 0.5rem;
+      }
+      .dhl-header .col-md-6 { 
+        width: auto;
+        flex: 1 1 auto;
+      }
+      .dhl-header .col-md-6.text-end { 
+        text-align: right !important;
+        flex: 0 0 auto;
+      }
+      .dhl-header .btn { 
+        font-size: 0.65rem !important;
+        padding: 0.2rem 0.5rem !important;
+        white-space: nowrap;
+      }
+      .dhl-header .me-2 { margin-right: 0.3rem !important; }
+      .dhl-header .me-3 { margin-right: 0.3rem !important; }
+      
       .stat-card { padding: 0.75rem; }
       .stat-card h3 { font-size: 1.1rem; }
-      .table td, .table th { padding: 0.4rem; font-size: 0.7rem; }
+      
+      /* Table - horizontal scroll with nowrap */
+      .table-responsive {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .table-responsive table {
+        min-width: 700px;
+      }
+      .table td, .table th { 
+        padding: 0.4rem;
+        font-size: 0.7rem;
+        white-space: nowrap;
+      }
       #map { height: 250px; }
       .speed-slider { width: 40px; }
       .toast-container { max-width: 300px; right: 10px; }
       .btn-pause, .btn-resume, .btn-view, .btn-email { 
-        font-size: 0.6rem; 
-        padding: 2px 6px; 
+        font-size: 0.55rem !important;
+        padding: 2px 6px !important;
+      }
+      
+      /* Fix status badge */
+      .status-badge {
+        font-size: 0.65rem !important;
+        padding: 2px 8px !important;
+        white-space: nowrap !important;
+      }
+      .stage-badge {
+        font-size: 0.5rem !important;
+        padding: 1px 6px !important;
+        white-space: nowrap !important;
+      }
+      .service-level-badge {
+        font-size: 0.5rem !important;
+        padding: 1px 6px !important;
+        white-space: nowrap !important;
       }
     }
     
-    @media (max-width: 480px) {
-      .dhl-header .logo-text { font-size: 1rem; }
-      .table td, .table th { padding: 0.3rem; font-size: 0.65rem; }
-      .status-badge { font-size: 0.65rem; padding: 2px 8px; }
-      .stage-badge { font-size: 0.5rem; padding: 1px 6px; }
-      .service-level-badge { font-size: 0.5rem; padding: 1px 6px; }
+    @media (max-width: 576px) {
+      /* Header buttons wrap but stay inline */
+      .dhl-header .col-md-6.text-end {
+        text-align: left !important;
+        width: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3rem;
+        align-items: center;
+      }
+      .dhl-header .col-md-6.text-end .btn {
+        flex: 0 0 auto;
+        font-size: 0.6rem !important;
+        padding: 0.15rem 0.4rem !important;
+      }
+      .dhl-header .col-md-6.text-end .text-white-50 {
+        font-size: 0.7rem;
+      }
+      #map { height: 220px; }
+      .stat-card { padding: 0.6rem; }
+      .stat-card h3 { font-size: 0.95rem; }
+      .stat-card .icon { font-size: 1.25rem; }
+      .stat-card .label { font-size: 0.65rem; }
+      
+      .table td, .table th { 
+        padding: 0.2rem 0.35rem; 
+        font-size: 0.6rem;
+      }
+      .table-responsive table { min-width: 600px; }
+      
+      .speed-slider { width: 50px; }
+      .proof-signature { max-width: 80px; font-size: 0.55rem; }
+      .delivery-window { font-size: 0.55rem; }
+      
+      .btn-pause, .btn-resume, .btn-view, .btn-email { 
+        font-size: 0.5rem !important;
+        padding: 1px 4px !important;
+      }
+      .btn-pause i, .btn-resume i, .btn-view i, .btn-email i {
+        font-size: 0.6rem;
+      }
+      
+      .toast-container { 
+        top: auto; 
+        bottom: 15px; 
+        right: 10px; 
+        left: 10px; 
+        max-width: calc(100% - 20px); 
+      }
+      .modal-dialog { margin: 1rem; max-width: calc(100% - 2rem); }
+      .modal-lg { max-width: 100%; }
+      
+      /* Hide non-essential table columns on very small screens */
+      .table-responsive table th:nth-child(4),
+      .table-responsive table td:nth-child(4),
+      .table-responsive table th:nth-child(5),
+      .table-responsive table td:nth-child(5) {
+        display: none !important;
+      }
     }
 
     @media (max-width: 420px) {
-      .dhl-header { padding: 1rem 0.75rem; }
-      .dhl-header .row { gap: 0.75rem; }
-      .dhl-header .col-md-6 { width: 100%; }
-      .dhl-header .text-end { text-align: center !important; }
-      .dhl-header .btn { width: 100%; margin-bottom: 0.5rem; }
-      #map { height: 220px; }
-      .stat-card { padding: 0.9rem; }
-      .stat-card .icon { font-size: 1.5rem; }
-      .table td, .table th { padding: 0.25rem 0.35rem; font-size: 0.62rem; }
-      .table th, .table td { white-space: normal; }
-      .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-      .table-responsive table { min-width: 100%; }
-      .table-responsive table th,
-      .table-responsive table td {
-        white-space: nowrap;
+      .dhl-header { padding: 0.75rem; }
+      .dhl-header .col-md-6.text-end .btn {
+        font-size: 0.55rem !important;
+        padding: 0.1rem 0.35rem !important;
       }
-      .speed-slider { width: 100%; }
-      .proof-signature { max-width: 100px; }
-      .toast-container { top: auto; bottom: 15px; right: 10px; left: 10px; max-width: calc(100% - 20px); }
-      .modal-dialog { margin: 1rem; max-width: calc(100% - 2rem); }
-      .modal-lg { max-width: 100%; }
+      .dhl-header h3 { font-size: 1rem !important; }
+      .dhl-header img { height: 28px !important; }
+      
+      .stat-card { padding: 0.5rem; }
+      .stat-card h3 { font-size: 0.85rem; }
+      .stat-card .icon { font-size: 1rem; }
+      .stat-card .label { font-size: 0.55rem; }
+      
+      .table td, .table th { 
+        padding: 0.15rem 0.25rem; 
+        font-size: 0.55rem;
+      }
+      .table-responsive table { min-width: 500px; }
+      
+      .speed-slider { width: 40px; }
+      .speed-value { font-size: 0.6rem !important; min-width: 20px !important; }
+      
+      #map { height: 180px; }
     }
 
     /* Compact stats mode: applies when toggled or useful on small screens */
     body.compact-stats .stat-card,
-    @media (max-width: 420px) {
+    @media (max-width: 576px) {
       .stat-card {
-        padding: 0.6rem !important;
-        border-radius: 12px !important;
+        padding: 0.5rem !important;
+        border-radius: 10px !important;
       }
-      .stat-card h3 { font-size: 1rem !important; margin-bottom: 0.2rem; }
+      .stat-card h3 { font-size: 0.9rem !important; margin-bottom: 0.1rem; }
       .stat-card .label { display: none !important; }
-      .stat-card .icon { font-size: 1.25rem !important; opacity: 0.9; }
-      .stat-card .stat-change { font-size: 0.7rem; }
-      .stat-card::after { width: 60px; height: 60px; transform: translate(20%, -20%); }
+      .stat-card .icon { font-size: 1.1rem !important; opacity: 0.9; }
+      .stat-card .stat-change { font-size: 0.6rem; }
+      .stat-card::after { width: 50px; height: 50px; transform: translate(20%, -20%); }
       .stat-card .icon, .stat-card h3 { display: inline-block; vertical-align: middle; }
-      .stat-card .icon { margin-left: 6px; }
+      .stat-card .icon { margin-left: 4px; }
       .row.g-3 .col-md-3 { flex: 0 0 50%; max-width: 50%; }
     }
 
     body.compact-stats .stat-card {
-      padding: 0.6rem !important;
-      border-radius: 12px !important;
+      padding: 0.5rem !important;
+      border-radius: 10px !important;
     }
-    body.compact-stats .stat-card h3 { font-size: 1rem !important; margin-bottom: 0.2rem; }
+    body.compact-stats .stat-card h3 { font-size: 0.9rem !important; margin-bottom: 0.1rem; }
     body.compact-stats .stat-card .label { display: none !important; }
     body.compact-stats .row.g-3 .col-md-3 { flex: 0 0 50%; max-width: 50%; }
     
@@ -520,16 +628,16 @@
           <span class="text-white-50 me-3"><span class="live-indicator"></span>Live</span>
           <span class="text-white-50 me-3" id="clock-display" style="font-family: monospace; font-size: 0.9rem;"></span>
           <button class="btn btn-light btn-sm me-2" onclick="showCreateModal()">
-            <i class="bi bi-plus-lg"></i> New Shipment
+            <i class="bi bi-plus-lg"></i> New
           </button>
           <button id="compactToggle" class="btn btn-outline-light btn-sm me-2 d-none d-sm-inline-block" title="Toggle compact stats">
-            <i class="bi bi-arrows-collapse"></i> Compact
+            <i class="bi bi-arrows-collapse"></i>
           </button>
           <a href="{{ url_for('admin_csv') }}" class="btn btn-light btn-sm me-2">
-            <i class="bi bi-download"></i> CSV
+            <i class="bi bi-download"></i>
           </a>
           <a href="{{ url_for('admin_logout') }}" class="btn btn-outline-light btn-sm">
-            <i class="bi bi-box-arrow-right"></i> Logout
+            <i class="bi bi-box-arrow-right"></i>
           </a>
         </div>
       </div>
@@ -640,7 +748,7 @@
                     data-exception="{{ s.status == 'Exception' }}"
                     data-paused="{{ s.paused|default(false)|lower }}">
                   <td>
-                    <code style="font-size:0.75rem; background:#f1f5f9; padding:2px 8px; border-radius:4px;">
+                    <code style="font-size:0.7rem; background:#f1f5f9; padding:2px 6px; border-radius:4px; white-space:nowrap;">
                       {{ s.tracking_number }}
                     </code>
                   </td>
@@ -681,11 +789,11 @@
                       <i class="bi bi-pen me-1"></i>{{ s.proof_of_delivery }}
                     </span>
                     {% else %}
-                    <span class="text-muted" style="font-size:0.7rem;">Pending</span>
+                    <span class="text-muted" style="font-size:0.6rem;">Pending</span>
                     {% endif %}
                   </td>
                   <td>
-                    <div style="min-width: 80px;">
+                    <div style="min-width: 60px;">
                       <div class="progress">
                         <div class="progress-bar" role="progressbar" 
                              style="width: {{ s.progress_percent|default(0) }}%;" 
@@ -693,7 +801,7 @@
                              aria-valuemin="0" aria-valuemax="100">
                         </div>
                       </div>
-                      <small class="text-muted" style="font-size:0.6rem;">{{ "%.0f"|format(s.progress_percent|default(0)) }}%</small>
+                      <small class="text-muted" style="font-size:0.5rem;">{{ "%.0f"|format(s.progress_percent|default(0)) }}%</small>
                     </div>
                   </td>
                   <td>
@@ -701,25 +809,25 @@
                       <input type="range" class="speed-slider" min="1" max="50" 
                              value="{{ (s.speed[:-1]|float * 10)|int }}" 
                              onchange="updateSpeed('{{ s.tracking_number }}', this.value / 10)">
-                      <span class="speed-value" style="font-family: monospace; font-weight:700; font-size:0.75rem; min-width: 30px;">{{ s.speed }}</span>
+                      <span class="speed-value" style="font-family: monospace; font-weight:700; font-size:0.65rem; min-width: 25px;">{{ s.speed }}</span>
                     </div>
                   </td>
                   <td>
                     <div class="d-flex gap-1 flex-wrap">
                       {% if s.paused %}
-                      <button class="btn btn-resume btn-sm" onclick="togglePause('{{ s.tracking_number }}', false)" title="Resume Simulation">
+                      <button class="btn btn-resume btn-sm" onclick="togglePause('{{ s.tracking_number }}', false)" title="Resume">
                         <i class="bi bi-play-fill"></i>
                       </button>
                       {% else %}
-                      <button class="btn btn-pause btn-sm" onclick="togglePause('{{ s.tracking_number }}', true)" title="Pause Simulation">
+                      <button class="btn btn-pause btn-sm" onclick="togglePause('{{ s.tracking_number }}', true)" title="Pause">
                         <i class="bi bi-pause-fill"></i>
                       </button>
                       {% endif %}
-                      <button class="btn btn-view btn-sm" onclick="showDetails('{{ s.tracking_number }}')" title="View Details">
+                      <button class="btn btn-view btn-sm" onclick="showDetails('{{ s.tracking_number }}')" title="View">
                         <i class="bi bi-eye"></i>
                       </button>
                       {% if s.recipient_email and s.recipient_email != '-' %}
-                      <button class="btn btn-email btn-sm" onclick="showEmailModal('{{ s.tracking_number }}')" title="Send Email">
+                      <button class="btn btn-email btn-sm" onclick="showEmailModal('{{ s.tracking_number }}')" title="Email">
                         <i class="bi bi-envelope"></i>
                       </button>
                       {% endif %}
@@ -816,6 +924,8 @@
     </div>
   </div>
 
+  <!-- [REST OF MODALS AND SCRIPTS REMAIN THE SAME AS YOUR VERSION] -->
+  
   <script>
     // Compact stats toggle: persist in localStorage
     (function() {
@@ -831,7 +941,6 @@
           setCompact(enabled);
         });
       }
-      // restore on load
       try {
         const val = localStorage.getItem('compactStats');
         if (val === '1') document.body.classList.add('compact-stats');
@@ -1144,19 +1253,16 @@
     const createModal = new bootstrap.Modal(document.getElementById('createModal'));
     const detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
     const emailModal = new bootstrap.Modal(document.getElementById('emailModal'));
-    // Force polling transport to avoid websocket upgrade errors when server uses threading fallback
     const socket = io({ transports: ['polling'] });
     let currentEmailTn = null;
 
     // ============================================================
     // CREATE SHIPMENT
     // ============================================================
-    // Origin/Destination are free-text inputs now. No city list is required.
     function showCreateModal() {
       document.getElementById('createResult').style.display = 'none';
       document.getElementById('createForm').reset();
       createModal.show();
-      // populate datalist suggestions (non-blocking)
       fetch('/admin/api/cities')
         .then(r => r.json())
         .then(cities => {
@@ -1175,8 +1281,6 @@
       const alertDiv = document.getElementById('createAlert');
       const listDiv = document.getElementById('createdList');
       resultDiv.style.display = 'block';
-
-      console.log('Showing result:', data);
 
       if (data.error) {
         alertDiv.className = 'alert alert-danger';
@@ -1206,7 +1310,6 @@
             </div>
           `).join('');
           showToast(`Created ${createdList.length} shipment(s) successfully!`, 'success');
-          // Refresh the page after a short delay
           setTimeout(() => location.reload(), 2000);
         } else {
           alertDiv.innerHTML = '<i class="bi bi-info-circle me-2"></i> No shipments were created';
@@ -1240,11 +1343,9 @@
           })
           .then(response => response.json())
           .then(data => {
-            console.log('Bulk create response:', data);
             showCreateResult(data);
           })
           .catch(err => {
-            console.error('Bulk create error:', err);
             showCreateResult({ error: err.message || 'Network error' });
           })
           .finally(() => {
@@ -1252,7 +1353,6 @@
             btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
           });
         } catch (err) {
-          console.error('JSON parse error:', err);
           showCreateResult({ error: 'Invalid JSON: ' + err.message });
           btn.disabled = false;
           btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i> Create & Start Simulation';
@@ -1260,15 +1360,12 @@
         return;
       }
 
-      // Single create
       const data = {
         origin: document.getElementById('origin').value,
         destination: document.getElementById('destination').value,
         service_level: document.getElementById('serviceLevel').value,
         recipient_email: document.getElementById('recipientEmail').value
       };
-
-      console.log('Creating shipment:', data);
 
       if (!data.origin || !data.destination) {
         showCreateResult({ error: 'Origin and destination are required' });
@@ -1284,7 +1381,6 @@
       })
       .then(response => response.json())
       .then(data => {
-        console.log('Create response:', data);
         if (data.success) {
           showCreateResult({
             success: true,
@@ -1298,7 +1394,6 @@
         }
       })
       .catch(err => {
-        console.error('Create error:', err);
         showCreateResult({ error: err.message || 'Network error' });
       })
       .finally(() => {
@@ -1474,7 +1569,6 @@
 
     const markers = {};
     const polylines = {};
-    // animation state for markers
     const markerAnims = {};
     const cityCoords = {
       "Lagos, NG": [6.5244, 3.3792],
@@ -1543,7 +1637,6 @@
           iconSize: [24, 24],
           className: 'truck-marker'
         });
-        // prefer interpolated route position if available, then explicit coords
         let markerPos = null;
         if (data.route_coords && Array.isArray(data.route_coords) && typeof data.progress === 'number') {
           const p = interpolateAlongRoute(data.route_coords, data.progress);
@@ -1565,7 +1658,6 @@
             </div>
           `);
       } else {
-        // prefer interpolated route position if available, then explicit coords
         let markerPos = null;
         if (data.route_coords && Array.isArray(data.route_coords) && typeof data.progress === 'number') {
           const p = interpolateAlongRoute(data.route_coords, data.progress);
@@ -1576,7 +1668,6 @@
           const explicitLon = (data.current_lon !== undefined && data.current_lon !== null) ? data.current_lon : null;
           markerPos = (explicitLat !== null && explicitLon !== null) ? [explicitLat, explicitLon] : cityCoords[currentLoc];
         }
-        // Smoothly animate marker to new position
         moveMarkerSmooth(tn, markerPos, 900);
         markers[tn].setPopupContent(`
           <div style="min-width:150px;">
@@ -1614,9 +1705,8 @@
       }
     }
 
-    // Helper: approximate distance between two lat/lon points (meters)
     function latLngDistance(a, b) {
-      const R = 6371000; // meters
+      const R = 6371000;
       const toRad = v => v * Math.PI / 180;
       const dLat = toRad(b[0] - a[0]);
       const dLon = toRad(b[1] - a[1]);
@@ -1628,11 +1718,9 @@
       return R * c;
     }
 
-    // Interpolate along a polyline (array of {lat, lon}) by fraction [0..1]
     function interpolateAlongRoute(routeCoords, fraction) {
       if (!routeCoords || routeCoords.length === 0) return null;
       fraction = Math.min(1, Math.max(0, fraction));
-      // build segment lengths
       const pts = routeCoords.map(p => [p.lat, p.lon]);
       const segLens = [];
       let total = 0;
@@ -1655,10 +1743,8 @@
       return pts[pts.length-1];
     }
 
-    // Easing function for smoother motion
     function easeInOutQuad(t){ return t<0.5 ? 2*t*t : -1 + (4-2*t)*t; }
 
-    // Smooth marker movement helper with easing
     function moveMarkerSmooth(tn, toPos, duration = 800) {
       const marker = markers[tn];
       if (!marker) return;
@@ -1668,7 +1754,6 @@
       markerAnims[tn] = { from, to: toPos, start, duration };
     }
 
-    // Animation loop with easing
     (function animateMarkers(now) {
       try {
         for (const tn in markerAnims) {
@@ -1687,7 +1772,6 @@
     })(performance.now());
 
     function refreshMap() {
-      // Remove all markers and polylines
       Object.keys(markers).forEach(key => {
         map.removeLayer(markers[key]);
         delete markers[key];
@@ -1697,7 +1781,6 @@
         delete polylines[key];
       });
       
-      // Reload shipment data
       const rows = document.querySelectorAll('#shipment-table tbody tr');
       rows.forEach(row => {
         const tn = row.dataset.tn;
@@ -1918,7 +2001,6 @@
       location.reload();
     }
 
-    // Show Edit modal and populate fields
     function showEditModal(tn) {
       fetch(`/admin/api/shipment/${tn}`)
         .then(r => r.json())
@@ -1933,7 +2015,6 @@
           document.getElementById('editDays').value = data.sim_days || 10;
           document.getElementById('editPaused').checked = !!data.paused;
           document.getElementById('editDeliveryLocation').value = data.delivery_location || '';
-          // store current tn
           document.getElementById('editForm').dataset.tn = tn;
           const editModal = new bootstrap.Modal(document.getElementById('editModal'));
           editModal.show();
@@ -1976,6 +2057,7 @@
         deleteBtn.innerHTML = '<i class="bi bi-trash me-1"></i>Delete Shipment';
       });
     }
+
     function saveShipmentEdits(){
       const frm = document.getElementById('editForm');
       const tn = frm.dataset.tn;
@@ -2041,10 +2123,8 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
-      // Calculate stats from existing rows
       calculateStats();
       
-      // Update map for each shipment
       const rows = document.querySelectorAll('#shipment-table tbody tr[data-tn]');
       rows.forEach(row => {
         const tn = row.dataset.tn;
@@ -2054,7 +2134,6 @@
           .catch(err => console.error('Failed to load shipment for map:', err));
       });
       
-      // Set map status after loading
       setTimeout(() => {
         const count = Object.keys(markers).length;
         document.getElementById('map-status').textContent = count > 0 ? 
