@@ -65,50 +65,47 @@ except Exception as e:
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
-def send_email(tracking_number: str, status: str, checkpoints: str, delivery_location: str, recipient_email: str) -> bool:
-    """Send an email notification using HTML template."""
+def send_email(tracking_number: str, status: str, checkpoints: str, delivery_location: str, recipient_email: str, subject: str = None, html_body: str = None, plain_body: str = None) -> bool:
+    """Send an email notification. Uses provided HTML/plain bodies if present, otherwise falls back to rendering template and building plain text."""
     try:
         if not recipient_email:
             logger.warning(f"No recipient email for {tracking_number}")
             return False
 
-        # Prepare checkpoints as a list for template
+        # Prepare checkpoints as a list for template/fallback
         checkpoints_list = checkpoints.split(';') if checkpoints else []
-        
-        # Render HTML template
-        with app.app_context():
-            html_content = render_template('email_notification.html',
-                                        tracking_number=tracking_number,
-                                        status=status,
-                                        checkpoints=checkpoints_list,
-                                        delivery_location=delivery_location)
-        
+
+        # Determine subject
+        msg_subject = subject or f"DHL Shipment Update: {tracking_number}"
+
+        # If no html_body provided, render legacy template (keeps backward compatibility)
+        if not html_body:
+            with app.app_context():
+                try:
+                    html_body = render_template('email_notification.html',
+                                                tracking_number=tracking_number,
+                                                status=status,
+                                                checkpoints=checkpoints_list,
+                                                delivery_location=delivery_location)
+                except Exception:
+                    # If template missing, fall back to simple HTML
+                    html_body = f"<html><body><h2>DHL Shipment Update</h2><p>Tracking: {tracking_number}</p><p>Status: {status}</p></body></html>"
+
+        # If no plain_body provided, build a simple fallback
+        if not plain_body:
+            location = delivery_location or 'Unknown'
+            plain_body = f"DHL Shipment Update\n\nTracking Number: {tracking_number}\nStatus: {status}\nDestination: {location}\n\nRecent Updates:\n{chr(10).join(['- ' + c for c in checkpoints_list[-3:]]) if checkpoints_list else 'No updates yet'}\n\nTrack online: {config.websocket_server}/track/{tracking_number}"
+
         # Create MIME message
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"DHL Shipment Update: {tracking_number}"
+        msg['Subject'] = msg_subject
         msg['From'] = config.smtp_from
         msg['To'] = recipient_email
-        
-        # Add plain text fallback
-        plain_text = f"""
-DHL Shipment Update
 
-Tracking Number: {tracking_number}
-Status: {status}
-Destination: {delivery_location}
+        # Attach plain and HTML parts
+        msg.attach(MIMEText(plain_body, 'plain'))
+        msg.attach(MIMEText(html_body, 'html'))
 
-Recent Updates:
-{chr(10).join(['- ' + c for c in checkpoints_list[-3:]]) if checkpoints_list else 'No updates yet'}
-
-Track online: {config.websocket_server}/track/{tracking_number}
-"""
-        plain_part = MIMEText(plain_text, 'plain')
-        msg.attach(plain_part)
-        
-        # Attach HTML content
-        html_part = MIMEText(html_content, 'html')
-        msg.attach(html_part)
-        
         # Send email with retry
         max_retries = 3
         for attempt in range(max_retries):
@@ -127,7 +124,7 @@ Track online: {config.websocket_server}/track/{tracking_number}
                 if attempt == max_retries - 1:
                     raise
                 time.sleep(2 ** attempt)
-        
+
         return False
     except smtplib.SMTPException as e:
         logger.error(f"Failed to send HTML email notification for {tracking_number}: {e}")
@@ -216,7 +213,10 @@ def process_notifications():
                     status=data.get('status', 'Unknown'),
                     checkpoints=data.get('checkpoints', ''),
                     delivery_location=data.get('delivery_location', 'Unknown'),
-                    recipient_email=data.get('recipient_email', '')
+                    recipient_email=data.get('recipient_email', ''),
+                    subject=data.get('subject'),
+                    html_body=data.get('html_body'),
+                    plain_body=data.get('plain_body')
                 )
                 if not success:
                     logger.warning(f"Requeueing failed email notification for {tracking_number}")
