@@ -1816,6 +1816,20 @@ def enqueue_dhl_email(tn, status, latest_checkpoint, destination, service_level=
     })
 
 # === EMAIL SENDER ===
+def open_smtp_connection(timeout=None):
+    """Open and authenticate an SMTP connection for STARTTLS or implicit SSL."""
+    host = app.config['SMTP_HOST']
+    port = int(app.config['SMTP_PORT'])
+    timeout = timeout or int(os.getenv('SMTP_TIMEOUT', '20'))
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port, timeout=timeout)
+    else:
+        server = smtplib.SMTP(host, port, timeout=timeout)
+        server.starttls()
+    server.login(app.config['SMTP_USER'], app.config['SMTP_PASS'])
+    return server
+
+
 def send_email_notification(recipient, subject, html_body=None, plain_body=None, tracking_number=None, email_type=None, message=None):
     if EMAIL_TEST_MODE:
         flask_logger.info(f"📧 TEST MODE - Email would be sent to: {recipient}")
@@ -1839,9 +1853,7 @@ def send_email_notification(recipient, subject, html_body=None, plain_body=None,
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            with smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT'], timeout=10) as server:
-                server.starttls()
-                server.login(app.config['SMTP_USER'], app.config['SMTP_PASS'])
+            with open_smtp_connection() as server:
                 server.send_message(msg)
             flask_logger.info(f"Email sent to {recipient}")
             if tracking_number:
@@ -2206,9 +2218,8 @@ def health_check():
     # Check SMTP - NON-CRITICAL (just warn, don't fail)
     try:
         if app.config.get('SMTP_HOST') and app.config.get('SMTP_USER') and app.config.get('SMTP_PASS'):
-            with smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT'], timeout=5) as s:
-                s.starttls()
-                s.login(app.config['SMTP_USER'], app.config['SMTP_PASS'])
+            with open_smtp_connection() as s:
+                s.noop()
         else:
             status['smtp'] = 'unconfigured'
             flask_logger.warning("SMTP not configured")
@@ -2704,6 +2715,17 @@ def api_cities():
         "Frankfurt, DE", "Leipzig, DE"
     ]))
     return jsonify(cities)
+
+@app.route('/admin/api/city_coords')
+@admin_required
+def api_city_coords():
+    coords = {
+        name: {'lat': float(value['lat']), 'lon': float(value['lon'])}
+        for name, value in KNOWN_LOCATION_COORDS.items()
+    }
+    for name, value in DHLRealisticSimulator.DHL_HUBS.items():
+        coords.setdefault(name, {'lat': float(value['lat']), 'lon': float(value['lon'])})
+    return jsonify(coords)
 
 def create_shipment_record(origin, destination, recipient_email=None, service_level='DHL Express'):
     origin = origin.strip() if isinstance(origin, str) else origin
