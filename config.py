@@ -42,7 +42,7 @@ class Config(object):
     # Simulation defaults
     WEBSOCKET_SERVER = os.getenv('WEBSOCKET_SERVER', 'https://signment.onrender.com')
     GLOBAL_WEBHOOK_URL = os.getenv('GLOBAL_WEBHOOK_URL', '')
-    GEOCODING_API_KEY = os.getenv('GEOCODING_API_KEY', 'signment_app')
+    GEOCODING_API_KEY = os.getenv('GEOCODING_API_KEY', '')
     STATUS_TRANSITIONS = {
         'Pending': {
             'next': ['In_Transit'],
