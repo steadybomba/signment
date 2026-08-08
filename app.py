@@ -67,7 +67,7 @@ import validators
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from sqlalchemy import inspect, text, or_
 from time import sleep
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 from telebot import TeleBot, types
 from wtforms import StringField, SubmitField
 from wtforms.validators import DataRequired
@@ -500,6 +500,12 @@ def geocode_locations(checkpoints):
     return coords
 
 
+KNOWN_LOCATION_COORDS = {
+    "Dublin, IE": {"lat": 53.349805, "lon": -6.26031},
+    "Berlin, DE": {"lat": 52.5200, "lon": 13.4050}
+}
+
+
 def normalize_location(loc):
     """Normalize a free-text location into a readable 'City, CC' or fallback to a cleaned string.
     Uses Geoapify when API key is available and caches results in Redis when possible.
@@ -544,6 +550,9 @@ def normalize_location(loc):
                     normalized = f"{parts[0]}, {parts[1]}" if len(parts) >= 2 else display
     except Exception:
         normalized = loc
+
+    if normalized in KNOWN_LOCATION_COORDS:
+        normalized = normalized
 
     try:
         if redis_client:
@@ -610,7 +619,12 @@ def resolve_location(loc):
     except Exception:
         coords = None
 
-    # Fallback: if external geocoding failed, try known DHL hubs mapping
+    if coords is None:
+        fallback = KNOWN_LOCATION_COORDS.get(name) or KNOWN_LOCATION_COORDS.get(loc)
+        if fallback:
+            coords = {'lat': float(fallback['lat']), 'lon': float(fallback['lon'])}
+            flask_logger.info(f"Geocode fallback: used KNOWN_LOCATION_COORDS for '{loc}' -> '{name}'")
+
     if coords is None:
         try:
             hub = DHLRealisticSimulator.DHL_HUBS.get(name)
@@ -618,7 +632,6 @@ def resolve_location(loc):
                 coords = { 'lat': float(hub.get('lat')), 'lon': float(hub.get('lon')) }
                 flask_logger.info(f"Geocode fallback: used DHL_HUBS for '{loc}' -> '{name}'")
             else:
-                # try fuzzy match: if loc appears inside a known hub key
                 lower_loc = loc.lower()
                 for hub_name, hubv in DHLRealisticSimulator.DHL_HUBS.items():
                     if lower_loc in hub_name.lower() or hub_name.lower().startswith(lower_loc):
@@ -630,7 +643,6 @@ def resolve_location(loc):
             coords = None
 
     try:
-        # Only cache successful geocodes (coords present). Avoid caching negative results.
         if coords is not None:
             if redis_client:
                 redis_client.set(cache_key, json.dumps({
@@ -1659,12 +1671,15 @@ def broadcast_update(tn):
             socketio.emit('tracking_update', data, namespace='/')
         except Exception as e:
             flask_logger.warning(f"Socket emit failed for {tn}: {e}")
-    webhook_url = f"{app.config['WEBSOCKET_SERVER']}/notify"
-    if 'localhost' not in webhook_url and '127.0.0.1' not in webhook_url:
-        try:
+
+    websocket_server = app.config.get('WEBSOCKET_SERVER', '')
+    try:
+        parsed_ws = urlparse(websocket_server)
+        if parsed_ws.scheme and parsed_ws.hostname and parsed_ws.hostname not in ('localhost', '127.0.0.1'):
+            webhook_url = f"{websocket_server.rstrip('/')}/notify"
             requests.post(webhook_url, json=data, timeout=2)
-        except Exception as e:
-            flask_logger.debug(f"Webhook notify skipped for {tn}: {e}")
+    except Exception as e:
+        flask_logger.debug(f"Webhook notify skipped for {tn}: {e}")
 
 # Admin decorator
 def admin_required(f):
@@ -1901,6 +1916,20 @@ def telegram_webhook():
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
         flask_logger.exception('Telegram webhook processing failed: %s', e)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/notify', methods=['POST'])
+def websocket_notify():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
+
+    try:
+        socketio.emit('tracking_update', data, broadcast=True, namespace='/')
+        flask_logger.info('External notify payload delivered to socket clients')
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        flask_logger.warning(f'External notify failed: {e}')
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health')
