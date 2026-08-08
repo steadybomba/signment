@@ -186,7 +186,7 @@ def sim_emit_light(tn, progress=None, current_location=None, current_lat=None, c
         if proof_of_delivery is not None:
             payload['proof_of_delivery'] = proof_of_delivery
         try:
-            socketio.emit('tracking_update', payload, namespace='/', broadcast=True)
+            socketio.emit('tracking_update', payload, namespace='/')
             sim_logger.debug(f"SIM_LIGHT_EMIT|{tn}|{payload}")
         except Exception:
             pass
@@ -496,12 +496,17 @@ def geocode_locations(checkpoints):
                 coords.append(coord)
                 continue
             coord = cached_geocode(loc) if api_key else None
+            if coord:
+                coord['desc'] = cp
             if not coord:
-                url = f"https://geocode.maps.co/search?q={loc}&api_key={api_key}"
-                res = requests.get(url, timeout=5).json()
-                if res:
-                    c = res[0]
-                    coord = {'lat': float(c['lat']), 'lon': float(c['lon']), 'desc': cp}
+                normalized_input = loc.rsplit(',', 1)[0].strip() + ', ' + loc.rsplit(',', 1)[1].strip().upper() if ',' in loc else loc
+                fallback = KNOWN_LOCATION_COORDS.get(loc) or KNOWN_LOCATION_COORDS.get(normalized_input)
+                if fallback:
+                    coord = {
+                        'lat': float(fallback['lat']),
+                        'lon': float(fallback['lon']),
+                        'desc': cp
+                    }
             if coord:
                 geocode_cache[cp] = coord
                 if redis_client:
@@ -518,6 +523,7 @@ KNOWN_LOCATION_COORDS = {
     "Lagos, NG": {"lat": 6.5244, "lon": 3.3792},
     "Abuja, NG": {"lat": 9.0765, "lon": 7.3986},
     "Port Harcourt, NG": {"lat": 4.8156, "lon": 7.0498},
+    "Taraba, NG": {"lat": 8.8932, "lon": 11.3596},
     "London, UK": {"lat": 51.5074, "lon": -0.1278},
     "Paris, FR": {"lat": 48.8566, "lon": 2.3522},
     "Madrid, ES": {"lat": 40.4168, "lon": -3.7038},
@@ -784,6 +790,7 @@ def resolve_location(loc):
         return loc, None
     loc = loc.strip()
     cache_key = f"resloc:{loc}"
+    normalized_input = loc.rsplit(',', 1)[0].strip() + ', ' + loc.rsplit(',', 1)[1].strip().upper() if ',' in loc else loc
     try:
         if redis_client and (cached := redis_client.get(cache_key)):
             val = json.loads(cached)
@@ -792,12 +799,15 @@ def resolve_location(loc):
             lon = val.get('lon')
             coords = {'lat': float(lat), 'lon': float(lon)} if lat is not None and lon is not None else None
             if coords is not None:
-                return name, coords
+                canonical_name = normalized_input if normalized_input in KNOWN_LOCATION_COORDS else name
+                return canonical_name, coords
     except Exception:
         pass
 
     # Resolve built-in cities before contacting external geocoding services.
     direct_fallback = KNOWN_LOCATION_COORDS.get(loc)
+    if direct_fallback is None:
+        direct_fallback = KNOWN_LOCATION_COORDS.get(normalized_input)
     if direct_fallback is None:
         try:
             direct_fallback = DHLRealisticSimulator.DHL_HUBS.get(loc)
@@ -817,7 +827,7 @@ def resolve_location(loc):
                 }), ex=86400)
         except Exception:
             pass
-        return loc, coords
+        return normalized_input if normalized_input in KNOWN_LOCATION_COORDS else loc, coords
 
     name = normalize_location(loc)
     coords = None
@@ -1904,7 +1914,7 @@ def broadcast_update(tn):
         "carrier": shipment.carrier
     }
     try:
-        socketio.emit('tracking_update', data, broadcast=True, namespace='/')
+        socketio.emit('tracking_update', data, namespace='/')
     except TypeError:
         try:
             socketio.emit('tracking_update', data, namespace='/')
@@ -2164,7 +2174,7 @@ def websocket_notify():
         return jsonify({'error': 'Invalid JSON payload'}), 400
 
     try:
-        socketio.emit('tracking_update', data, broadcast=True, namespace='/')
+        socketio.emit('tracking_update', data, namespace='/')
         flask_logger.info('External notify payload delivered to socket clients')
         return jsonify({'success': True}), 200
     except Exception as e:
@@ -2696,6 +2706,11 @@ def api_cities():
     return jsonify(cities)
 
 def create_shipment_record(origin, destination, recipient_email=None, service_level='DHL Express'):
+    origin = origin.strip() if isinstance(origin, str) else origin
+    destination = destination.strip() if isinstance(destination, str) else destination
+    service_level = service_level.strip() if isinstance(service_level, str) else service_level
+    recipient_email = recipient_email.strip() if isinstance(recipient_email, str) else recipient_email
+
     if not origin or not destination:
         return {'error': 'Origin and destination required'}, 400
 
@@ -2715,7 +2730,20 @@ def create_shipment_record(origin, destination, recipient_email=None, service_le
     norm_destination, dest_coords = resolve_location(destination)
 
     if not origin_coords or not dest_coords:
-        return {'error': 'Unable to resolve origin or destination to geographic coordinates'}, 400
+        failed_locations = []
+        if not origin_coords:
+            failed_locations.append(f"origin '{origin}'")
+        if not dest_coords:
+            failed_locations.append(f"destination '{destination}'")
+        flask_logger.warning(
+            "Shipment geocoding failed: %s (GEOCODING_API_KEY configured=%s)",
+            ', '.join(failed_locations),
+            bool(app.config.get('GEOCODING_API_KEY'))
+        )
+        return {
+            'error': 'Unable to resolve location coordinates',
+            'details': f"Could not resolve {', '.join(failed_locations)}. Use 'City, Country Code' or configure GEOCODING_API_KEY."
+        }, 400
 
     checkpoints = f"{now.strftime('%Y-%m-%d %H:%M')} - {norm_origin} - Shipment information received"
 
