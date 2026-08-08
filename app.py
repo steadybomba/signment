@@ -1066,21 +1066,6 @@ def enhanced_full_simulate_tracking(tn):
                     origin_norm, origin_coords = resolve_location(origin)
                     destination_norm, dest_coords = resolve_location(destination)
                     distance_km = estimate_distance(origin_norm, destination_norm)
-                    hubs = DHLRealisticSimulator.build_route_hubs(origin_coords, dest_coords, distance_km)
-                    route_template = [origin_norm] + hubs + [destination_norm]
-                    pickup_location = DHLRealisticSimulator.generate_pickup_location(origin_norm)
-                    delivery_address = DHLRealisticSimulator.generate_delivery_location(destination_norm)
-                    if latest_shipment.status != current_status:
-                    current_status = latest_shipment.status
-                if latest_shipment.checkpoints and latest_shipment.checkpoints != ";".join(checkpoints):
-                    checkpoints = (latest_shipment.checkpoints or "").split(";")
-                    current_idx = len([c for c in checkpoints if any(phrase in c for phrase in event_phrases)])
-                if latest_shipment.delivery_location != destination or latest_shipment.origin_location != origin:
-                    origin = latest_shipment.origin_location or "Lagos, NG"
-                    destination = latest_shipment.delivery_location
-                    origin_norm, origin_coords = resolve_location(origin)
-                    destination_norm, dest_coords = resolve_location(destination)
-                    distance_km = estimate_distance(origin_norm, destination_norm)
                     transport_mode = rget("transport_mode", tn, "air" if distance_km > 1000 else "ground")
                     transport_mode = (transport_mode or "ground").lower()
                     hubs = DHLRealisticSimulator.build_route_hubs(origin_coords, dest_coords, distance_km)
@@ -1090,6 +1075,11 @@ def enhanced_full_simulate_tracking(tn):
                         route_template = [origin_norm, destination_norm] if not hubs else [origin_norm] + hubs + [destination_norm]
                     pickup_location = DHLRealisticSimulator.generate_pickup_location(origin_norm)
                     delivery_address = DHLRealisticSimulator.generate_delivery_location(destination_norm)
+                if latest_shipment.status != current_status:
+                    current_status = latest_shipment.status
+                if latest_shipment.checkpoints and latest_shipment.checkpoints != ";".join(checkpoints):
+                    checkpoints = (latest_shipment.checkpoints or "").split(";")
+                    current_idx = len([c for c in checkpoints if any(phrase in c for phrase in event_phrases)])
             stage = rget('stage', tn, stage) or stage
             speed_multiplier = float(rget("sim_speed_multipliers", tn, "1.0") or "1.0")
             speed_multiplier = max(0.1, min(5.0, speed_multiplier))
