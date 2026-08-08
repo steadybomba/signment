@@ -97,9 +97,6 @@ app = utils_app
 Shipment = UtilsShipment
 config = bot_config
 
-# Email configuration
-# Values are defined in utils.py and baked into app config where needed
-
 # Core extensions
 limiter = Limiter(get_remote_address, app=app, default_limits=app.config['RATELIMIT_DEFAULTS'], storage_uri=app.config['RATELIMIT_STORAGE_URI'])
 async_mode = 'eventlet' if hasattr(eventlet, 'sleep') and eventlet.__class__.__name__ != '_FallbackEventlet' else 'threading'
@@ -113,27 +110,23 @@ sim_logger = logging.getLogger('simulator')
 geocode_cache = {}
 in_memory_clients = {}
 in_memory_sim = {}
-# Per-tracking-number last lightweight broadcast timestamp
 sim_last_broadcast = {}
 
 # Minimum seconds between lightweight simulator broadcasts per tracking number
 SIM_BROADCAST_INTERVAL_SEC = float(os.getenv('SIM_BROADCAST_INTERVAL_SEC', '2.0') or '2.0')
 
+
 def sim_emit_light(tn, progress=None, current_location=None, current_lat=None, current_lon=None,
                    status=None, delivery_location=None, last_updated=None,
                    service_level=None, delivery_window=None, proof_of_delivery=None,
                    checkpoints=None):
-    """Emit a lightweight tracking_update containing only coords and progress, rate-limited per-TN.
-    This avoids recomputing heavy route data in `broadcast_update`.
-    """
+    """Emit a lightweight tracking_update containing only coords and progress, rate-limited per-TN."""
     try:
-        # Only emit if there are active clients viewing this tracking number
         try:
             clients = get_clients(tn) or set()
             if not clients:
                 return
         except Exception:
-            # If client lookup fails, be conservative and skip emitting
             return
 
         now = time.time()
@@ -230,7 +223,7 @@ def rhgetall(key):
         if not redis_client:
             return {}
         d = redis_client.hgetall(key) or {}
-        return { (k.decode() if isinstance(k, bytes) else k): (v.decode() if isinstance(v, bytes) else v) for k, v in d.items() }
+        return {(k.decode() if isinstance(k, bytes) else k): (v.decode() if isinstance(v, bytes) else v) for k, v in d.items()}
     except Exception as e:
         flask_logger.warning(f"Redis hgetall failed for {key}: {e}")
         return {}
@@ -270,9 +263,7 @@ def rhlen(key):
 
 
 def densify_route_coords(route_coords, max_segment_km=1.0):
-    """Densify a route represented as a list of [lat, lon] or dicts with lat/lon.
-    Inserts intermediate points so that no segment is longer than max_segment_km.
-    """
+    """Densify a route represented as a list of [lat, lon] or dicts with lat/lon."""
     if not route_coords or len(route_coords) < 2:
         return route_coords or []
     pairs = []
@@ -294,6 +285,7 @@ def densify_route_coords(route_coords, max_segment_km=1.0):
             out.append({'lat': lat, 'lon': lon})
     return out
 
+
 @app.before_request
 def log_request():
     request.start_time = time.time()
@@ -305,6 +297,7 @@ def log_request():
         request.args.to_dict(flat=False),
         request.get_json(silent=True)
     )
+
 
 @app.after_request
 def log_response(response):
@@ -318,6 +311,7 @@ def log_response(response):
     )
     return response
 
+
 @app.errorhandler(Exception)
 def handle_app_exception(error):
     flask_logger.exception("Unhandled exception during request %s %s", request.method, request.path)
@@ -325,17 +319,20 @@ def handle_app_exception(error):
         raise error
     return jsonify({"error": "Internal server error"}), 500
 
+
 # Validate env
 required = ['SECRET_KEY', 'SQLALCHEMY_DATABASE_URI']
 for var in required:
     if not app.config.get(var):
         raise ValueError(f"Missing: {var}")
 
+
 # Forms
 class TrackForm(FlaskForm):
     tracking_number = StringField('Tracking Number', validators=[DataRequired()])
     email = StringField('Email (Optional)')
     submit = SubmitField('Track')
+
 
 # DB Init
 def init_db():
@@ -395,6 +392,7 @@ def init_db():
                     raise
     raise Exception("DB init failed")
 
+
 # reCAPTCHA
 def verify_recaptcha(token):
     if 'your-secret-key' in app.config['RECAPTCHA_SECRET_KEY']:
@@ -407,6 +405,7 @@ def verify_recaptcha(token):
         return r.json().get('success', False)
     except:
         return False
+
 
 # Geocoding functions
 def geoapify_geocode(address):
@@ -428,6 +427,7 @@ def geoapify_geocode(address):
     except Exception as e:
         flask_logger.debug(f"Geoapify geocode failed for {address}: {e}")
         return None
+
 
 def geoapify_route(coords, mode='drive'):
     api_key = app.config.get('GEOCODING_API_KEY', '')
@@ -455,14 +455,17 @@ def geoapify_route(coords, mode='drive'):
         flask_logger.debug(f"Geoapify routing failed: {e}")
         return coords
 
+
 @lru_cache(maxsize=1000)
 def cached_geocode(location):
     return geoapify_geocode(location)
+
 
 def build_route_from_checkpoints(checkpoint_coords, mode='drive'):
     if len(checkpoint_coords) < 2:
         return checkpoint_coords
     return geoapify_route(checkpoint_coords, mode=mode)
+
 
 def geocode_locations(checkpoints):
     coords = []
@@ -566,10 +569,6 @@ KNOWN_LOCATION_COORDS = {
 
 
 def normalize_location(loc):
-    """Normalize a free-text location into a readable 'City, CC' or fallback to a cleaned string.
-    Uses Geoapify when API key is available and caches results in Redis when possible.
-    Returns the normalized string.
-    """
     if not loc:
         return loc
     loc = loc.strip()
@@ -623,7 +622,6 @@ def normalize_location(loc):
 
 
 def resolve_location(loc):
-    """Return a normalized location string and geographic coordinates for a free-text location."""
     if not loc:
         return loc, None
     loc = loc.strip()
@@ -640,7 +638,6 @@ def resolve_location(loc):
     except Exception:
         pass
 
-    # Resolve built-in cities before contacting external geocoding services.
     direct_fallback = KNOWN_LOCATION_COORDS.get(loc)
     if direct_fallback is None:
         try:
@@ -712,13 +709,13 @@ def resolve_location(loc):
         try:
             hub = DHLRealisticSimulator.DHL_HUBS.get(name)
             if hub:
-                coords = { 'lat': float(hub.get('lat')), 'lon': float(hub.get('lon')) }
+                coords = {'lat': float(hub.get('lat')), 'lon': float(hub.get('lon'))}
                 flask_logger.info(f"Geocode fallback: used DHL_HUBS for '{loc}' -> '{name}'")
             else:
                 lower_loc = loc.lower()
                 for hub_name, hubv in DHLRealisticSimulator.DHL_HUBS.items():
                     if lower_loc in hub_name.lower() or hub_name.lower().startswith(lower_loc):
-                        coords = { 'lat': float(hubv.get('lat')), 'lon': float(hubv.get('lon')) }
+                        coords = {'lat': float(hubv.get('lat')), 'lon': float(hubv.get('lon'))}
                         name = hub_name
                         flask_logger.info(f"Geocode fallback (fuzzy): matched '{loc}' -> '{name}' from DHL_HUBS")
                         break
@@ -738,6 +735,7 @@ def resolve_location(loc):
 
     return name, coords
 
+
 # WebSocket clients
 def add_client(tn, sid):
     try:
@@ -752,6 +750,7 @@ def add_client(tn, sid):
         except Exception:
             pass
 
+
 def remove_client(tn, sid):
     try:
         if redis_client:
@@ -765,6 +764,7 @@ def remove_client(tn, sid):
         except Exception:
             pass
 
+
 def get_clients(tn):
     try:
         if redis_client:
@@ -774,6 +774,7 @@ def get_clients(tn):
         flask_logger.warning(f"Redis get_clients failed: {e}")
         return in_memory_clients.get(tn, set())
 
+
 # Background threads
 def keep_alive():
     while True:
@@ -782,6 +783,7 @@ def keep_alive():
         except:
             pass
         time.sleep(300)
+
 
 def process_notification_queue():
     while True:
@@ -812,6 +814,7 @@ def process_notification_queue():
         except Exception as e:
             flask_logger.error(f"Queue error: {e}")
 
+
 def cleanup_websocket_clients():
     while True:
         time.sleep(3600)
@@ -832,6 +835,7 @@ def cleanup_websocket_clients():
                         continue
         except Exception as e:
             flask_logger.warning(f"cleanup_websocket_clients failed: {e}")
+
 
 # === REALISTIC DISTANCE FUNCTION ===
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -887,6 +891,7 @@ def estimate_distance(origin, dest):
     lat1, lon1 = city_coords[origin_key]
     lat2, lon2 = city_coords[dest_key]
     return haversine_distance(lat1, lon1, lat2, lon2)
+
 
 # === DHL REALISTIC SIMULATOR ===
 class DHLRealisticSimulator:
@@ -1133,6 +1138,7 @@ class DHLRealisticSimulator:
         locations = delivery_locations.get(destination, ["Main Street", "City Center"])
         return random.choice(locations)
 
+
 # === SIMULATION FUNCTIONS ===
 def track_metrics(tn, event_type, data):
     sim_logger.info(f"SIM_METRIC|{tn}|{event_type}|{json.dumps(data)}")
@@ -1144,6 +1150,7 @@ def track_metrics(tn, event_type, data):
             "data": data
         }))
         redis_client.ltrim(key, 0, 100)
+
 
 def handle_exception(tn, shipment, reason):
     if not shipment:
@@ -1163,6 +1170,7 @@ def handle_exception(tn, shipment, reason):
     enqueue_dhl_email(tn, "Exception", checkpoint, shipment.delivery_location)
     broadcast_update(tn)
     eventlet.sleep(3600)
+
 
 def enhanced_full_simulate_tracking(tn):
     with app.app_context():
@@ -1372,7 +1380,6 @@ def enhanced_full_simulate_tracking(tn):
                         if current_lat is not None and current_lon is not None:
                             rset('current_lat', tn, str(current_lat))
                             rset('current_lon', tn, str(current_lon))
-                            # Immediately emit a lightweight, rate-limited update (coords + progress)
                             try:
                                 sim_emit_light(
                                     tn,
@@ -1454,6 +1461,7 @@ def enhanced_full_simulate_tracking(tn):
             invalidate_cache(tn)
             broadcast_update(tn)
 
+
 def simulate_tracking(tn):
     with app.app_context():
         try:
@@ -1461,6 +1469,7 @@ def simulate_tracking(tn):
         except Exception as e:
             sim_logger.error(f"Enhanced full simulation failed for {tn}: {e}")
             basic_simulate_tracking(tn)
+
 
 def basic_simulate_tracking(tn):
     with app.app_context():
@@ -1571,6 +1580,7 @@ def basic_simulate_tracking(tn):
             sim_logger.error(f"DHL Sim error {tn}: {e}")
             eventlet.sleep(30)
 
+
 # === DHL EMAIL ===
 def build_dhl_email_html(tn, status, latest_checkpoint, destination, service_level=None, delivery_window=None):
     location = latest_checkpoint.split(' - ')[1] if ' - ' in latest_checkpoint else destination
@@ -1624,6 +1634,7 @@ def build_dhl_email_html(tn, status, latest_checkpoint, destination, service_lev
     </div>
     """
 
+
 def enqueue_dhl_email(tn, status, latest_checkpoint, destination, service_level=None, delivery_window=None):
     shipment = Shipment.query.filter_by(tracking_number=tn).first()
     if not shipment or not shipment.recipient_email or not shipment.email_notifications:
@@ -1648,6 +1659,7 @@ def enqueue_dhl_email(tn, status, latest_checkpoint, destination, service_level=
             "plain_body": plain_body
         }
     })
+
 
 # === EMAIL SENDER ===
 def send_email_notification(recipient, subject, html_body=None, plain_body=None, tracking_number=None, email_type=None, message=None):
@@ -1701,6 +1713,7 @@ def send_email_notification(recipient, subject, html_body=None, plain_body=None,
                 return False
             time.sleep(2 ** attempt)
     return False
+
 
 # === BROADCAST UPDATE ===
 def broadcast_update(tn):
@@ -1764,6 +1777,7 @@ def broadcast_update(tn):
     except Exception as e:
         flask_logger.debug(f"Webhook notify skipped for {tn}: {e}")
 
+
 # Admin decorator
 def admin_required(f):
     @wraps(f)
@@ -1773,235 +1787,22 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
-# Admin diagnostics endpoints
-@app.route('/admin/api/redis_metrics')
-@admin_required
-def admin_redis_metrics():
-    try:
-        metrics = get_redis_metrics()
-        return jsonify(metrics)
-    except Exception as e:
-        flask_logger.error(f"Failed to fetch redis metrics: {e}")
-        return jsonify({'error': 'Could not retrieve metrics'}), 500
 
-@app.route('/admin/api/logs')
-@admin_required
-def admin_logs():
-    try:
-        lines = int(request.args.get('lines', 200))
-    except Exception:
-        lines = 200
-    log_file = app.config.get('LOG_FILE', 'app.log')
-    try:
-        import os
-        if os.path.exists(log_file):
-            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                data = f.readlines()[-lines:]
-            return Response(''.join(data), mimetype='text/plain')
-    except Exception:
-        pass
-    recent = get_recent_logs(min(lines, 50))
-    return jsonify({'logs': recent})
+# ============================================================
+# INTERNAL ENDPOINTS - EXEMPT FROM RATE LIMITING
+# ============================================================
 
-@app.route('/admin/api/simulator_status')
-@admin_required
-def admin_simulator_status():
-    try:
-        from utils import SIMULATOR_THREAD_LIMIT, _simulator_thread_count, can_start_simulation
-        return jsonify({
-            'active_simulators': _simulator_thread_count,
-            'limit': SIMULATOR_THREAD_LIMIT,
-            'can_start': can_start_simulation(),
-            'throttle_active': not can_start_simulation()
-        })
-    except Exception as e:
-        flask_logger.error(f"Failed to fetch simulator status: {e}")
-        return jsonify({'error': 'Could not retrieve simulator status'}), 500
-
-# === FAVICON ROUTE ===
 @app.route('/favicon.ico')
+@limiter.exempt
 def favicon():
     try:
         return redirect('https://www.dhl.com/favicon.ico')
     except:
         return '', 204
 
-# === PUBLIC ROUTES ===
-@app.route('/')
-def index():
-    form = TrackForm()
-    recaptcha_key = app.config.get('RECAPTCHA_SITE_KEY', '')
-    host = request.host or ''
-    if app.debug or app.config.get('FLASK_ENV') == 'development' or 'your-site-key' in (recaptcha_key or '') or 'localhost' in host or '127.0.0.1' in host:
-        recaptcha_key = ''
-    return render_template('index.html', form=form, tawk_property_id=app.config['TAWK_PROPERTY_ID'],
-                           tawk_widget_id=app.config['TAWK_WIDGET_ID'], recaptcha_site_key=recaptcha_key)
-
-def _render_tracking_response(rendered_html, status_code=200):
-    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-        return jsonify({'html': rendered_html}), status_code
-    return rendered_html, status_code
-
-@app.route('/track', methods=['POST'])
-@limiter.limit("10 per minute")
-def track():
-    try:
-        from forms import TrackForm as F
-        form = F()
-    except:
-        form = TrackForm()
-    if not form.validate_on_submit():
-        if app.testing or request.form.get('submit') == 'Track' or request.form.get('tracking_number'):
-            form.tracking_number.data = request.form.get('tracking_number', '')
-            form.email.data = request.form.get('email', '')
-        else:
-            return _render_tracking_response(render_template('tracking_result.html', error='Invalid form submission', coords=[]), 400)
-    
-    
-    tn = sanitize_tracking_number(form.tracking_number.data)
-    email = form.email.data
-    if not tn:
-        return _render_tracking_response(render_template('tracking_result.html', error='Invalid tracking number', coords=[]), 400)
-    shipment = Shipment.query.filter_by(tracking_number=tn).first()
-    if not shipment:
-        return _render_tracking_response(render_template('tracking_result.html', error='Not found', coords=[]), 404)
-    if email and validate_email(email):
-        shipment.recipient_email = email
-        db.session.commit()
-        invalidate_cache(tn)
-    checkpoints = (shipment.checkpoints or "").split(";")
-    coords = geocode_locations(checkpoints)
-    coords_list = [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords]
-    route_coords = build_route_from_checkpoints(coords_list, mode='drive')
-    try:
-        dens_km = float(os.getenv('SIM_ROUTE_DENSIFY_KM', '1.0') or '1.0')
-        route_coords = densify_route_coords(route_coords, dens_km)
-    except Exception:
-        pass
-    distance_km = estimate_distance(shipment.origin_location or "Lagos, NG", shipment.delivery_location)
-    service_level = DHLRealisticSimulator.get_service_level(
-        distance_km, DHLRealisticSimulator.is_business_hours(datetime.now())
-    )
-    delivery_window = DHLRealisticSimulator.get_delivery_window(service_level, distance_km)
-    proof_of_delivery = DHLRealisticSimulator.generate_pod_info()
-    if shipment.status not in ['Delivered', 'Returned']:
-        try:
-            if can_start_simulation():
-                spawn_simulation(tn)
-            else:
-                flask_logger.info(f"Simulator throttle active; skipping new thread for {tn}")
-        except Exception:
-            try:
-                if can_start_simulation():
-                    eventlet.spawn(simulate_tracking, tn)
-                else:
-                    flask_logger.info(f"Simulator throttle active; skipping eventlet spawn for {tn}")
-            except Exception:
-                if can_start_simulation():
-                    threading.Thread(target=simulate_tracking, args=(tn,), daemon=True).start()
-                else:
-                    flask_logger.info(f"Simulator throttle active; skipping thread start for {tn}")
-    progress = float(rget('progress', tn, '0') or '0')
-    current_location = rget('current_location', tn, '') or ''
-    current_lat = rget('current_lat', tn, None)
-    current_lon = rget('current_lon', tn, None)
-    
-    # Check if this is an AJAX request
-    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-        result_html = render_template(
-            'tracking_result.html',
-            shipment=shipment,
-            checkpoints=checkpoints,
-            coords=coords_list,
-            route_coords=route_coords,
-            service_level=service_level,
-            delivery_window=delivery_window,
-            proof_of_delivery=proof_of_delivery,
-            progress=progress,
-            current_location=current_location,
-            current_lat=current_lat,
-            current_lon=current_lon,
-            tawk_property_id=app.config['TAWK_PROPERTY_ID'],
-            tawk_widget_id=app.config['TAWK_WIDGET_ID']
-        )
-        return jsonify({'html': result_html})
-    
-    rendered = render_template(
-        'tracking_result.html', shipment=shipment, checkpoints=checkpoints, coords=coords_list,
-        route_coords=route_coords, service_level=service_level, delivery_window=delivery_window,
-        proof_of_delivery=proof_of_delivery, progress=progress,
-        current_location=current_location, current_lat=current_lat, current_lon=current_lon,
-        tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID']
-    )
-    return _render_tracking_response(rendered, 200)
-
-@app.route('/track/<tracking_number>')
-def track_direct(tracking_number):
-    tn = sanitize_tracking_number(tracking_number)
-    if not tn:
-        return render_template('tracking_result.html', error='Invalid tracking number', coords=[])
-    shipment = Shipment.query.filter_by(tracking_number=tn).first()
-    if not shipment:
-        return render_template('tracking_result.html', error='Not found', coords=[])
-    checkpoints = (shipment.checkpoints or "").split(";")
-    coords = geocode_locations(checkpoints)
-    coords_list = [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords]
-    route_coords = build_route_from_checkpoints(coords_list, mode='drive')
-    try:
-        dens_km = float(os.getenv('SIM_ROUTE_DENSIFY_KM', '1.0') or '1.0')
-        route_coords = densify_route_coords(route_coords, dens_km)
-    except Exception:
-        pass
-    distance_km = estimate_distance(shipment.origin_location or "Lagos, NG", shipment.delivery_location)
-    service_level = DHLRealisticSimulator.get_service_level(
-        distance_km, DHLRealisticSimulator.is_business_hours(datetime.now())
-    )
-    delivery_window = DHLRealisticSimulator.get_delivery_window(service_level, distance_km)
-    proof_of_delivery = DHLRealisticSimulator.generate_pod_info()
-    if shipment.status not in ['Delivered', 'Returned']:
-        try:
-            if can_start_simulation():
-                spawn_simulation(tn)
-            else:
-                flask_logger.info(f"Simulator throttle active; skipping new thread for {tn}")
-        except Exception:
-            try:
-                if can_start_simulation():
-                    eventlet.spawn(simulate_tracking, tn)
-                else:
-                    flask_logger.info(f"Simulator throttle active; skipping eventlet spawn for {tn}")
-            except Exception:
-                if can_start_simulation():
-                    threading.Thread(target=simulate_tracking, args=(tn,), daemon=True).start()
-                else:
-                    flask_logger.info(f"Simulator throttle active; skipping thread start for {tn}")
-    progress = float(rget('progress', tn, '0') or '0')
-    current_location = rget('current_location', tn, '') or ''
-    current_lat = rget('current_lat', tn, None)
-    current_lon = rget('current_lon', tn, None)
-    return render_template(
-        'tracking_result.html', shipment=shipment, checkpoints=checkpoints, coords=coords_list,
-        route_coords=route_coords, service_level=service_level, delivery_window=delivery_window,
-        proof_of_delivery=proof_of_delivery, progress=progress,
-        current_location=current_location, current_lat=current_lat, current_lon=current_lon,
-        tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID']
-    )
-
-@app.route('/telegram/webhook', methods=['POST'])
-def telegram_webhook():
-    try:
-        bot = get_bot()
-        data = request.get_json(force=True, silent=True)
-        if not data:
-            return jsonify({'error': 'Invalid JSON payload'}), 400
-        update = types.Update.de_json(data)
-        bot.process_new_updates([update])
-        return jsonify({'status': 'ok'}), 200
-    except Exception as e:
-        flask_logger.exception('Telegram webhook processing failed: %s', e)
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/notify', methods=['POST'])
+@limiter.exempt
 def websocket_notify():
     data = request.get_json(silent=True)
     if not data:
@@ -2015,19 +1816,19 @@ def websocket_notify():
         flask_logger.warning(f'External notify failed: {e}')
         return jsonify({'error': str(e)}), 500
 
-@app.route('/health')
+
+@app.route('/health', methods=['GET'])
+@limiter.exempt
 def health_check():
     """Health check endpoint - SMTP failures are non-critical."""
     status = {'status': 'healthy', 'database': 'ok', 'redis': 'ok', 'smtp': 'ok'}
     
-    # Check database - CRITICAL
     try:
         db.session.execute(text('SELECT 1'))
     except Exception as e:
         status['status'] = status['database'] = 'error'
         flask_logger.exception("Health check database failed: %s", e)
     
-    # Check Redis - CRITICAL
     try:
         if redis_client:
             redis_client.ping()
@@ -2037,7 +1838,6 @@ def health_check():
         status['redis'] = 'error'
         flask_logger.exception("Health check redis failed: %s", e)
     
-    # Check SMTP - NON-CRITICAL (just warn, don't fail)
     try:
         if app.config.get('SMTP_HOST') and app.config.get('SMTP_USER') and app.config.get('SMTP_PASS'):
             with smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT'], timeout=5) as s:
@@ -2047,19 +1847,32 @@ def health_check():
             status['smtp'] = 'unconfigured'
             flask_logger.warning("SMTP not configured")
     except Exception as e:
-        status['smtp'] = 'unavailable'  # Not 'error' - just unavailable
+        status['smtp'] = 'unavailable'
         flask_logger.warning("Health check smtp unavailable: %s", e)
     
-    # Only return 500 if critical services are down
     critical_ok = status['database'] == 'ok' and status['redis'] != 'error'
     return jsonify(status), 200 if critical_ok else 500
 
 
-@app.route('/debug/tn/<tracking_number>')
+@app.route('/telegram/webhook', methods=['POST'])
+@limiter.exempt
+def telegram_webhook():
+    try:
+        bot = get_bot()
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({'error': 'Invalid JSON payload'}), 400
+        update = types.Update.de_json(data)
+        bot.process_new_updates([update])
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        flask_logger.exception('Telegram webhook processing failed: %s', e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/tn/<tracking_number>', methods=['GET'])
+@limiter.exempt
 def debug_tracking_number(tracking_number):
-    """Return a small JSON snapshot of Redis-backed live fields for a tracking number.
-    Only enabled in debug/development mode."""
-    # Allow in debug/development or when caller is localhost (safe for local debugging)
     remote = request.remote_addr
     if not (app.debug or app.config.get('FLASK_ENV') == 'development' or remote in ('127.0.0.1', '::1')):
         return jsonify({'error': 'Not available'}), 403
@@ -2072,7 +1885,6 @@ def debug_tracking_number(tracking_number):
         for f in fields:
             v = rget(f, tn, None)
             try:
-                # try to coerce numeric
                 if v is not None and isinstance(v, str) and v.replace('.', '', 1).isdigit():
                     snapshot[f] = float(v)
                 else:
@@ -2084,7 +1896,9 @@ def debug_tracking_number(tracking_number):
         flask_logger.exception('Debug TN fetch failed: %s', e)
         return jsonify({'error': 'Failed to fetch'}), 500
 
-@app.route('/debug')
+
+@app.route('/debug', methods=['GET'])
+@limiter.exempt
 def debug_info():
     status = {
         'app_debug': app.debug,
@@ -2123,7 +1937,7 @@ def debug_info():
         else:
             status['smtp'] = 'unconfigured'
     except Exception as e:
-        status['smtp'] = 'unavailable'  # Not 'error'
+        status['smtp'] = 'unavailable'
         flask_logger.warning("Debug smtp unavailable: %s", e)
     try:
         bot = get_bot()
@@ -2154,8 +1968,13 @@ def debug_info():
     }
     return jsonify({'status': status, 'config': debug_config})
 
-# === ADMIN ROUTES ===
+
+# ============================================================
+# ADMIN ROUTES - EXEMPT FROM RATE LIMITING
+# ============================================================
+
 @app.route('/admin/login', methods=['GET', 'POST'])
+@limiter.exempt
 def admin_login():
     if request.method == 'POST':
         if request.form.get('password') == app.config['ADMIN_PASSWORD']:
@@ -2164,13 +1983,17 @@ def admin_login():
         flash("Invalid password", "error")
     return render_template('admin_login.html')
 
+
 @app.route('/admin/logout')
+@limiter.exempt
 def admin_logout():
     session.pop('admin_logged_in', None)
     return redirect(url_for('index'))
 
-@app.route('/admin/metrics')
+
+@app.route('/admin/metrics', methods=['GET'])
 @admin_required
+@limiter.exempt
 def admin_metrics():
     metrics = {}
     try:
@@ -2198,11 +2021,60 @@ def admin_metrics():
         metrics['status_distribution'] = {}
     return jsonify(metrics)
 
-# ============================================================
-# FIXED ADMIN DASHBOARD - Uses direct database queries
-# ============================================================
-@app.route('/admin')
+
+@app.route('/admin/api/redis_metrics', methods=['GET'])
 @admin_required
+@limiter.exempt
+def admin_redis_metrics():
+    try:
+        metrics = get_redis_metrics()
+        return jsonify(metrics)
+    except Exception as e:
+        flask_logger.error(f"Failed to fetch redis metrics: {e}")
+        return jsonify({'error': 'Could not retrieve metrics'}), 500
+
+
+@app.route('/admin/api/logs', methods=['GET'])
+@admin_required
+@limiter.exempt
+def admin_logs():
+    try:
+        lines = int(request.args.get('lines', 200))
+    except Exception:
+        lines = 200
+    log_file = app.config.get('LOG_FILE', 'app.log')
+    try:
+        import os
+        if os.path.exists(log_file):
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                data = f.readlines()[-lines:]
+            return Response(''.join(data), mimetype='text/plain')
+    except Exception:
+        pass
+    recent = get_recent_logs(min(lines, 50))
+    return jsonify({'logs': recent})
+
+
+@app.route('/admin/api/simulator_status', methods=['GET'])
+@admin_required
+@limiter.exempt
+def admin_simulator_status():
+    try:
+        from utils import SIMULATOR_THREAD_LIMIT, _simulator_thread_count, can_start_simulation
+        return jsonify({
+            'active_simulators': _simulator_thread_count,
+            'limit': SIMULATOR_THREAD_LIMIT,
+            'can_start': can_start_simulation(),
+            'throttle_active': not can_start_simulation()
+        })
+    except Exception as e:
+        flask_logger.error(f"Failed to fetch simulator status: {e}")
+        return jsonify({'error': 'Could not retrieve simulator status'}), 500
+
+
+@app.route('/admin', methods=['GET'])
+@admin_required
+@limiter.exempt
 def admin_dashboard():
     page = int(request.args.get('page', 1))
     per_page = 10
@@ -2290,8 +2162,10 @@ def admin_dashboard():
                                error=str(e),
                                now=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
 
-@app.route('/admin/csv')
+
+@app.route('/admin/csv', methods=['GET'])
 @admin_required
+@limiter.exempt
 def admin_csv():
     output = StringIO()
     writer = csv.writer(output)
@@ -2309,17 +2183,14 @@ def admin_csv():
     output.seek(0)
     return Response(output, mimetype="text/csv", headers={"Content-Disposition": f"attachment;filename=shipments_{datetime.utcnow().strftime('%Y%m%d')}.csv"})
 
-def generate_dhl_tracking():
-    prefix = "JD"
-    digits = ''.join(random.choices(string.digits, k=10))
-    return f"{prefix}{digits}"
 
 # ============================================================
-# ADMIN API ENDPOINTS
+# ADMIN API ENDPOINTS - EXEMPT FROM RATE LIMITING
 # ============================================================
 
-@app.route('/admin/api/shipment/<tn>')
+@app.route('/admin/api/shipment/<tn>', methods=['GET'])
 @admin_required
+@limiter.exempt
 def api_shipment_detail(tn):
     shipment = Shipment.query.filter_by(tracking_number=tn).first()
     if not shipment:
@@ -2411,8 +2282,10 @@ def reload_shipment(tn):
     except Exception:
         return None
 
+
 @app.route('/admin/api/shipment/<tn>/update', methods=['POST'])
 @admin_required
+@limiter.exempt
 def api_shipment_update(tn):
     shipment = Shipment.query.filter_by(tracking_number=tn).first()
     if not shipment:
@@ -2499,8 +2372,10 @@ def api_shipment_update(tn):
         flask_logger.exception('Failed to update shipment %s: %s', tn, e)
         return jsonify({'error': str(e)}), 500
 
+
 @app.route('/admin/api/shipment/<tn>/delete', methods=['POST'])
 @admin_required
+@limiter.exempt
 def api_delete_shipment(tn):
     shipment = Shipment.query.filter_by(tracking_number=tn).first()
     if not shipment:
@@ -2515,8 +2390,10 @@ def api_delete_shipment(tn):
         flask_logger.exception('Failed to delete shipment %s: %s', tn, e)
         return jsonify({'error': 'Failed to delete shipment'}), 500
 
-@app.route('/admin/api/cities')
+
+@app.route('/admin/api/cities', methods=['GET'])
 @admin_required
+@limiter.exempt
 def api_cities():
     cities = sorted(list(DHLRealisticSimulator.DHL_HUBS.keys()) + [
         "Lagos, NG", "Abuja, NG", "Port Harcourt, NG", "Kano, NG", "Ibadan, NG",
@@ -2538,6 +2415,7 @@ def api_cities():
         "Frankfurt, DE", "Leipzig, DE"
     ])
     return jsonify(cities)
+
 
 def create_shipment_record(origin, destination, recipient_email=None, service_level='DHL Express'):
     if not origin or not destination:
@@ -2650,8 +2528,10 @@ def create_shipment_record(origin, destination, recipient_email=None, service_le
         }
     }, 201
 
+
 @app.route('/admin/api/create_shipment', methods=['POST'])
 @admin_required
+@limiter.exempt
 def api_create_shipment():
     data = request.get_json() or {}
     result, status_code = create_shipment_record(
@@ -2662,8 +2542,10 @@ def api_create_shipment():
     )
     return jsonify(result), status_code
 
+
 @app.route('/admin/api/bulk_create', methods=['POST'])
 @admin_required
+@limiter.exempt
 def api_bulk_create():
     payload = request.get_json() or {}
     shipments = payload.get('shipments') or []
@@ -2696,8 +2578,10 @@ def api_bulk_create():
         'total_errors': len(errors)
     }), 200
 
-@app.route('/admin/api/shipments/email-history/<tn>')
+
+@app.route('/admin/api/shipments/email-history/<tn>', methods=['GET'])
 @admin_required
+@limiter.exempt
 def api_email_history(tn):
     if not tn:
         return jsonify([])
@@ -2717,8 +2601,10 @@ def api_email_history(tn):
             pass
     return jsonify(entries)
 
+
 @app.route('/admin/api/send_email', methods=['POST'])
 @admin_required
+@limiter.exempt
 def api_send_email():
     data = request.get_json() or {}
     tn = data.get('tracking_number')
@@ -2750,8 +2636,10 @@ def api_send_email():
         return jsonify({'error': 'Failed to send email'}), 500
     return jsonify({'success': True, 'recipient': shipment.recipient_email})
 
+
 @app.route('/admin/api/pause', methods=['POST'])
 @admin_required
+@limiter.exempt
 def api_pause_simulation():
     data = request.get_json() or {}
     tn = data.get('tracking_number')
@@ -2773,8 +2661,10 @@ def api_pause_simulation():
 
     return jsonify({'success': True, 'paused': bool(pause)})
 
+
 @app.route('/admin/api/speed', methods=['POST'])
 @admin_required
+@limiter.exempt
 def api_update_speed():
     data = request.get_json() or {}
     tn = data.get('tracking_number')
@@ -2802,7 +2692,223 @@ def api_update_speed():
 
     return jsonify({'success': True, 'speed': speed_value})
 
-# SocketIO - Merged disconnect handlers
+
+@app.route('/admin/client_error', methods=['POST'])
+@admin_required
+@limiter.exempt
+def admin_client_error():
+    payload = request.get_json(silent=True) or {}
+    payload['remote_addr'] = request.remote_addr
+    try:
+        add_client_error(payload)
+    except Exception:
+        pass
+    flask_logger.error('Client-side error reported: %s', payload)
+    return jsonify({'success': True})
+
+
+@app.route('/admin/debug', methods=['GET'])
+@admin_required
+@limiter.exempt
+def admin_debug():
+    """Return quick health/status info useful for debugging the admin UI."""
+    info = {
+        'services_started': services_started,
+        'sqlite_url': app.config.get('SQLALCHEMY_DATABASE_URI'),
+        'webrtc_server': app.config.get('WEBSOCKET_SERVER'),
+        'redis_configured': bool(redis_client),
+        'active_clients_in_memory': len(in_memory_clients) if in_memory_clients else 0,
+        'shipments_count': None,
+    }
+    try:
+        info['shipments_count'] = Shipment.query.count()
+    except Exception as e:
+        info['shipments_count'] = f'error: {e}'
+    try:
+        if redis_client:
+            info['redis_paused_count'] = redis_client.hlen('paused_simulations') if redis_client.exists('paused_simulations') else 0
+    except Exception:
+        info['redis_paused_count'] = 'error'
+    try:
+        info['recent_socket_events'] = list(recent_socket_events)[:50]
+    except Exception:
+        info['recent_socket_events'] = []
+    try:
+        info['recent_client_errors'] = list(recent_client_errors)[:50]
+    except Exception:
+        info['recent_client_errors'] = []
+    return jsonify(info)
+
+
+# ============================================================
+# PUBLIC ROUTES (Keep Rate Limiting)
+# ============================================================
+
+@app.route('/')
+def index():
+    form = TrackForm()
+    recaptcha_key = app.config.get('RECAPTCHA_SITE_KEY', '')
+    host = request.host or ''
+    if app.debug or app.config.get('FLASK_ENV') == 'development' or 'your-site-key' in (recaptcha_key or '') or 'localhost' in host or '127.0.0.1' in host:
+        recaptcha_key = ''
+    return render_template('index.html', form=form, tawk_property_id=app.config['TAWK_PROPERTY_ID'],
+                           tawk_widget_id=app.config['TAWK_WIDGET_ID'], recaptcha_site_key=recaptcha_key)
+
+
+def _render_tracking_response(rendered_html, status_code=200):
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify({'html': rendered_html}), status_code
+    return rendered_html, status_code
+
+
+@app.route('/track', methods=['POST'])
+@limiter.limit("10 per minute")
+def track():
+    try:
+        from forms import TrackForm as F
+        form = F()
+    except:
+        form = TrackForm()
+    if not form.validate_on_submit():
+        if app.testing or request.form.get('submit') == 'Track' or request.form.get('tracking_number'):
+            form.tracking_number.data = request.form.get('tracking_number', '')
+            form.email.data = request.form.get('email', '')
+        else:
+            return _render_tracking_response(render_template('tracking_result.html', error='Invalid form submission', coords=[]), 400)
+    
+    tn = sanitize_tracking_number(form.tracking_number.data)
+    email = form.email.data
+    if not tn:
+        return _render_tracking_response(render_template('tracking_result.html', error='Invalid tracking number', coords=[]), 400)
+    shipment = Shipment.query.filter_by(tracking_number=tn).first()
+    if not shipment:
+        return _render_tracking_response(render_template('tracking_result.html', error='Not found', coords=[]), 404)
+    if email and validate_email(email):
+        shipment.recipient_email = email
+        db.session.commit()
+        invalidate_cache(tn)
+    checkpoints = (shipment.checkpoints or "").split(";")
+    coords = geocode_locations(checkpoints)
+    coords_list = [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords]
+    route_coords = build_route_from_checkpoints(coords_list, mode='drive')
+    try:
+        dens_km = float(os.getenv('SIM_ROUTE_DENSIFY_KM', '1.0') or '1.0')
+        route_coords = densify_route_coords(route_coords, dens_km)
+    except Exception:
+        pass
+    distance_km = estimate_distance(shipment.origin_location or "Lagos, NG", shipment.delivery_location)
+    service_level = DHLRealisticSimulator.get_service_level(
+        distance_km, DHLRealisticSimulator.is_business_hours(datetime.now())
+    )
+    delivery_window = DHLRealisticSimulator.get_delivery_window(service_level, distance_km)
+    proof_of_delivery = DHLRealisticSimulator.generate_pod_info()
+    if shipment.status not in ['Delivered', 'Returned']:
+        try:
+            if can_start_simulation():
+                spawn_simulation(tn)
+            else:
+                flask_logger.info(f"Simulator throttle active; skipping new thread for {tn}")
+        except Exception:
+            try:
+                if can_start_simulation():
+                    eventlet.spawn(simulate_tracking, tn)
+                else:
+                    flask_logger.info(f"Simulator throttle active; skipping eventlet spawn for {tn}")
+            except Exception:
+                if can_start_simulation():
+                    threading.Thread(target=simulate_tracking, args=(tn,), daemon=True).start()
+                else:
+                    flask_logger.info(f"Simulator throttle active; skipping thread start for {tn}")
+    progress = float(rget('progress', tn, '0') or '0')
+    current_location = rget('current_location', tn, '') or ''
+    current_lat = rget('current_lat', tn, None)
+    current_lon = rget('current_lon', tn, None)
+    
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        result_html = render_template(
+            'tracking_result.html',
+            shipment=shipment,
+            checkpoints=checkpoints,
+            coords=coords_list,
+            route_coords=route_coords,
+            service_level=service_level,
+            delivery_window=delivery_window,
+            proof_of_delivery=proof_of_delivery,
+            progress=progress,
+            current_location=current_location,
+            current_lat=current_lat,
+            current_lon=current_lon,
+            tawk_property_id=app.config['TAWK_PROPERTY_ID'],
+            tawk_widget_id=app.config['TAWK_WIDGET_ID']
+        )
+        return jsonify({'html': result_html})
+    
+    rendered = render_template(
+        'tracking_result.html', shipment=shipment, checkpoints=checkpoints, coords=coords_list,
+        route_coords=route_coords, service_level=service_level, delivery_window=delivery_window,
+        proof_of_delivery=proof_of_delivery, progress=progress,
+        current_location=current_location, current_lat=current_lat, current_lon=current_lon,
+        tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID']
+    )
+    return _render_tracking_response(rendered, 200)
+
+
+@app.route('/track/<tracking_number>')
+def track_direct(tracking_number):
+    tn = sanitize_tracking_number(tracking_number)
+    if not tn:
+        return render_template('tracking_result.html', error='Invalid tracking number', coords=[])
+    shipment = Shipment.query.filter_by(tracking_number=tn).first()
+    if not shipment:
+        return render_template('tracking_result.html', error='Not found', coords=[])
+    checkpoints = (shipment.checkpoints or "").split(";")
+    coords = geocode_locations(checkpoints)
+    coords_list = [{'lat': c['lat'], 'lon': c['lon'], 'desc': c['desc']} for c in coords]
+    route_coords = build_route_from_checkpoints(coords_list, mode='drive')
+    try:
+        dens_km = float(os.getenv('SIM_ROUTE_DENSIFY_KM', '1.0') or '1.0')
+        route_coords = densify_route_coords(route_coords, dens_km)
+    except Exception:
+        pass
+    distance_km = estimate_distance(shipment.origin_location or "Lagos, NG", shipment.delivery_location)
+    service_level = DHLRealisticSimulator.get_service_level(
+        distance_km, DHLRealisticSimulator.is_business_hours(datetime.now())
+    )
+    delivery_window = DHLRealisticSimulator.get_delivery_window(service_level, distance_km)
+    proof_of_delivery = DHLRealisticSimulator.generate_pod_info()
+    if shipment.status not in ['Delivered', 'Returned']:
+        try:
+            if can_start_simulation():
+                spawn_simulation(tn)
+            else:
+                flask_logger.info(f"Simulator throttle active; skipping new thread for {tn}")
+        except Exception:
+            try:
+                if can_start_simulation():
+                    eventlet.spawn(simulate_tracking, tn)
+                else:
+                    flask_logger.info(f"Simulator throttle active; skipping eventlet spawn for {tn}")
+            except Exception:
+                if can_start_simulation():
+                    threading.Thread(target=simulate_tracking, args=(tn,), daemon=True).start()
+                else:
+                    flask_logger.info(f"Simulator throttle active; skipping thread start for {tn}")
+    progress = float(rget('progress', tn, '0') or '0')
+    current_location = rget('current_location', tn, '') or ''
+    current_lat = rget('current_lat', tn, None)
+    current_lon = rget('current_lon', tn, None)
+    return render_template(
+        'tracking_result.html', shipment=shipment, checkpoints=checkpoints, coords=coords_list,
+        route_coords=route_coords, service_level=service_level, delivery_window=delivery_window,
+        proof_of_delivery=proof_of_delivery, progress=progress,
+        current_location=current_location, current_lat=current_lat, current_lon=current_lon,
+        tawk_property_id=app.config['TAWK_PROPERTY_ID'], tawk_widget_id=app.config['TAWK_WIDGET_ID']
+    )
+
+# ============================================================
+# SOCKETIO EVENTS
+# ============================================================
+
 @socketio.on('connect')
 def on_connect():
     sid = getattr(request, 'sid', None)
@@ -2837,7 +2943,6 @@ def on_disconnect():
     except Exception:
         pass
     
-    # Clean up clients
     for tn in list(in_memory_clients.keys()):
         remove_client(tn, request.sid)
     if redis_client:
@@ -2848,18 +2953,6 @@ def on_disconnect():
             except Exception:
                 continue
 
-
-@app.route('/admin/client_error', methods=['POST'])
-@admin_required
-def admin_client_error():
-    payload = request.get_json(silent=True) or {}
-    payload['remote_addr'] = request.remote_addr
-    try:
-        add_client_error(payload)
-    except Exception:
-        pass
-    flask_logger.error('Client-side error reported: %s', payload)
-    return jsonify({'success': True})
 
 @socketio.on('request_tracking')
 def on_request(data):
@@ -2890,7 +2983,6 @@ def on_request(data):
     )
     delivery_window = DHLRealisticSimulator.get_delivery_window(service_level, distance_km)
     proof_of_delivery = DHLRealisticSimulator.generate_pod_info()
-    # include any current live position values from Redis so client can show immediate location
     current_location = rget('current_location', tn, '') or ''
     current_lat = rget('current_lat', tn, None)
     current_lon = rget('current_lon', tn, None)
@@ -2907,8 +2999,14 @@ def on_request(data):
         'speed_multiplier': speed, 'paused': paused, 'mode': mode, 'carrier': shipment.carrier
     })
 
+
+# ============================================================
+# BACKGROUND SERVICES
+# ============================================================
+
 services_started = False
 services_started_lock = threading.Lock()
+
 
 def start_background_services():
     global services_started
@@ -2946,44 +3044,17 @@ def start_background_services():
             services_started = False
         raise
 
+
 @app.before_request
 def ensure_background_services():
     if not services_started:
         start_background_services()
 
 
-@app.route('/admin/debug')
-@admin_required
-def admin_debug():
-    """Return quick health/status info useful for debugging the admin UI."""
-    info = {
-        'services_started': services_started,
-        'sqlite_url': app.config.get('SQLALCHEMY_DATABASE_URI'),
-        'webrtc_server': app.config.get('WEBSOCKET_SERVER'),
-        'redis_configured': bool(redis_client),
-        'active_clients_in_memory': len(in_memory_clients) if in_memory_clients else 0,
-        'shipments_count': None,
-    }
-    try:
-        info['shipments_count'] = Shipment.query.count()
-    except Exception as e:
-        info['shipments_count'] = f'error: {e}'
-    try:
-        if redis_client:
-            info['redis_paused_count'] = redis_client.hlen('paused_simulations') if redis_client.exists('paused_simulations') else 0
-    except Exception:
-        info['redis_paused_count'] = 'error'
-    try:
-        info['recent_socket_events'] = list(recent_socket_events)[:50]
-    except Exception:
-        info['recent_socket_events'] = []
-    try:
-        info['recent_client_errors'] = list(recent_client_errors)[:50]
-    except Exception:
-        info['recent_client_errors'] = []
-    return jsonify(info)
+# ============================================================
+# APPLICATION ENTRY POINT
+# ============================================================
 
-# Start
 if __name__ == '__main__':
     start_background_services()
     socketio.run(app, host='0.0.0.0', port=10000, debug=os.getenv('FLASK_ENV') == 'development')
