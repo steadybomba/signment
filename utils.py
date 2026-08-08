@@ -435,6 +435,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['RATELIMIT_STORAGE_URI'] = os.getenv('RATELIMIT_STORAGE_URI', 'memory://')
 app.config['RATELIMIT_DEFAULTS'] = os.getenv('RATELIMIT_DEFAULTS', '200 per day,50 per hour').split(',')
 app.config['WEBSOCKET_SERVER'] = os.getenv('WEBSOCKET_SERVER', 'https://signment-9a96.onrender.com')
+app.config['GEOCODING_API_KEY'] = os.getenv('GEOCODING_API_KEY', '')
 app.config['SMTP_HOST'] = os.getenv('SMTP_HOST', 'smtp.gmail.com')
 app.config['SMTP_PORT'] = int(os.getenv('SMTP_PORT', 587))
 app.config['SMTP_USER'] = os.getenv('SMTP_USER', '')
