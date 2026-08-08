@@ -126,24 +126,6 @@
             width: 100%;
             z-index: 1;
         }
-
-        /* Debug overlay for troubleshooting live updates */
-        .debug-panel {
-            position: fixed;
-            right: 12px;
-            bottom: 12px;
-            width: 320px;
-            max-height: 280px;
-            overflow: auto;
-            background: rgba(255,255,255,0.95);
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            padding: 8px;
-            font-size: 12px;
-            box-shadow: 0 6px 20px rgba(0,0,0,0.12);
-            z-index: 1200;
-        }
-        .debug-panel pre { white-space: pre-wrap; word-break: break-word; margin:0; }
         
         /* Leaflet control custom styling */
         .leaflet-control-custom {
@@ -468,7 +450,7 @@
             font-size: 0.8rem;
             color: #94a3b8;
         }
-
+        
         /* === FOOTER === */
         .footer {
             background: linear-gradient(to right, var(--dhl-yellow), #fff);
@@ -869,7 +851,6 @@
                     <!-- Back Button -->
                     <a href="{{ url_for('index') }}" class="back-button">← Back to home</a>
                 </div>
-
             </div>
         </div>
     {% endif %}
@@ -1210,7 +1191,6 @@
             const progressVal = parseFloat(initialProgress) || 0;
             function computeNextCheckpoint(arr, progress) {
                 if (!arr || !arr.length) return 'Next scan pending';
-                // If progress near start, next is index 1 else estimate by progress
                 const idx = Math.min(Math.max(1, Math.round(progress * (arr.length - 1))), arr.length - 1);
                 nextCheckpointIndex = idx;
                 return arr[idx];
@@ -1441,10 +1421,7 @@
                 updateMap(routeData);
                 document.getElementById('toggleAnimation').disabled = routeData.length < 2;
                 document.getElementById('resetView').disabled = false;
-            } else {
-                // Preserve the existing map/route state for lightweight updates that carry only live position.
             }
-
         });
 
         socket.on('disconnect', () => {
@@ -1501,7 +1478,7 @@
             }
         });
 
-        console.log('Tracking page initialized');
+        console.log('Tracking page initialized - Production Ready');
     </script>
 </body>
 </html>
