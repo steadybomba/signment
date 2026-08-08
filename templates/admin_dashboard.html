@@ -1606,6 +1606,19 @@
       "Enugu, NG": [6.4584, 7.5170]
     };
 
+    function loadCityCoordinates() {
+      return fetch('/admin/api/city_coords')
+        .then(response => response.ok ? response.json() : {})
+        .then(coords => {
+          Object.entries(coords).forEach(([name, value]) => {
+            if (value && Number.isFinite(Number(value.lat)) && Number.isFinite(Number(value.lon))) {
+              cityCoords[name] = [Number(value.lat), Number(value.lon)];
+            }
+          });
+        })
+        .catch(() => {});
+    }
+
     function getLocationFromCheckpoint(checkpoint) {
       if (!checkpoint) return null;
       const parts = checkpoint.split(' - ');
@@ -2124,14 +2137,16 @@
 
     document.addEventListener('DOMContentLoaded', function() {
       calculateStats();
-      
-      const rows = document.querySelectorAll('#shipment-table tbody tr[data-tn]');
-      rows.forEach(row => {
-        const tn = row.dataset.tn;
-        fetch(`/admin/api/shipment/${tn}`)
-          .then(r => r.json())
-          .then(data => updateMap(data))
-          .catch(err => console.error('Failed to load shipment for map:', err));
+
+      loadCityCoordinates().finally(() => {
+        const rows = document.querySelectorAll('#shipment-table tbody tr[data-tn]');
+        rows.forEach(row => {
+          const tn = row.dataset.tn;
+          fetch(`/admin/api/shipment/${tn}`)
+            .then(r => r.json())
+            .then(data => updateMap(data))
+            .catch(err => console.error('Failed to load shipment for map:', err));
+        });
       });
       
       setTimeout(() => {
